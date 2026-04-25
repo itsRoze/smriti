@@ -1,0 +1,264 @@
+---
+name: design-consultation
+description: |
+  Build a complete design system from scratch. Researches the category landscape (with
+  WebSearch when allowed), proposes SAFE choices and creative RISKS across 8 dimensions
+  (aesthetic, decoration, layout, color, typography, spacing, motion, coherence),
+  generates a self-contained HTML preview, and writes DESIGN.md to the repo root.
+  Subsequent design skills (/plan-design-review, /design-review) read DESIGN.md as
+  source of truth.
+  Use when the project has UI scope but no DESIGN.md, or when the user wants to refresh
+  the design system. Proactively invoke when /bootstrap set design priority = high and
+  no DESIGN.md exists.
+allowed-tools:
+  - Bash
+  - Read
+  - Write
+  - Edit
+  - Glob
+  - Grep
+  - WebSearch
+  - AskUserQuestion
+---
+
+{{PREAMBLE}}
+
+# /design-consultation — build a design system from scratch
+
+Output: `DESIGN.md` at repo root + a self-contained HTML preview that opens in the browser. Downstream skills (`/plan-design-review`, `/design-review`) read DESIGN.md.
+
+{{DESIGN_HARD_RULES}}
+
+{{UX_PRINCIPLES}}
+
+## Phase 0: Pre-checks
+
+```bash
+# DESIGN.md exists?
+HAS_DESIGN=no
+[ -f DESIGN.md ] && HAS_DESIGN=yes
+
+# Product context sources
+[ -f PROJECT.md ] && cat PROJECT.md
+[ -f README.md ] && head -80 README.md
+[ -f package.json ] && head -40 package.json
+
+# Most recent office-hours design doc on this branch (often has product-context signal)
+ls -t "${SMRITI_HOME:-$HOME/.smriti}/projects/$SLUG/"*-"$BRANCH"-design-*.md 2>/dev/null | head -1
+```
+
+If `HAS_DESIGN=yes`, ask once: **update / start fresh / cancel**.
+- update — keep the existing palette/fonts and walk only the dimensions the user wants to revisit; append to Decisions Log
+- start fresh — backup `DESIGN.md` to `DESIGN.md.bak.<datetime>`, then proceed as if new
+- cancel — exit silently
+
+If `PROJECT.md` is missing, recommend `/bootstrap` first and exit. The product context in PROJECT.md is critical input — don't proceed without it.
+
+## Phase 1: Product context (single AskUserQuestion)
+
+One bundled AskUserQuestion. Pre-fill from Phase 0 sources.
+
+| Field | Notes |
+|-------|-------|
+| **Product description** (one paragraph) | What is it, what does it do? |
+| **Target user** (one sentence) | Already in PROJECT.md → confirm |
+| **Industry / category** | SaaS / consumer / dev tools / media / etc. |
+| **Project type** | web app / mobile app / landing page / dashboard / CLI / library |
+| **Research preference** | yes (do WebSearch landscape research) / skip / use only PROJECT.md |
+| **One memorable thing** | If a user remembered one thing about the design, what should it be? (warmth / sharpness / playfulness / quiet confidence / etc.) |
+
+## Phase 2: Research (only if user opted in)
+
+```bash
+# Use WebSearch to scan 5-10 category products
+# (Don't fabricate sources — actually run WebSearch.)
+```
+
+Three-layer synthesis:
+
+- **Tried-and-true** — what every product in this category has converged on (e.g., SaaS landing pages with a centered hero, dashboards with left nav)
+- **New-popular** — what's emerging right now in 2025–2026 (e.g., serif-for-headlines revival, soft brutalism, hand-drawn iconography)
+- **First-principles** — what the user's actual problem suggests, ignoring category conventions (e.g., this isn't really a SaaS dashboard — it's a daily log; what does that genuinely want to look like?)
+
+State 1–2 *eureka moments* — non-obvious patterns you spotted. Mark them as observations, not directives.
+
+## Phase 3: Complete proposal (single AskUserQuestion)
+
+One bundled AskUserQuestion presenting SAFE choices + creative RISKS across 8 dimensions:
+
+```
+Aesthetic
+  SAFE: <2-3 directions w/ 1-line rationale>
+  RISK: <2-3 directions w/ 1-line rationale + tradeoff>
+
+Decoration (illustrations, icons, ornament)
+  SAFE: ...
+  RISK: ...
+
+Layout (grid, density, alignment)
+  SAFE: ...
+  RISK: ...
+
+Color (palette approach, contrast strategy)
+  SAFE: ...
+  RISK: ...
+
+Typography (display / body / UI / data / code stacks)
+  SAFE: ...
+  RISK: ...
+
+Spacing (scale, rhythm, density)
+  SAFE: ...
+  RISK: ...
+
+Motion (presence, speed, intent)
+  SAFE: ...
+  RISK: ...
+
+Coherence logic (what connects all of the above)
+  SAFE: ...
+  RISK: ...
+```
+
+User options:
+- **Approve as proposed** → go to Phase 5
+- **Adjust dimension X** → go to Phase 4 for that dimension
+- **Show me different RISKs** → regenerate Phase 3 with new risk options
+- **Start over** → back to Phase 1
+- **Skip preview, just write DESIGN.md** → go straight to Phase 6
+
+## Phase 4: Drill-downs (only if user adjusts)
+
+For each dimension the user wants to refine, issue a **focused** AskUserQuestion:
+
+- **Typography:** 3–5 font candidates with one-line voice descriptions ("Inter — neutral SaaS default; Söhne — confident geometric; iA Writer Quattro — humanist warmth; etc.")
+- **Color:** 2–3 palettes, each with hex values for primary/secondary/accent/bg/fg/muted
+- **Aesthetic direction:** 2–4 named directions ("editorial warmth", "engineered calm", "playful modernism", etc.)
+- **Spacing scale:** {4-base / 6-base / 8-base / fibonacci-ish} — pick the granularity
+- Other dimensions as needed
+
+Each drill-down is **one** AskUserQuestion. Don't chain unprompted.
+
+## Phase 5: HTML preview (self-contained)
+
+Generate one HTML file at `/tmp/smriti-design-preview-<datetime>.html`. Requirements:
+
+1. **Self-contained** — no external CSS framework. Inline `<style>`. Fonts loaded from Google Fonts CDN (or system fonts if user wants offline-first).
+2. **Sections (in this order):**
+   - Header with the project name, "Design System Preview", and a light/dark toggle
+   - Color palette — swatches with hex values + their semantic role (primary, surface, text, etc.)
+   - Type scale — display, h1–h6, body, small, mono — with the actual chosen fonts
+   - Component samples — button (primary/secondary/tertiary), input (text/with label/error state), card (basic/with action), nav (top bar)
+   - One realistic mockup of the chosen project type:
+     - **landing page** → hero + one feature section
+     - **dashboard** → top nav + sidebar + content area with sample data
+     - **web app / mobile app** → main screen with the dominant interaction
+     - **CLI / library** → a stylized README rendering with code blocks
+3. **Light/dark toggle** must work — provide both color modes.
+4. **Open it for the user:**
+   ```bash
+   open "/tmp/smriti-design-preview-<datetime>.html"   # macOS
+   # or: xdg-open <path> on Linux; start <path> on Windows
+   ```
+
+Ask one AskUserQuestion: **approve / adjust dimension X / regenerate preview / abort**.
+
+## Phase 6: Write DESIGN.md
+
+Write to repo root:
+
+```markdown
+# Design System
+
+Generated <YYYY-MM-DD> via `/design-consultation`. Source of truth for `/plan-design-review` and `/design-review`.
+
+## Product Context
+<one paragraph synthesizing what this product is + the memorable feeling>
+
+## Aesthetic Direction
+<one paragraph + 3–5 reference points (the eureka moments + named directions you landed on)>
+
+## Typography
+- **Display:** <font name + weight + when to use>
+- **Body:** <font name + weight + when to use>
+- **UI:** <font name + weight + when to use>
+- **Data / numerals:** <font + tabular figures? variant?>
+- **Code:** <mono stack>
+
+Type scale:
+| Token | Size | Weight | Use |
+|-------|------|--------|-----|
+| display | <px> | <wt> | hero only |
+| h1 | <px> | <wt> | page title |
+| h2 | <px> | <wt> | section |
+| h3 | <px> | <wt> | sub-section |
+| body | <px> | <wt> | default |
+| small | <px> | <wt> | meta |
+| mono | <px> | <wt> | code |
+
+## Color
+**Approach:** <single hue / dual hue / monochrome+accent / etc. + rationale>
+
+Palette (light):
+| Token | Hex | Use |
+|-------|-----|-----|
+| primary | #... | brand, primary actions |
+| primary-fg | #... | text on primary |
+| surface | #... | cards, raised surfaces |
+| bg | #... | page background |
+| text | #... | default body |
+| text-muted | #... | meta, hints |
+| border | #... | dividers, input borders |
+| success / warning / danger | #... | semantic |
+
+Palette (dark): <same tokens, dark values>
+
+## Spacing Scale
+{2 / 4 / 6 / 8 / 12 / 16 / 24 / 32 / 48 / 64} (or whatever was chosen). Default unit: <N>px.
+
+## Layout
+<one paragraph: grid system, max widths, density rules, alignment principles>
+
+## Motion
+<one paragraph: when motion is used; durations; easing; reduced-motion respect>
+
+## Voice
+<one paragraph: how copy reads; sentence length; warmth; jargon tolerance>
+
+## Decisions Log
+- <YYYY-MM-DD> Initial design system via /design-consultation. Memorable: "<one word>".
+```
+
+Also append a one-line note to `CLAUDE.md` if it exists:
+
+```bash
+if [ -f CLAUDE.md ]; then
+  if ! grep -q "DESIGN.md" CLAUDE.md; then
+    cat >> CLAUDE.md <<'EOF'
+
+## Design system
+
+This project has a design system documented in `DESIGN.md`. When making UI changes, read DESIGN.md and use the documented tokens. `/plan-design-review` and `/design-review` enforce alignment.
+EOF
+  fi
+fi
+```
+
+## Phase 7: Handoff
+
+End with:
+
+> *"Design system written to `DESIGN.md`. HTML preview at `/tmp/smriti-design-preview-<ts>.html` (still open in your browser).*
+>
+> *Next steps:*
+> *- For new features with UI: run `/office-hours` then `/plan-design-review` — it'll grade designs 0–10 against this system.*
+> *- For existing UI: run `/design-review` — it'll find drift and AI-slop in the code."*
+
+---
+
+{{LEARNINGS_LOG}}
+
+When logging from this skill, prefer keys like:
+- `design-aesthetic` — the named direction the user chose
+- `design-pitfall-<topic>` — patterns the user explicitly rejected (avoid in future suggestions)
+- `pref-color-approach` — palette strategy preference
