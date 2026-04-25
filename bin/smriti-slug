@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# smriti-slug — derive the per-project slug; cache for fast subsequent reads.
+# Output (default): sourceable env (`SLUG=…`, `IS_FIRST_TIME=…`, `SLUG_CACHE_FILE=…`).
+# Output (--print): just the slug, one line.
+#
+# IS_FIRST_TIME is yes if no slug-cache existed before this invocation.
+# Slug derivation:
+#   1. `git remote get-url origin` → strip protocol/host → kebab-case
+#   2. Fallback: `path-<sha-of-repo-root>` if no remote
+#
+# Cache: $SMRITI_HOME/slug-cache/<sha-of-path>
+set -e
+
+SMRITI_HOME="${SMRITI_HOME:-$HOME/.smriti}"
+SLUG_CACHE_DIR="$SMRITI_HOME/slug-cache"
+mkdir -p "$SLUG_CACHE_DIR"
+
+PRINT_ONLY=0
+[ "${1:-}" = "--print" ] && PRINT_ONLY=1
+
+REPO_PATH=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+PATH_HASH=$(printf '%s' "$REPO_PATH" | shasum -a 256 | cut -c1-16)
+CACHE_FILE="$SLUG_CACHE_DIR/$PATH_HASH"
+
+if [ -f "$CACHE_FILE" ]; then
+  IS_FIRST_TIME=no
+  SLUG=$(cat "$CACHE_FILE")
+else
+  IS_FIRST_TIME=yes
+  REMOTE=$(git remote get-url origin 2>/dev/null || true)
+  if [ -n "$REMOTE" ]; then
+    OWNER_REPO=$(printf '%s' "$REMOTE" | sed -E 's#^(git@[^:]+:|https?://[^/]+/)##; s#\.git$##')
+    SLUG=$(printf '%s' "$OWNER_REPO" \
+      | tr 'A-Z' 'a-z' \
+      | tr '/' '-' \
+      | tr -cs 'a-z0-9-' '-' \
+      | sed -E 's/^-+//; s/-+$//')
+  else
+    SLUG="path-$PATH_HASH"
+  fi
+  printf '%s' "$SLUG" > "$CACHE_FILE"
+fi
+
+if [ "$PRINT_ONLY" -eq 1 ]; then
+  printf '%s\n' "$SLUG"
+else
+  printf 'SLUG=%s\n' "$SLUG"
+  printf 'IS_FIRST_TIME=%s\n' "$IS_FIRST_TIME"
+  printf 'SLUG_CACHE_FILE=%s\n' "$CACHE_FILE"
+fi

@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# smriti-codex-probe — sourceable env about Codex CLI availability.
+#
+# Output:
+#   CODEX_AVAILABLE=0|1
+#   CODEX_AUTH=ok|missing
+#   CODEX_VERSION=<x.y.z>|<empty>
+set -e
+
+if ! command -v codex >/dev/null 2>&1; then
+  printf 'CODEX_AVAILABLE=0\nCODEX_AUTH=missing\nCODEX_VERSION=\n'
+  exit 0
+fi
+
+VERSION=$(codex --version 2>/dev/null | head -1 | awk '{print $NF}' || true)
+
+AUTH=missing
+if [ -n "${CODEX_API_KEY:-}" ] || [ -n "${OPENAI_API_KEY:-}" ] || [ -f "$HOME/.codex/auth.json" ]; then
+  AUTH=ok
+fi
+
+printf 'CODEX_AVAILABLE=1\n'
+printf 'CODEX_AUTH=%s\n' "$AUTH"
+printf 'CODEX_VERSION=%s\n' "$VERSION"

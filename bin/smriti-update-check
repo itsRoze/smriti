@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# smriti-update-check — silent unless smriti is behind upstream.
+# Throttled to once per hour. Network-failure-safe (silent on any error).
+
+SMRITI_HOME="${SMRITI_HOME:-$HOME/.smriti}"
+SMRITI_REPO="${SMRITI_REPO:-$HOME/.claude/skills/smriti}"
+LAST_CHECK_FILE="$SMRITI_HOME/.last-update-check"
+THROTTLE_SECONDS=3600
+
+mkdir -p "$SMRITI_HOME"
+
+if [ -f "$LAST_CHECK_FILE" ]; then
+  LAST=$(stat -f %m "$LAST_CHECK_FILE" 2>/dev/null || stat -c %Y "$LAST_CHECK_FILE" 2>/dev/null || echo 0)
+  NOW=$(date +%s)
+  ELAPSED=$((NOW - LAST))
+  [ "$ELAPSED" -lt "$THROTTLE_SECONDS" ] && exit 0
+fi
+touch "$LAST_CHECK_FILE"
+
+[ -d "$SMRITI_REPO/.git" ] || exit 0
+
+# Fetch with a soft network timeout so we never block the user.
+( cd "$SMRITI_REPO" && git -c http.lowSpeedTime=5 fetch --quiet origin 2>/dev/null ) || exit 0
+
+BEHIND=$(cd "$SMRITI_REPO" && git rev-list --count HEAD..@{u} 2>/dev/null || echo 0)
+if [ "$BEHIND" -gt 0 ] 2>/dev/null; then
+  echo "ℹ smriti is $BEHIND commit(s) behind upstream. Run: cd $SMRITI_REPO && git pull && ./setup"
+fi

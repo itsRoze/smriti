@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+# smriti-learnings-log — append a learning entry to per-project JSONL.
+# Storage: $SMRITI_HOME/projects/<slug>/learnings.jsonl (append-only).
+#
+# Schema: {skill, type, key, insight, confidence, source, trusted, ts, files?}
+#
+# Validation:
+#   type ∈ {pattern, pitfall, preference, architecture, tool, operational}
+#   source ∈ {observed, user-stated, inferred, cross-model}
+#   key matches ^[a-zA-Z0-9_-]+$
+#   confidence integer 1..10
+#   trusted = true iff source=user-stated
+#   insight rejected if it contains prompt-injection patterns
+set -e
+
+if ! command -v jq >/dev/null 2>&1; then
+  echo "smriti-learnings-log: jq is required (brew install jq)" >&2
+  exit 1
+fi
+
+SMRITI_BIN="$(cd "$(dirname "$0")" && pwd -P)"
+
+SKILL=""; TYPE=""; KEY=""; INSIGHT=""; CONFIDENCE=""; SOURCE=""; FILES=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --skill)      SKILL="$2"; shift 2 ;;
+    --type)       TYPE="$2"; shift 2 ;;
+    --key)        KEY="$2"; shift 2 ;;
+    --insight)    INSIGHT="$2"; shift 2 ;;
+    --confidence) CONFIDENCE="$2"; shift 2 ;;
+    --source)     SOURCE="$2"; shift 2 ;;
+    --files)      FILES="$2"; shift 2 ;;
+    *) echo "unknown flag: $1" >&2; exit 1 ;;
+  esac
+done
+
+case "$TYPE" in
+  pattern|pitfall|preference|architecture|tool|operational) ;;
+  *) echo "invalid type: '$TYPE' (allowed: pattern, pitfall, preference, architecture, tool, operational)" >&2; exit 1 ;;
+esac
+
+case "$SOURCE" in
+  observed|user-stated|inferred|cross-model) ;;
+  *) echo "invalid source: '$SOURCE' (allowed: observed, user-stated, inferred, cross-model)" >&2; exit 1 ;;
+esac
+
+if ! [[ "$KEY" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+  echo "invalid key: must match ^[a-zA-Z0-9_-]+\$" >&2; exit 1
+fi
+
+if ! [[ "$CONFIDENCE" =~ ^[0-9]+$ ]] || [ "$CONFIDENCE" -lt 1 ] || [ "$CONFIDENCE" -gt 10 ]; then
+  echo "invalid confidence: must be integer 1..10" >&2; exit 1
+fi
+
+# Prompt-injection check (case-insensitive substring match on insight)
+LOWER_INSIGHT=$(printf '%s' "$INSIGHT" | tr 'A-Z' 'a-z')
+for pattern in "ignore previous" "ignore prior" "you are now" "skip checks" "skip validation" "override "; do
+  case "$LOWER_INSIGHT" in
+    *"$pattern"*) echo "rejected: insight contains suspicious pattern '$pattern'" >&2; exit 1 ;;
+  esac
+done
+
+TRUSTED=false
+[ "$SOURCE" = "user-stated" ] && TRUSTED=true
+
+eval "$("$SMRITI_BIN/smriti-slug" 2>/dev/null)" 2>/dev/null
+LEARNINGS_DIR="${SMRITI_HOME:-$HOME/.smriti}/projects/${SLUG:-unknown}"
+mkdir -p "$LEARNINGS_DIR"
+LEARNINGS_FILE="$LEARNINGS_DIR/learnings.jsonl"
+
+TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+if [ -n "$FILES" ]; then
+  FILES_JSON=$(printf '%s' "$FILES" | jq -R -c 'split(",") | map(select(length > 0))')
+  jq -n -c \
+    --arg skill "$SKILL" --arg type "$TYPE" --arg key "$KEY" \
+    --arg insight "$INSIGHT" --argjson confidence "$CONFIDENCE" \
+    --arg source "$SOURCE" --argjson trusted "$TRUSTED" \
+    --arg ts "$TS" --argjson files "$FILES_JSON" \
+    '{skill:$skill, type:$type, key:$key, insight:$insight, confidence:$confidence, source:$source, trusted:$trusted, ts:$ts, files:$files}' \
+    >> "$LEARNINGS_FILE"
+else
+  jq -n -c \
+    --arg skill "$SKILL" --arg type "$TYPE" --arg key "$KEY" \
+    --arg insight "$INSIGHT" --argjson confidence "$CONFIDENCE" \
+    --arg source "$SOURCE" --argjson trusted "$TRUSTED" \
+    --arg ts "$TS" \
+    '{skill:$skill, type:$type, key:$key, insight:$insight, confidence:$confidence, source:$source, trusted:$trusted, ts:$ts}' \
+    >> "$LEARNINGS_FILE"
+fi
+
+echo "logged: $TYPE/$KEY (confidence $CONFIDENCE, source $SOURCE)"

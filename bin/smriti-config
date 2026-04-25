@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# smriti-config — global config get/set.
+# Storage: $SMRITI_HOME/config (flat key=value, sourceable).
+#
+# Known keys:
+#   lean           senior | prototype
+#   codex_default  on | ask | off
+#   proactive      true | false
+#   explain_level  default | terse
+#
+# Usage:
+#   smriti-config get <key>
+#   smriti-config set <key> <value>
+#   smriti-config unset <key>
+#   smriti-config list
+set -e
+
+CONFIG_FILE="${SMRITI_CONFIG:-${SMRITI_HOME:-$HOME/.smriti}/config}"
+mkdir -p "$(dirname "$CONFIG_FILE")"
+[ -f "$CONFIG_FILE" ] || touch "$CONFIG_FILE"
+
+CMD="${1:-list}"
+KEY="${2:-}"
+VAL="${3:-}"
+
+is_known_key() {
+  case "$1" in
+    lean|codex_default|proactive|explain_level) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+case "$CMD" in
+  get)
+    [ -z "$KEY" ] && { echo "usage: smriti-config get <key>" >&2; exit 1; }
+    grep -E "^${KEY}=" "$CONFIG_FILE" | tail -1 | cut -d= -f2-
+    ;;
+  set)
+    [ -z "$KEY" ] || [ -z "$VAL" ] && { echo "usage: smriti-config set <key> <value>" >&2; exit 1; }
+    is_known_key "$KEY" || echo "warning: unknown key '$KEY' (allowed: lean, codex_default, proactive, explain_level)" >&2
+    TMP=$(mktemp)
+    grep -vE "^${KEY}=" "$CONFIG_FILE" > "$TMP" 2>/dev/null || true
+    printf '%s=%s\n' "$KEY" "$VAL" >> "$TMP"
+    mv "$TMP" "$CONFIG_FILE"
+    ;;
+  unset)
+    [ -z "$KEY" ] && { echo "usage: smriti-config unset <key>" >&2; exit 1; }
+    TMP=$(mktemp)
+    grep -vE "^${KEY}=" "$CONFIG_FILE" > "$TMP" 2>/dev/null || true
+    mv "$TMP" "$CONFIG_FILE"
+    ;;
+  list)
+    cat "$CONFIG_FILE"
+    ;;
+  *)
+    echo "usage: smriti-config {get|set|unset|list} [key] [value]" >&2
+    exit 1
+    ;;
+esac
