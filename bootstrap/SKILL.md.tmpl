@@ -1,0 +1,134 @@
+---
+name: bootstrap
+description: |
+  One-time-per-repo init. Captures durable codebase context (business vs side project,
+  target user, lean, tech stack, deploy target, design priority) and writes PROJECT.md
+  at the repo root. Subsequent smriti skills read PROJECT.md for context.
+  Use when starting work on a new project, or when PROJECT.md is missing.
+  Proactively invoke (do NOT answer directly) when the user is in a repo without a
+  PROJECT.md and starts asking design or feature questions, OR when IS_FIRST_TIME=yes
+  from the preamble.
+allowed-tools:
+  - Bash
+  - Read
+  - Write
+  - Edit
+  - Glob
+  - Grep
+  - AskUserQuestion
+---
+
+{{PREAMBLE}}
+
+# /bootstrap — one-time project init
+
+Capture durable codebase context to `PROJECT.md` so every downstream smriti skill (`/office-hours`, `/plan-eng-review`, etc.) starts with the same picture of the project.
+
+## Hard gate
+
+If `PROJECT.md` already exists at the repo root **and** the user did not explicitly pass `--force`, abort immediately with:
+
+> Already bootstrapped. Read `PROJECT.md` for context. Use `/bootstrap --force` to redo.
+
+Do not proceed past this gate. Do not ask any questions.
+
+## Phase 1: Pre-fill from existing signals
+
+Silently read these (do not echo contents to the user):
+
+```bash
+[ -f package.json ] && head -60 package.json
+[ -f pyproject.toml ] && head -40 pyproject.toml
+[ -f Cargo.toml ] && head -30 Cargo.toml
+[ -f go.mod ] && head -10 go.mod
+[ -f README.md ] && head -80 README.md
+git log --oneline -30 2>/dev/null
+git remote get-url origin 2>/dev/null
+ls vercel.json fly.toml railway.toml render.yaml Dockerfile 2>/dev/null
+```
+
+Form a draft picture:
+- **Project name** — from `package.json#name`, `pyproject.toml#project.name`, or the repo's directory name as fallback
+- **Tech stack** — inferred from deps + file extensions + config files
+- **Likely deploy target** — `vercel.json` → Vercel, `fly.toml` → Fly, `railway.toml` → Railway, `Dockerfile` alone → self-hosted, none → not yet
+- **Recency / activity** — number of commits in last 30 days (proxy for how active this is)
+
+Use this draft to pre-fill defaults in Phase 2 — the user should not have to retype things you already know.
+
+## Phase 2: Single bundled AskUserQuestion
+
+Ask **one** AskUserQuestion covering all seven fields. Pre-fill from Phase 1 wherever possible. Mark required vs. optional clearly.
+
+| # | Field | Options |
+|---|-------|---------|
+| 1 | **Project type** | business / side project / open source / learning / client work |
+| 2 | **Target user (one sentence)** | free text |
+| 3 | **Monetization** (only if business) | subscription / one-time / freemium / ads / enterprise / not yet |
+| 4 | **Lean** | `senior` (rigor; exhaustive failure-mode review) OR `prototype` (speed; ship rough) |
+| 5 | **Tech stack** | confirm pre-filled list, edit as needed |
+| 6 | **Deploy target** | Vercel / Fly / Railway / Render / self-hosted / not yet / other |
+| 7 | **Design priority** | high (UI is the product) / medium (UI matters but isn't primary) / low (CLI / lib / backend) |
+
+## Phase 3: Persist
+
+After the user answers:
+
+**3a. Persist `lean` globally** (so `/plan-eng-review` and others can read it):
+
+```bash
+smriti-config set lean <senior|prototype>
+```
+
+**3b. Write `PROJECT.md` to the repo root.** Synthesize the Overview — don't just echo the user's Phase 2 answers verbatim. Write a tight paragraph that captures what this project is, who it's for, and what success looks like.
+
+```markdown
+# Project: <name>
+
+## Overview
+<one or two paragraphs: what this project is, who it's for, what success looks like>
+
+## Users
+<target user from Phase 2, expanded to a few sentences if useful>
+
+## Lean
+**<senior | prototype>.** <one-line rationale: why this lean, what tradeoffs the user accepted>
+
+## Tech Stack
+- <bullet list>
+
+## Deploy
+<deploy target + any specifics>
+
+## Design Priority
+**<high | medium | low>.** <one-line rationale>
+
+## Decisions Log
+- <YYYY-MM-DD> Bootstrapped via /bootstrap.
+```
+
+**3c. Log a project-level architecture learning** at high confidence:
+
+```bash
+smriti-learnings-log \
+  --skill bootstrap \
+  --type architecture \
+  --key project-overview \
+  --insight "<one-sentence summary: what + who + lean>" \
+  --confidence 9 \
+  --source user-stated
+```
+
+## Phase 4: Handoff
+
+- If `design priority = high` AND `DESIGN.md` does NOT exist:
+  > "Bootstrapped. Recommend `/design-consultation` next to lock in your design system before building."
+- Otherwise:
+  > "Bootstrapped. `PROJECT.md` written. Use `/office-hours` to brainstorm a feature, or just describe what you want to build."
+
+## Done
+
+State concisely: *"Bootstrapped. PROJECT.md written. Future skills in this repo will read it for context."*
+
+---
+
+{{LEARNINGS_LOG}}
