@@ -1,0 +1,128 @@
+---
+name: learn
+description: |
+  Manage the project learnings store at ~/.smriti/projects/<slug>/learnings.jsonl.
+  Subcommands: show recent, search <query>, prune (interactive cleanup of stale or
+  contradictory entries), export (markdown), stats, add (manual entry).
+  Use when curating what smriti has learned about this codebase, or when checking
+  what context smriti will surface in future sessions.
+allowed-tools:
+  - Bash
+  - Read
+  - Write
+  - Edit
+  - AskUserQuestion
+---
+
+{{PREAMBLE}}
+
+# /learn — manage the learnings store
+
+Operates on `~/.smriti/projects/$SLUG/learnings.jsonl` (per-project, append-only). Read-time dedup picks the latest entry per `(key, type)`. Confidence decays for `observed`/`inferred` entries (1pt per 30 days); `user-stated` never decays.
+
+## Detect subcommand
+
+Parse the user's input after `/learn`:
+
+| Input | Mode |
+|-------|------|
+| (empty) | show recent |
+| `search <query>` | search |
+| `prune` | prune |
+| `export` | export |
+| `stats` | stats |
+| `add` | add |
+
+If the input doesn't match, default to **show recent**.
+
+## Mode: show recent
+
+```bash
+smriti-learnings-search --limit 20 --format text
+```
+
+Format the output to the user as a grouped list by `type` (pattern, pitfall, preference, architecture, tool, operational). For each entry: `[key] insight (confidence N, source)`.
+
+If empty: *"No learnings yet. Run any smriti skill to start accumulating, or use `/learn add` to manually add one."*
+
+## Mode: search
+
+```bash
+smriti-learnings-search --query "<user query>" --limit 20 --format text
+```
+
+Same format as **show recent**. If no matches: *"No learnings match `<query>`."*
+
+## Mode: prune
+
+Goal: drop stale (referenced files no longer exist) or contradictory (same key+type, conflicting insight) entries.
+
+1. Dump everything as JSONL:
+   ```bash
+   smriti-learnings-search --limit 1000 > /tmp/smriti-learn-prune.jsonl
+   ```
+2. Walk the entries:
+   - **Stale check:** if `files` is non-empty, check each path with `[ -f <path> ]`; if all files are missing, mark stale.
+   - **Contradiction check:** group by `(key, type)`; if any group has multiple distinct `insight` values that survived dedup, flag.
+3. For each flagged entry, ask via AskUserQuestion: **remove / keep / update**.
+4. To remove, append a tombstone (read-time dedup hides the original):
+   ```bash
+   smriti-learnings-log --skill learn --type <type> --key <key> \
+     --insight "[REMOVED via /learn prune]" \
+     --confidence 1 --source user-stated
+   ```
+   *(`smriti-learnings-search` filters out entries whose insight starts with `[REMOVED`.)*
+5. To update: ask for new insight via free-text AskUserQuestion, then `smriti-learnings-log` with the same key+type and the new insight.
+
+## Mode: export
+
+1. Dump:
+   ```bash
+   smriti-learnings-search --limit 1000 > /tmp/smriti-learn-export.jsonl
+   ```
+2. Format as markdown, one section per `type` (## Patterns, ## Pitfalls, etc.). Within each section, list entries as: `- **[key]** insight (confidence N, source)`.
+3. Ask via AskUserQuestion: append to `CLAUDE.md` / save to `LEARNINGS.md` at repo root / print to terminal only / abort.
+
+## Mode: stats
+
+Compute and display a small table:
+- Total entries (raw count)
+- Unique post-dedup
+- Breakdown by type
+- Breakdown by source
+- Mean confidence (post-decay)
+
+```bash
+smriti-learnings-search --limit 100000 | jq -s '
+  {
+    total: length,
+    by_type: (group_by(.type) | map({type: .[0].type, count: length}) | from_entries),
+    by_source: (group_by(.source) | map({source: .[0].source, count: length}) | from_entries),
+    mean_confidence: ((map(.confidence) | add) / length)
+  }'
+```
+
+## Mode: add
+
+AskUserQuestion gathering:
+- **type** — pattern / pitfall / preference / architecture / tool / operational
+- **key** — kebab-case identifier (validated against `^[a-zA-Z0-9_-]+$`)
+- **insight** — one sentence
+- **confidence** — 1-10
+- **files** (optional) — comma-separated list
+
+Then:
+
+```bash
+smriti-learnings-log --skill learn \
+  --type "$TYPE" --key "$KEY" \
+  --insight "$INSIGHT" --confidence "$CONFIDENCE" \
+  --source user-stated \
+  ${FILES:+--files "$FILES"}
+```
+
+Echo confirmation back: *"Logged: [type/key] insight (confidence N, user-stated)"*.
+
+---
+
+{{LEARNINGS_LOG}}
