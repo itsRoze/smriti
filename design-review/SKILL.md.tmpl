@@ -1,0 +1,214 @@
+---
+name: design-review
+description: |
+  Static (code-level) design audit. Reads changed UI files in the diff, checks against
+  DESIGN.md tokens, flags drift and AI-slop patterns in code. v1 has NO live screenshots
+  — that's deferred to v2 alongside browser support. Auto-fixes mechanical drift (token
+  swaps); asks user judgment on hierarchy/layout calls. Commits fixes atomically with
+  the prefix "style(design):".
+  Use after implementing a UI feature, alongside /eng-review, before /create-pr.
+  Honest scope: this catches "code violates DESIGN.md", not "this looks bad rendered."
+allowed-tools:
+  - Bash
+  - Read
+  - Edit
+  - Glob
+  - Grep
+  - AskUserQuestion
+---
+
+{{PREAMBLE}}
+
+# /design-review — code-level design audit (v1, no browser)
+
+Static analysis of UI files in the current diff against `DESIGN.md`. v1 catches drift, hard-rule violations, and consistency problems in the code. It **cannot** catch "this looks bad rendered" — that requires the browser, deferred to v2.
+
+State this scope to the user up front so they're not surprised:
+
+> *Static design review only — I can't see the rendered page. For a live audit (screenshots, console errors, responsive checks), wait for v2 of `/design-review` (post-browser) or eyeball the result yourself.*
+
+## Phase 0: Pre-flight
+
+```bash
+{{BASE_BRANCH_DETECT}}
+CURRENT=$(git branch --show-current)
+[ "$CURRENT" = "$BASE_BRANCH" ] && { echo "/design-review: on $BASE_BRANCH; nothing to review."; exit 0; }
+
+# Detect UI files in the diff
+UI_FILES=$(git diff "origin/$BASE_BRANCH" --name-only \
+  | grep -E '\.(tsx|jsx|svelte|vue|astro|css|scss|sass|less|html)$|tailwind\.config\.|globals\.css' \
+  | sort -u)
+
+if [ -z "$UI_FILES" ]; then
+  echo "/design-review: no UI files in diff. Skipping."
+  exit 0
+fi
+
+echo "UI files in diff:"
+echo "$UI_FILES" | sed 's/^/  /'
+```
+
+## Phase 1: Read DESIGN.md (graceful when absent)
+
+```bash
+if [ -f DESIGN.md ]; then
+  echo "Reading DESIGN.md as source of truth."
+  cat DESIGN.md
+else
+  echo "WARN: DESIGN.md missing. Audit will degrade to AI-slop check only — no token-drift or system-alignment check."
+  echo "Recommend running /design-consultation to lock in a system."
+fi
+```
+
+If `DESIGN.md` exists, parse out the tokens (palette hex values, type scale, spacing scale, font stacks). Use them in Phase 2 to detect drift.
+
+## Phase 2: Audit passes
+
+Run these in order. For each finding, capture:
+- **File:line**
+- **Category** (token-drift / ai-slop / hierarchy / consistency)
+- **Severity** (high / medium / polish)
+- **Problem** — one line
+- **Fix** — one line + the patch if mechanical
+
+### Pass A: Token drift (only if DESIGN.md exists)
+
+For each UI file in the diff, check:
+
+- **Color** — any hex value not in the palette? Any `rgb(...)` literal? Any Tailwind arbitrary value like `bg-[#3a3a3a]` when a token exists?
+- **Typography** — `font-family` declarations or Tailwind `font-*` arbitraries pointing at fonts not in DESIGN.md's stack
+- **Spacing** — `mb-[17px]`, `padding: 13px`, etc. — any value not on the documented scale
+- **Type scale** — `text-[19px]` or other arbitrary sizes when a documented size would do
+
+For each: **AUTO-FIX** the swap (drop in the token / scale value), since this is mechanical.
+
+### Pass B: AI slop in code
+
+{{DESIGN_HARD_RULES}}
+
+Specific code patterns to grep for:
+- `bg-gradient-to-(r|br|tr) from-purple` / `from-violet` / `from-pink-500 to-purple`
+- `grid-cols-3` immediately after a hero `<section>` (the 3-column-feature-grid trope)
+- `text-center` applied at section / page level (not just isolated text elements)
+- `flex items-center justify-center` more than 5× in the diff (overuse signal)
+- "Powered by AI" badges with sparkle / wand emojis
+- Glassmorphism class combos (`backdrop-blur-*` + `bg-white/10`) on every surface
+- Stat-counter components with no source of stats
+
+For each finding, **don't auto-fix**. These are taste calls — propose a grounded alternative referencing DESIGN.md tokens via AskUserQuestion.
+
+### Pass C: Hierarchy violations
+
+- **Multiple `text-4xl` / `text-5xl` / `<h1>` on one screen** — should be one max
+- **Skipped heading levels** — `<h1>` then `<h3>` with no `<h2>`
+- **Multiple primary buttons on one screen** — should be one (look for `bg-primary` / `variant="primary"` count per route)
+
+For each: **ASK**. These are intentional sometimes (e.g., a stats page deliberately uses big numbers). Propose the fix via AskUserQuestion.
+
+### Pass D: Token consistency
+
+Within the diff, find the same value expressed two ways:
+- A color used as raw hex AND as a token (`#1F2937` and `text-gray-800`)
+- A spacing value as a token AND as an arbitrary (`mb-4` and `mb-[16px]`)
+- A font-size used both ways
+
+Each pair is a finding. **AUTO-FIX** to the token form.
+
+## Phase 3: Triage
+
+Sort findings by impact:
+
+| Impact | Bucket |
+|--------|--------|
+| **High** | Token drift breaks the design system; multiple primaries; AI-slop hard-rule violations |
+| **Medium** | Inconsistencies; hierarchy issues |
+| **Polish** | Minor token redundancies |
+
+Display the count by bucket so the user sees the surface area:
+
+```
+/design-review: <total> findings
+  high:   <N> (<auto-fixable> auto-fixable)
+  medium: <N>
+  polish: <N>
+```
+
+## Phase 4: Fix loop
+
+For each finding **in impact order** (high → medium → polish):
+
+- **AUTO-FIX**: apply the Edit silently, then commit atomically:
+
+  ```bash
+  git add <files>
+  git commit -m "style(design): <category> — <one-line description>
+
+{{CO_AUTHOR_TRAILER}}"
+  ```
+
+- **ASK**: issue one AskUserQuestion. Options should be concrete (the proposed fix, an alternative, "leave as-is"). Apply the user's choice, commit atomically with the same `style(design):` prefix.
+
+**Atomic commits matter** — they let `/create-pr` group cleanly and let you `git revert` an individual fix if it causes regression.
+
+## Phase 5: Report
+
+Write to `~/.smriti/projects/$SLUG/design-audit-<datetime>.md`:
+
+```markdown
+# Design audit — <YYYY-MM-DD HH:MM>
+
+Branch: <branch>
+DESIGN.md: <yes/no>
+UI files reviewed: <count>
+
+## Summary
+- High:   <N> (<auto-fixed>/<asked>/<deferred>)
+- Medium: <N> (<auto-fixed>/<asked>/<deferred>)
+- Polish: <N> (<auto-fixed>/<asked>/<deferred>)
+
+## Findings
+<one section per finding with file:line, category, what was done>
+
+## Deferred
+<findings the user explicitly skipped — added to TODOS.md>
+```
+
+Also append a JSONL entry to `~/.smriti/projects/$SLUG/reviews.jsonl`:
+
+```bash
+TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+jq -n -c \
+  --arg skill "design-review" --arg ts "$TS" --arg branch "$BRANCH" \
+  --argjson high <count> --argjson medium <count> --argjson polish <count> \
+  --argjson auto_fixed <count> --argjson asked <count> --argjson deferred <count> \
+  --argjson has_design_md <true|false> --argjson ui_files <count> \
+  '{skill:$skill,ts:$ts,branch:$branch,high:$high,medium:$medium,polish:$polish,auto_fixed:$auto_fixed,asked:$asked,deferred:$deferred,has_design_md:$has_design_md,ui_files:$ui_files}' \
+  >> "$HOME/.smriti/projects/$SLUG/reviews.jsonl"
+```
+
+## Phase 6: TODOS.md update
+
+For deferred findings, add entries to `TODOS.md`:
+
+```markdown
+- [ ] design: <file:line> — <problem> (deferred from /design-review <date>)
+```
+
+## Phase 7: Handoff
+
+```
+/design-review (static v1): <total> findings, <auto-fixed> auto-fixed, <asked> resolved with input, <deferred> deferred to TODOS.md.
+
+Next: /create-pr will commit + open the PR (your atomic style(design): commits are already in history).
+
+Note: this was a static audit — I read code, not pixels. For a live render audit, wait for /design-review v2 (browser-enabled).
+```
+
+---
+
+{{LEARNINGS_LOG}}
+
+Prefer keys like:
+- `pattern-tailwind-token-misuse` — recurring drift shapes
+- `pitfall-design-<category>` — slop patterns this codebase keeps producing
+- `pref-token-<area>` — taste signal from how the user resolved a finding
