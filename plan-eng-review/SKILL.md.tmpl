@@ -1,0 +1,201 @@
+---
+name: plan-eng-review
+description: |
+  Pre-implementation architecture review of a design doc / plan. Walks 4 ordered
+  sections (Architecture, Code Quality, Tests, Performance) plus a Step 0 scope
+  challenge. Honors LEAN (senior vs prototype). Issues one AskUserQuestion per
+  finding (never batched). Auto-offers Codex plan review.
+  Use AFTER /office-hours has produced a design doc, BEFORE implementation begins.
+  Run `/plan-eng-review` to lock in architecture before you write code.
+allowed-tools:
+  - Bash
+  - Read
+  - Edit
+  - Glob
+  - Grep
+  - AskUserQuestion
+---
+
+{{PREAMBLE}}
+
+# /plan-eng-review — pre-implementation architecture lock-in
+
+Walk the design doc through four ordered review sections. Surface hidden assumptions. Issue **one AskUserQuestion per finding** — never batch. Append a "Engineering Review Decisions" section to the design doc capturing resolutions.
+
+## Inputs
+
+```bash
+# Most recent design doc on this branch (from /office-hours)
+DESIGN_DOC=$(ls -t "${SMRITI_HOME:-$HOME/.smriti}/projects/$SLUG/"*-"$BRANCH"-design-*.md 2>/dev/null | head -1)
+
+if [ -z "$DESIGN_DOC" ]; then
+  echo "/plan-eng-review: no design doc found for branch '$BRANCH'."
+  echo "Run /office-hours first to produce one, or pass a path: /plan-eng-review <path>"
+  exit 0
+fi
+```
+
+If `PROJECT.md` exists, read it (especially the **Lean** section). The `LEAN` var from preamble drives review depth:
+
+- `LEAN=senior` → walk every section thoroughly; insist on failure-mode coverage; recommend the high-completeness option
+- `LEAN=prototype` → skip exhaustive failure-mode analysis in Section 2; bias toward shippable; only flag bugs that will bite within the prototype's scope
+
+Load relevant prior learnings:
+
+{{LEARNINGS_SEARCH}}
+
+## Hard rule: one AskUserQuestion per finding
+
+Never batch findings. Each issue you raise gets its own AskUserQuestion. The user sees one decision at a time, decides, then sees the next. This is non-negotiable — batching destroys the quality of the review.
+
+## Step 0: Scope challenge
+
+Before any section review, ask the four scope questions:
+
+1. **What already exists** that partially solves this? (Grep / Read what's relevant.) Could we extend rather than build?
+2. **What's the minimum diff** that achieves the user's actual goal (not the literal feature ask)?
+3. **Complexity smell** — does the plan introduce 8+ new files OR 2+ new classes? If yes, surface it: *"This adds {N} files / {M} classes. Is the simpler version still on the table?"*
+4. **Distribution check** — if the plan introduces a new artifact (CLI binary, library, app, public API), is the distribution path real? (Where does it install? Who finds it? Is the CI/CD release pipeline in place?)
+
+Each scope question gets its own AskUserQuestion if it surfaces a real concern. If everything's fine, say *"Scope check passed."* and move on — don't ask just to ask.
+
+## Section 1: Architecture
+
+Walk the plan's architecture. Flag:
+
+- **Components & dependencies** — what new modules; what they depend on; whether the dependency graph stays acyclic
+- **Data flow** — where state lives; how it moves; what's persisted vs ephemeral
+- **Bottlenecks** — the single point everything routes through; the single DB call all reads block on
+- **Scaling** — at 10×, 100×, 1000× current load, what breaks first?
+- **Security** — auth boundaries, data exposure, who can call what
+- **Failure modes** — when X errors, what's the user experience? When Y is unavailable, does the system degrade gracefully?
+- **ASCII diagrams** — for any non-trivial component layout, sketch it inline. Reading code-level prose ≠ understanding the shape.
+
+For each finding, issue **one AskUserQuestion** with options that resolve it. Use the rubric:
+
+{{COMPLETENESS_RUBRIC}}
+
+Stop after each finding for the user's answer. Don't preview later findings.
+
+## Section 2: Code quality
+
+Walk:
+
+- **Organization** — does this fit existing module structure, or is it inventing parallel hierarchies?
+- **DRY violations** — is the plan duplicating logic already in the codebase? (Read existing modules — don't just grep names.)
+- **Error handling** — what's the strategy? Bare exceptions? Result types? Per-operation `try/catch` blocks?
+- **Edge cases** — empty input, null, max-size, concurrent access, network failure during operation
+- **Over-engineering** — premature abstractions, factories that wrap one concrete, base classes with one subclass
+- **Under-engineering** — happy-path-only logic, missing input validation at the system boundary
+
+If `LEAN=prototype`: skip the failure-mode subsection. Just flag bugs that will bite within the prototype's lifetime.
+
+One AskUserQuestion per finding.
+
+## Section 3: Test review
+
+Walk:
+
+- **Coverage diagram** — sketch the testing surface: which inputs map to which expected outputs? Where are the gaps?
+- **LLM / prompt changes** — if the diff touches a prompt, the eval suite (if any) needs to run. Flag.
+- **Failure-mode tests** — for each error path the plan introduces, is there a test that exercises it?
+- **Regression tests** — does the plan reuse code paths that have known bugs? (Grep `eng-review/checklist.md` categories against the touched files.)
+
+For coverage-based options, attach `Completeness: N/10`. For kind-based options (e.g., "unit + integration" vs "integration only" vs "manual QA only"), skip scoring and add the *"options differ in kind"* note.
+
+## Section 4: Performance
+
+Walk:
+
+- **N+1 queries** — any loop that fires per-row queries
+- **Memory** — anything loaded fully into memory that should stream
+- **Caching** — what's recomputed on every request that could be cached safely
+- **Slow paths** — anything synchronously blocking the request thread
+
+`LEAN=prototype`: only flag perf issues that will affect the demo / current usage. Skip "but at 10K users" hypotheticals.
+
+One AskUserQuestion per finding.
+
+## Step 4.6: Codex plan review (auto-offered)
+
+{{CODEX_SECOND_OPINION}}
+
+Give Codex the design doc + your section-by-section findings + the user's decisions. Ask Codex: *"What did this miss? Is the architecture actually right? What forcing question wasn't asked?"*
+
+Render Codex output verbatim. If Codex disagrees, surface the disagreement and let the user decide.
+
+## Phase: Persist
+
+Append a section to the design doc:
+
+```markdown
+## Engineering Review Decisions
+
+Reviewed <YYYY-MM-DD> via `/plan-eng-review`. Lean: <senior|prototype>.
+
+### Scope
+- <decision per scope question>
+
+### Architecture
+- <finding> → <decision> (Completeness <N/10> if applicable)
+
+### Code Quality
+- <finding> → <decision>
+
+### Tests
+- <finding> → <decision>
+
+### Performance
+- <finding> → <decision>
+
+### Cross-model perspective
+<Codex output verbatim, or "Not run.">
+
+### Open issues
+- <anything still unresolved that needs more thinking>
+```
+
+Also write a JSONL entry to `~/.smriti/projects/$SLUG/reviews.jsonl`:
+
+```bash
+TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+jq -n -c \
+  --arg skill "plan-eng-review" \
+  --arg ts "$TS" \
+  --arg branch "$BRANCH" \
+  --arg lean "$LEAN" \
+  --argjson scope_findings <count> \
+  --argjson arch_findings <count> \
+  --argjson quality_findings <count> \
+  --argjson test_findings <count> \
+  --argjson perf_findings <count> \
+  --argjson codex_ran <true|false> \
+  '{skill:$skill,ts:$ts,branch:$branch,lean:$lean,findings:{scope:$scope_findings,architecture:$arch_findings,quality:$quality_findings,tests:$test_findings,performance:$perf_findings},codex_ran:$codex_ran}' \
+  >> "$HOME/.smriti/projects/$SLUG/reviews.jsonl"
+```
+
+## Phase: Handoff
+
+End with:
+
+```
+/plan-eng-review: complete. <N> decisions captured in <design-doc>.
+
+Open issues: <count>. <if zero, "Plan is implementation-ready.">
+
+Next steps:
+- Implementation: write the code per the locked plan.
+- After implementing: run /eng-review to catch the bugs.
+- After review passes: run /create-pr to ship.
+```
+
+If there are unresolved open issues from the review, recommend NOT starting implementation until they're closed. *"You have 2 unresolved architecture decisions. Resolve those before writing code."*
+
+---
+
+{{LEARNINGS_LOG}}
+
+When logging from this skill, prefer keys like:
+- `arch-<area>` for architecture decisions worth remembering across features
+- `pitfall-plan-<topic>` for plan-stage traps you'll fall into again
+- `pattern-<area>` for recurring shape of how this codebase wants things done
