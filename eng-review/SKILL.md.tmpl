@@ -1,0 +1,183 @@
+---
+name: eng-review
+description: |
+  Post-implementation diff review. Reads the eng-review checklist and applies it to
+  the current branch's diff against origin/<base>. Catches bugs that pass CI but
+  blow up in prod. Auto-fixes obvious mechanical findings; asks user judgment on
+  critical ones. Records findings to ~/.smriti/projects/<slug>/reviews.jsonl.
+  Use when you've finished implementing a change and want a staff-engineer pass
+  before /create-pr.
+  Proactively invoke when the user asks to "review my changes", "check this diff",
+  "is this PR ready", or similar. Don't run on the base branch — it's a no-op.
+allowed-tools:
+  - Bash
+  - Read
+  - Edit
+  - Write
+  - Glob
+  - Grep
+  - AskUserQuestion
+---
+
+{{PREAMBLE}}
+
+# /eng-review — staff-engineer code review
+
+Apply the eng-review checklist to the diff. Auto-fix mechanical findings. Surface critical ones for user judgment. Persist results so `/create-pr` can read them.
+
+## Phase 0: Pre-flight
+
+```bash
+{{BASE_BRANCH_DETECT}}
+CURRENT=$(git branch --show-current)
+if [ "$CURRENT" = "$BASE_BRANCH" ]; then
+  echo "/eng-review: on $BASE_BRANCH; nothing to review. Switch to a feature branch."
+  exit 0
+fi
+
+# Diff stats
+DIFF_LINES=$(git diff "origin/$BASE_BRANCH" --shortstat 2>/dev/null | grep -oE '[0-9]+ insertion' | awk '{print $1}')
+DIFF_LINES="${DIFF_LINES:-0}"
+DIFF_FILES=$(git diff "origin/$BASE_BRANCH" --name-only | wc -l | tr -d ' ')
+echo "Diff: $DIFF_FILES files, ~$DIFF_LINES insertions"
+```
+
+If the diff is empty, exit: *"No changes vs origin/$BASE_BRANCH. Nothing to review."*
+
+## Phase 1: Read the checklist (required)
+
+```bash
+CHECKLIST="$HOME/.claude/skills/smriti/eng-review/checklist.md"
+[ ! -f "$CHECKLIST" ] && CHECKLIST="$HOME/.claude/skills/eng-review/checklist.md"
+[ ! -f "$CHECKLIST" ] && { echo "/eng-review: checklist.md missing — reinstall smriti."; exit 1; }
+cat "$CHECKLIST"
+```
+
+This is a **hard requirement.** If `checklist.md` is missing, abort.
+
+## Phase 2: Get the diff
+
+```bash
+git diff "origin/$BASE_BRANCH"
+```
+
+For diffs > 1000 lines, also pull the file list and review file-by-file rather than as one monolithic diff:
+
+```bash
+git diff "origin/$BASE_BRANCH" --name-only
+```
+
+## Phase 3: Apply the checklist
+
+Walk **Pass 1 (CRITICAL)** first: SQL safety, race conditions, LLM trust boundary, shell injection, enum completeness, secret leakage, unhandled errors.
+
+Then **Pass 2 (INFORMATIONAL)**: validation at boundaries, N+1, indexes, async/sync, prompt issues, type coercion, completeness gaps, doc staleness.
+
+For each finding, capture:
+- **File:line**
+- **Category** (e.g., "SQL safety", "Enum completeness")
+- **Severity** (`critical` | `informational`)
+- **Confidence** (`verified` | `likely` | `speculative`)
+- **Problem** — one line
+- **Fix** — one line (or a code patch if straightforward)
+
+**Confidence calibration is mandatory.** If you haven't traced every caller, say so. Don't fabricate certainty.
+
+Apply the checklist's **"Skip when:"** suppressions before flagging. False positives erode trust faster than missed bugs.
+
+### Specialist dispatch (optional, large diffs only)
+
+If `DIFF_LINES > 500`, dispatch up to three subagents **in parallel** (one tool call with multiple Agent invocations):
+
+- **Testing specialist** — coverage gaps, missing failure-mode tests, brittle tests
+- **Security specialist** — focused OWASP-style sweep beyond the checklist's secret/SQL/shell categories
+- **Architecture specialist** — module boundaries, coupling, abstractions that earn their keep
+
+Each subagent runs against the full diff and returns findings in the same format. Merge with your own findings; deduplicate.
+
+Skip Design — that's `/design-review`'s job.
+
+## Phase 4: Fix-First classification
+
+For each finding, classify:
+
+- **`AUTO-FIX`** — mechanical, safe, unambiguous. Examples: parameterizing a SQL query, adding a missing `await`, renaming a var that shadowed an import, swapping `==` for `===`. Apply silently via `Edit`. Surface count at the end (*"Auto-fixed 4 findings."*).
+- **`ASK`** — judgment required. Examples: deciding whether to add an index (cost / benefit unclear), whether a missing test is worth writing now or later, whether to escape an enum-completeness gap as out-of-scope. Batch into a single AskUserQuestion (one prompt, multi-select) if **3 or fewer**; otherwise issue one AskUserQuestion per finding.
+
+**Auto-fix changes are uncommitted.** The user runs `/create-pr` to commit them with the rest of their work.
+
+## Phase 5: Cross-reference TODOS.md
+
+```bash
+[ -f TODOS.md ] && cat TODOS.md
+```
+
+For each TODO:
+- If the diff completes it → propose marking it done.
+- If the diff *partially* addresses it → propose updating with what's still left.
+
+For deferred eng-review findings (user said "skip this for now"), add them to `TODOS.md` so they don't get lost.
+
+## Phase 6: Documentation staleness
+
+For each changed public-API surface (exported function, CLI flag, env var, route), grep `README.md`, `PROJECT.md`, `DESIGN.md`, `CLAUDE.md` for references to its old form. Flag any drift.
+
+## Phase 7: Codex cross-check (large diffs or codex_default=on)
+
+{{CODEX_SECOND_OPINION}}
+
+Run Codex when `DIFF_LINES > 1000` OR `CODEX_DEFAULT=on`. Compare findings:
+
+> *"Both Claude and Codex flagged: A, B."*
+> *"Only Claude flagged: C, D."*
+> *"Only Codex flagged: E."*
+> *"Agreement rate: 60%."*
+
+When findings disagree, surface the disagreement explicitly and let the user decide.
+
+## Phase 8: Persist
+
+Write a JSONL entry to `~/.smriti/projects/$SLUG/reviews.jsonl`:
+
+```bash
+TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+mkdir -p "$HOME/.smriti/projects/$SLUG"
+cat <<EOF >> "$HOME/.smriti/projects/$SLUG/reviews.jsonl"
+{"skill":"eng-review","ts":"$TS","branch":"$BRANCH","diff_files":$DIFF_FILES,"diff_lines":$DIFF_LINES,"critical":<count>,"informational":<count>,"auto_fixed":<count>,"asked":<count>,"deferred":<count>}
+EOF
+```
+
+(Construct the JSON with `jq -n` to escape values safely if you use any free-form strings.)
+
+## Phase 9: Summary
+
+End with:
+
+```
+/eng-review: <total> findings (<critical> critical, <info> informational)
+
+AUTO-FIXED:
+- [file:line] Problem → fix applied
+
+NEEDS INPUT (resolved this session):
+- [file:line] Problem → user choice
+
+DEFERRED (added to TODOS.md):
+- [file:line] Problem
+
+Confidence: <X>% verified, <Y>% likely, <Z>% speculative.
+Codex: <ran|skipped>. Agreement: <pct or n/a>.
+
+Run /create-pr to commit + open PR.
+```
+
+If clean: `/eng-review: no issues found.`
+
+---
+
+{{LEARNINGS_LOG}}
+
+When logging learnings from this skill, prefer keys like:
+- `pitfall-<category>` for traps that came up (e.g., `pitfall-prisma-n-plus-one`)
+- `pattern-<area>` for recurring shape (e.g., `pattern-prefer-zod-at-boundaries`)
+- `tool-<name>` for tooling quirks (e.g., `tool-codex-flagged-but-claude-missed`)
