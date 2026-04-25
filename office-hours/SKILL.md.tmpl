@@ -1,0 +1,257 @@
+---
+name: office-hours
+description: |
+  Feature ideation entry point. Pushes back on framing, generates 2–3 alternatives with
+  effort estimates (human time + Claude time) and completeness scores, recommends one,
+  and auto-offers an independent Codex second opinion. Writes a design doc to
+  ~/.smriti/projects/<slug>/<branch>-design-<datetime>.md.
+  Use when the user says "brainstorm this", "I have an idea", "help me think through
+  this", "office hours", or "is this worth building".
+  Proactively invoke (do NOT answer directly) when the user describes a new feature,
+  asks whether something is worth building, or wants to think through design decisions
+  for something that does not yet exist as code.
+  Use BEFORE /plan-eng-review or /plan-design-review.
+allowed-tools:
+  - Bash
+  - Read
+  - Write
+  - Edit
+  - Glob
+  - Grep
+  - WebSearch
+  - AskUserQuestion
+---
+
+{{PREAMBLE}}
+
+# /office-hours — feature ideation
+
+Push back on the framing before any code is written. Generate 2–3 alternatives with effort estimates and completeness scores. Recommend one. Auto-offer a Codex second opinion. Save a design doc that downstream skills (`/plan-eng-review`, `/plan-design-review`) read.
+
+## Hard gate
+
+Do NOT:
+- Write any code
+- Scaffold any project structure
+- Invoke `/plan-eng-review`, `/create-pr`, or any implementation skill
+- Make commits
+
+Your only output is the design doc + the conversation that produced it.
+
+## Phase 1: Context gathering
+
+Silently read (do not echo to the user):
+
+```bash
+[ -f PROJECT.md ] && cat PROJECT.md
+[ -f DESIGN.md ] && head -60 DESIGN.md
+[ -f TODOS.md ] && cat TODOS.md
+git log --oneline -30 2>/dev/null
+git diff origin/main --stat 2>/dev/null || git diff origin/master --stat 2>/dev/null
+```
+
+Load relevant prior learnings:
+
+{{LEARNINGS_SEARCH}}
+
+**Check for prior design docs on this branch:**
+
+```bash
+ls -t "${SMRITI_HOME:-$HOME/.smriti}/projects/$SLUG/"*-"$BRANCH"-design-*.md 2>/dev/null
+```
+
+If any exist, list their titles + dates back to the user:
+> *"Prior designs for this branch:*
+> - *2026-04-22 — Daily briefing app (superseded)*
+> - *2026-04-19 — Calendar sync MVP*
+>
+> *I'll supersede the most recent one if we ship a new design today, unless you want to start fresh."*
+
+If `PROJECT.md` is missing, **stop** and recommend `/bootstrap` first. Don't proceed without it.
+
+## Phase 2: Goal mode (single AskUserQuestion)
+
+Ask: *"Before we dig in — what's the goal here?"*
+
+Options:
+
+| Option | Mode |
+|--------|------|
+| **Build for users** — real product for real people | `users` |
+| **Learn** — I want to understand X by building it | `learn` |
+| **Prototype / demo** — time-boxed; need to impress someone | `prototype` |
+| **Intrapreneur** — internal project at work, ship fast | `intrapreneur` |
+| **Explore** — playful, no pressure | `explore` |
+
+The mode determines which forcing questions you ask in Phase 3 and how aggressive the recommendation is. Persist the chosen mode in the design doc.
+
+## Phase 3: Forcing questions (one per question, never batched)
+
+Pick **4–5** of the questions below based on mode. Issue them as **separate** AskUserQuestion calls — one question, then wait, then the next. Never batch.
+
+### Mode: users
+1. **Demand reality** — *"What evidence do you have that someone wants this enough to switch from what they're using now?"*
+2. **Status quo** — *"What are people using today? Why does that suck for them?"*
+3. **Narrowest wedge** — *"What's the smallest possible version of this that's still valuable to ship tomorrow?"*
+4. **Observation** — *"What did you notice that started this idea? Was it a real moment, or speculation?"*
+5. **Future-fit** — *"Is this defensible in six months when five other AI tools can do the same thing?"*
+
+### Mode: learn
+1. *"What do you want to learn from building this?"*
+2. *"What's the minimum implementation that exercises that learning?"*
+3. *"How will you know you actually learned it?"*
+4. *"Is there an existing tutorial / repo that already teaches this — or is the build the lesson?"*
+
+### Mode: prototype
+1. *"Who's the audience for the demo? What do they need to see?"*
+2. *"What's the wow moment? What's the one thing they'll remember?"*
+3. *"What can you fake without losing the wow?"*
+4. *"What happens after the demo lands? Do you keep building, or does this die?"*
+
+### Mode: intrapreneur
+1. *"Who's the stakeholder? What do they need to believe to greenlight this?"*
+2. *"What's the political risk of shipping versus not shipping?"*
+3. *"What's the smallest thing that proves the value to the stakeholder?"*
+4. *"How does this interact with the existing roadmap / team — is it net-additive or stepping on toes?"*
+
+### Mode: explore
+1. *"What's interesting to you about this?"*
+2. *"What's the most playful version of this?"*
+3. *"Is there a 10× version that's actually worth chasing — or is this fine as a small thing?"*
+4. *"Who, if anyone, do you want to show this to when it's done?"*
+
+## Phase 4: Premise challenge
+
+Synthesize what you've heard and **push back** on at least one premise. Be direct. Examples:
+
+- *"You said X, but Y in PROJECT.md contradicts that. Which is real?"*
+- *"You're building this to solve A, but the symptom you described sounds more like B. Is the framing right?"*
+- *"You assumed users want X — what would change your mind? What evidence would you accept that you're wrong?"*
+
+If the user is shipping a **new artifact** (CLI binary, library, app, service) — confirm a distribution plan exists:
+- How will users find it?
+- Where does it run?
+- What's the install / onboarding path?
+
+If no distribution plan, surface that as a premise to challenge.
+
+## Phase 5: Alternatives with effort + completeness
+
+Generate **2–3 approaches**. Always include:
+
+1. **Minimal viable** — narrowest wedge that ships in days, not weeks
+2. **Ideal architecture** — what you'd build if you had two months and senior eng review
+3. **Lateral / creative** (optional, only when worth it) — a non-obvious reframing
+
+For each, output this exact format:
+
+```
+## Option N: <short name>
+
+**Approach:** <2-3 sentences>
+
+**Effort:**
+- Human: ~Xh (no AI assist)
+- Claude Code: ~Ymin (with smriti pipeline)
+
+**Completeness:** N/10
+
+**Tradeoffs:**
+- ✓ <upside>
+- ✗ <downside>
+```
+
+Apply the rubric:
+
+{{COMPLETENESS_RUBRIC}}
+
+End with an explicit recommendation:
+
+> **Recommendation:** Option N because <one or two sentences tying it back to the user's mode + their answers in Phase 3>.
+
+If `LEAN=prototype`, bias toward Option 1. If `LEAN=senior`, give honest weight to Option 2 even when it's expensive.
+
+## Phase 6: Codex second opinion (auto-offered)
+
+{{CODEX_SECOND_OPINION}}
+
+When you run Codex, give it the design context (the user's mode, forcing-question answers, your three options, your recommendation) and ask it for an independent take: *"Did you miss anything? Is the recommendation actually right? What would you have asked that wasn't asked?"*
+
+## Phase 7: Write design doc
+
+**File path:**
+```bash
+TS=$(date -u +%Y-%m-%dT%H-%M-%SZ)
+DESIGN_DIR="${SMRITI_HOME:-$HOME/.smriti}/projects/$SLUG"
+mkdir -p "$DESIGN_DIR"
+DESIGN_FILE="$DESIGN_DIR/$BRANCH-design-$TS.md"
+```
+
+**Template:**
+
+```markdown
+# Design: <one-line title>
+
+- **Slug:** <slug>
+- **Branch:** <branch>
+- **Date:** <YYYY-MM-DD>
+- **Mode:** <users | learn | prototype | intrapreneur | explore>
+- **Lean:** <senior | prototype>
+- **Supersedes:** <previous-design-filename or none>
+
+## Problem
+<one or two paragraphs>
+
+## What the user said
+<concise summary of forcing-question answers — not a transcript, a synthesis>
+
+## Premises challenged
+- <premise 1 → resolution>
+- <premise 2 → resolution>
+
+## Approaches considered
+<the 2–3 options from Phase 5, full format>
+
+## Recommended approach
+**Option N: <name>** — <why>
+
+## Cross-model perspective
+<Codex's independent take, verbatim if Codex ran; otherwise "Not run.">
+
+## Open questions
+- <thing the user couldn't answer that needs answering before building>
+
+## Next steps
+1. <e.g., run /plan-eng-review on this design>
+2. <e.g., run /plan-design-review if UI scope>
+3. <distribution / launch step if relevant>
+
+## What I noticed
+<one or two sentences from you the assistant — patterns, surprises, things to watch>
+```
+
+Write the file. **Do not edit code, run tests, or do anything beyond writing this markdown file.**
+
+If a prior design existed on this branch and the user wants to supersede:
+- Set `Supersedes:` to the prior filename.
+- Do NOT delete the prior file. The full chain stays in the project history.
+
+## Phase 8: Handoff
+
+Pick one based on context:
+
+- **Has UI scope + DESIGN.md exists** → *"Run `/plan-eng-review` to lock architecture, then `/plan-design-review` for the UX pass."*
+- **Has UI scope + no DESIGN.md** → *"Run `/design-consultation` first (you don't have a DESIGN.md), then `/plan-eng-review` for architecture."*
+- **No UI scope** → *"Run `/plan-eng-review` next — this is mostly an architecture problem."*
+- **Mode = explore** → *"You don't need a plan-review yet. Sit with the design doc; come back when you want to commit."*
+
+State the recommendation clearly. Don't auto-invoke; the user runs the next skill themselves.
+
+---
+
+{{LEARNINGS_LOG}}
+
+When logging learnings from this skill, prefer `key`s like:
+- `assumption-<topic>` for premises that turned out to be wrong
+- `pattern-<area>` for recurring shape of design decisions
+- `pitfall-<category>` for traps the user almost fell into
