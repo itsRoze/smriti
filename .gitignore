@@ -1,0 +1,7 @@
+node_modules/
+dist/
+*.bun-build
+.DS_Store
+
+# Generated SKILL.md files — source of truth is SKILL.md.tmpl
+**/SKILL.md

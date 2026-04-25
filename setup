@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+# smriti setup — generate skill docs, register slash commands with Claude Code,
+# and put bin/ helpers on PATH.
+set -e
+umask 077
+
+if ! command -v bun >/dev/null 2>&1; then
+  echo "Error: bun is required but not installed." >&2
+  echo "Install: https://bun.sh" >&2
+  exit 1
+fi
+
+SMRITI_DIR="$(cd "$(dirname "$0")" && pwd -P)"
+SKILLS_DIR="$HOME/.claude/skills"
+BIN_DIR="$HOME/.local/bin"
+
+cd "$SMRITI_DIR"
+
+# 1. Install deps
+if [ -f package.json ]; then
+  bun install --silent 2>/dev/null || bun install
+fi
+
+# 2. Generate SKILL.md from .tmpl files (when the engine exists)
+if [ -f scripts/gen-skill-docs.ts ]; then
+  bun run gen:skill-docs
+fi
+
+# 3. Register skills with Claude Code (one symlink per skill dir into ~/.claude/skills/<skill-name>/)
+mkdir -p "$SKILLS_DIR"
+SKILL_NAMES=(bootstrap office-hours plan-eng-review plan-design-review design-consultation eng-review design-review create-pr learn)
+REGISTERED=0
+for name in "${SKILL_NAMES[@]}"; do
+  src="$SMRITI_DIR/$name"
+  dest="$SKILLS_DIR/$name"
+  [ -d "$src" ] || continue
+  [ -f "$src/SKILL.md" ] || continue
+
+  # Warn if a non-smriti skill already lives at this path
+  if [ -e "$dest" ] && [ ! -L "$dest" ]; then
+    echo "⚠  $dest exists and is not a symlink — skipping. Remove it manually if you want smriti to take over /$name." >&2
+    continue
+  fi
+  if [ -L "$dest" ] && [ "$(readlink "$dest")" != "$src" ]; then
+    echo "ℹ  Replacing existing symlink at $dest (pointed elsewhere)" >&2
+  fi
+
+  ln -sfn "$src" "$dest"
+  echo "✓ /$name"
+  REGISTERED=$((REGISTERED + 1))
+done
+
+# 4. Put bin/ helpers on PATH (~/.local/bin)
+if [ -d "$SMRITI_DIR/bin" ] && compgen -G "$SMRITI_DIR/bin/smriti-*" >/dev/null; then
+  mkdir -p "$BIN_DIR"
+  for helper in "$SMRITI_DIR"/bin/smriti-*; do
+    [ -f "$helper" ] || continue
+    chmod +x "$helper"
+    ln -sfn "$helper" "$BIN_DIR/$(basename "$helper")"
+  done
+  case ":$PATH:" in
+    *":$BIN_DIR:"*) ;;
+    *) echo "" && echo "ℹ  Add $BIN_DIR to your PATH:" && echo "    export PATH=\"\$HOME/.local/bin:\$PATH\"" ;;
+  esac
+fi
+
+echo ""
+if [ "$REGISTERED" -eq 0 ]; then
+  echo "Setup complete (no skills registered yet — run again after building skill SKILL.md.tmpl files)."
+else
+  echo "Setup complete. $REGISTERED skill(s) registered."
+  echo "Try: /bootstrap"
+fi
