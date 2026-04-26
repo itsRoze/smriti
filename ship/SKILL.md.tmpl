@@ -1,5 +1,5 @@
 ---
-name: create-pr
+name: ship
 description: |
   Composes the full smriti pipeline into one ship command. Tests, coverage audit, plan
   completion audit, /eng-review (and /design-review if frontend changed), version bump,
@@ -18,7 +18,7 @@ allowed-tools:
 
 {{PREAMBLE}}
 
-# /create-pr — full ship pipeline
+# /ship — full ship pipeline
 
 12 steps. Each step idempotent (safe to re-run). Composes `/eng-review` and `/design-review` internally so the user runs **one** command from "code is done" to "PR is open."
 
@@ -27,7 +27,7 @@ allowed-tools:
 ```bash
 {{BASE_BRANCH_DETECT}}
 CURRENT=$(git branch --show-current)
-[ "$CURRENT" = "$BASE_BRANCH" ] && { echo "/create-pr: on $BASE_BRANCH; switch to a feature branch first."; exit 0; }
+[ "$CURRENT" = "$BASE_BRANCH" ] && { echo "/ship: on $BASE_BRANCH; switch to a feature branch first."; exit 0; }
 
 # Diff stats vs origin/<base>
 git fetch --quiet origin "$BASE_BRANCH" 2>/dev/null || true
@@ -51,6 +51,28 @@ REVIEW_LOG="$HOME/.smriti/projects/$SLUG/reviews.jsonl"
 
 Surface readiness: was `/eng-review` run on this branch? `/plan-eng-review`? `/design-review`? Don't gate — just inform.
 
+**Approvals gate (soft enforcement):**
+
+```bash
+smriti-approvals get
+echo
+if smriti-approvals check; then
+  echo "All required gates passed."
+else
+  : # gates missing — handle below
+fi
+```
+
+If `smriti-approvals check` fails, the missing gates printed to stderr are required for ship. Issue a single AskUserQuestion:
+
+| Option | Behavior |
+|--------|----------|
+| **Run the missing gate now** | abort `/ship`; tell the user which skill to run (`/eng-review` or `/design-review`); they re-run `/ship` after |
+| **Ship with debt** | proceed; record the missing approvals in the PR body under a "Skipped Gates" section |
+| **Abort** | exit cleanly |
+
+If the user passed `--force`, skip the AskUserQuestion and proceed silently (still record skipped gates in PR body). If `LEAN=senior`, default to "Run the missing gate now"; if `LEAN=prototype`, default to "Ship with debt."
+
 ## Step 2: Distribution check
 
 If the diff adds a **new artifact** (CLI binary in `bin/`, library entry point, public route file), check that a release / distribution path exists:
@@ -66,7 +88,7 @@ If a new artifact has no distribution path, raise via AskUserQuestion: **add dis
 ```bash
 git fetch origin "$BASE_BRANCH" --quiet
 if ! git merge --no-edit "origin/$BASE_BRANCH" 2>/dev/null; then
-  echo "/create-pr: merge conflict with $BASE_BRANCH. Resolve, commit, then re-run."
+  echo "/ship: merge conflict with $BASE_BRANCH. Resolve, commit, then re-run."
   git merge --abort 2>/dev/null
   exit 1
 fi
@@ -267,7 +289,7 @@ PR body template:
 
 - [ ] <one bullet per behavioral change the reviewer should verify>
 
-🤖 Generated via /create-pr — smriti
+🤖 Generated via /ship — smriti
 ```
 
 ```bash
@@ -286,7 +308,7 @@ git push origin "$BRANCH" 2>&1 || echo "(push skipped — no remote configured)"
 Then **print** the PR title and body to the terminal so the user can paste them into whatever PR tool they use:
 
 ```
-=== smriti /create-pr — manual PR fallback ===
+=== smriti /ship — manual PR fallback ===
 
 Title:
 <title>
@@ -302,7 +324,7 @@ Body:
 ```bash
 TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 jq -n -c \
-  --arg skill "create-pr" --arg ts "$TS" --arg branch "$BRANCH" \
+  --arg skill "ship" --arg ts "$TS" --arg branch "$BRANCH" \
   --arg version "$NEW" --argjson coverage_pct <pct> \
   --argjson tests_added <count> --argjson eng_findings <count> \
   --argjson design_findings <count> --argjson plan_done <count> \
@@ -311,10 +333,17 @@ jq -n -c \
   >> "$HOME/.smriti/projects/$SLUG/reviews.jsonl"
 ```
 
+**Stamp the approval:**
+
+```bash
+smriti-approvals set ship APPROVED \
+  --note "version: $NEW; ${PR_URL:-no-pr}"
+```
+
 ## Done
 
 ```
-/create-pr: shipped.
+/ship: shipped.
 
 Version: <new>
 PR: <url-or-"manual fallback printed above">

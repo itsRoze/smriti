@@ -223,4 +223,4 @@ These are real concerns but live elsewhere:
 - **Design / UI quality** → `/design-review`
 - **Architecture-level decisions** → `/plan-eng-review`
 - **Performance benchmarking** → not in v1
-- **Test coverage analysis** → `/create-pr` runs the coverage audit
+- **Test coverage analysis** → `/ship` runs the coverage audit

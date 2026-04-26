@@ -174,6 +174,16 @@ jq -n -c \
   >> "$HOME/.smriti/projects/$SLUG/reviews.jsonl"
 ```
 
+**Stamp the approval** based on outcomes:
+
+```bash
+# APPROVED      — zero open issues; user accepted recommendations
+# CONDITIONAL   — deferred items (debt accepted; user wants to ship anyway)
+# NEEDS_CHANGES — blocking architecture issues; user must revise plan
+smriti-approvals set plan-eng-review <STATUS> \
+  --note "lean: $LEAN; <N> findings; <K> open"
+```
+
 ## Phase: Handoff
 
 End with:
@@ -186,7 +196,7 @@ Open issues: <count>. <if zero, "Plan is implementation-ready.">
 Next steps:
 - Implementation: write the code per the locked plan.
 - After implementing: run /eng-review to catch the bugs.
-- After review passes: run /create-pr to ship.
+- After review passes: run /ship to ship.
 ```
 
 If there are unresolved open issues from the review, recommend NOT starting implementation until they're closed. *"You have 2 unresolved architecture decisions. Resolve those before writing code."*

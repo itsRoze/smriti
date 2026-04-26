@@ -33,7 +33,7 @@ Push back on the framing before any code is written. Generate 2–3 alternatives
 Do NOT:
 - Write any code
 - Scaffold any project structure
-- Invoke `/plan-eng-review`, `/create-pr`, or any implementation skill
+- Invoke `/plan-eng-review`, `/ship`, or any implementation skill
 - Make commits
 
 Your only output is the design doc + the conversation that produced it.
@@ -235,6 +235,15 @@ Write the file. **Do not edit code, run tests, or do anything beyond writing thi
 If a prior design existed on this branch and the user wants to supersede:
 - Set `Supersedes:` to the prior filename.
 - Do NOT delete the prior file. The full chain stays in the project history.
+
+**Then stamp the approval** so downstream skills can read it:
+
+```bash
+smriti-approvals set office-hours APPROVED \
+  --note "mode: <users|learn|prototype|intrapreneur|explore>; rec: Option N"
+```
+
+This initializes the per-branch approval state file and inserts an `## Approvals` section near the top of the design doc you just wrote.
 
 ## Phase 8: Handoff
 

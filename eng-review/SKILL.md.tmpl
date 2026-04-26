@@ -6,7 +6,7 @@ description: |
   blow up in prod. Auto-fixes obvious mechanical findings; asks user judgment on
   critical ones. Records findings to ~/.smriti/projects/<slug>/reviews.jsonl.
   Use when you've finished implementing a change and want a staff-engineer pass
-  before /create-pr.
+  before /ship.
   Proactively invoke when the user asks to "review my changes", "check this diff",
   "is this PR ready", or similar. Don't run on the base branch — it's a no-op.
 allowed-tools:
@@ -23,7 +23,7 @@ allowed-tools:
 
 # /eng-review — staff-engineer code review
 
-Apply the eng-review checklist to the diff. Auto-fix mechanical findings. Surface critical ones for user judgment. Persist results so `/create-pr` can read them.
+Apply the eng-review checklist to the diff. Auto-fix mechanical findings. Surface critical ones for user judgment. Persist results so `/ship` can read them.
 
 ## Phase 0: Pre-flight
 
@@ -104,7 +104,7 @@ For each finding, classify:
 - **`AUTO-FIX`** — mechanical, safe, unambiguous. Examples: parameterizing a SQL query, adding a missing `await`, renaming a var that shadowed an import, swapping `==` for `===`. Apply silently via `Edit`. Surface count at the end (*"Auto-fixed 4 findings."*).
 - **`ASK`** — judgment required. Examples: deciding whether to add an index (cost / benefit unclear), whether a missing test is worth writing now or later, whether to escape an enum-completeness gap as out-of-scope. Batch into a single AskUserQuestion (one prompt, multi-select) if **3 or fewer**; otherwise issue one AskUserQuestion per finding.
 
-**Auto-fix changes are uncommitted.** The user runs `/create-pr` to commit them with the rest of their work.
+**Auto-fix changes are uncommitted.** The user runs `/ship` to commit them with the rest of their work.
 
 ## Phase 5: Cross-reference TODOS.md
 
@@ -149,6 +149,16 @@ EOF
 
 (Construct the JSON with `jq -n` to escape values safely if you use any free-form strings.)
 
+**Stamp the approval** based on outcomes:
+
+```bash
+# APPROVED      — zero critical findings outstanding
+# CONDITIONAL   — critical findings deferred to TODOS.md (debt accepted)
+# NEEDS_CHANGES — user blocked the ship (something must be fixed before /ship)
+smriti-approvals set eng-review <STATUS> \
+  --note "<critical>c/<info>i; <auto>auto-fixed; <deferred>deferred"
+```
+
 ## Phase 9: Summary
 
 End with:
@@ -168,7 +178,7 @@ DEFERRED (added to TODOS.md):
 Confidence: <X>% verified, <Y>% likely, <Z>% speculative.
 Codex: <ran|skipped>. Agreement: <pct or n/a>.
 
-Run /create-pr to commit + open PR.
+Run /ship to commit + open PR.
 ```
 
 If clean: `/eng-review: no issues found.`

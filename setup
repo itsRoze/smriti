@@ -28,7 +28,7 @@ fi
 
 # 3. Register skills with Claude Code (one symlink per skill dir into ~/.claude/skills/<skill-name>/)
 mkdir -p "$SKILLS_DIR"
-SKILL_NAMES=(bootstrap office-hours plan-eng-review plan-design-review design-consultation eng-review design-review create-pr learn)
+SKILL_NAMES=(bootstrap office-hours plan-eng-review plan-design-review design-consultation eng-review design-review ship learn)
 REGISTERED=0
 for name in "${SKILL_NAMES[@]}"; do
   src="$SMRITI_DIR/$name"

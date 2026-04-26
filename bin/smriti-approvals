@@ -1,0 +1,218 @@
+#!/usr/bin/env bash
+# smriti-approvals — manage per-branch approval gates.
+# State: $SMRITI_HOME/projects/<slug>/<branch>-approvals.json
+# View:  rendered into the most-recent design doc on the current branch
+#        as a "## Approvals" section (if a design doc exists).
+#
+# Status enum:
+#   APPROVED        gate passed cleanly
+#   CONDITIONAL     passed with deferred items (debt accepted)
+#   NEEDS_CHANGES   blocking issues; user must revise
+#   SKIPPED         not applicable (e.g., no UI scope → /design-review)
+#   STALE           approved but plan changed since (manual flag for v0.2)
+#   NOT_YET_RUN    default
+#
+# Required gates for /ship:
+#   - eng-review   always
+#   - design-review  if UI files in diff vs base
+#
+# Subcommands:
+#   smriti-approvals get                            render markdown
+#   smriti-approvals get-json                       raw state
+#   smriti-approvals set <skill> <status> [--note "..."]   set + sync
+#   smriti-approvals required                       print required gates
+#   smriti-approvals check                          exit 0 if required pass
+#   smriti-approvals sync                           re-render into design doc
+set -e
+
+if ! command -v jq >/dev/null 2>&1; then
+  echo "smriti-approvals: jq is required (brew install jq)" >&2
+  exit 1
+fi
+
+SMRITI_BIN="$(cd "$(dirname "$0")" && pwd -P)"
+eval "$("$SMRITI_BIN/smriti-slug" 2>/dev/null)" 2>/dev/null
+SLUG="${SLUG:-unknown}"
+BRANCH="${BRANCH:-$(git branch --show-current 2>/dev/null || echo unknown)}"
+
+PROJ_DIR="${SMRITI_HOME:-$HOME/.smriti}/projects/$SLUG"
+STATE_FILE="$PROJ_DIR/${BRANCH}-approvals.json"
+mkdir -p "$PROJ_DIR"
+
+# Skill order in renderings (top-to-bottom pipeline order)
+SKILLS=(office-hours plan-eng-review plan-design-review eng-review design-review ship)
+
+init_state() {
+  local entries=""
+  for skill in "${SKILLS[@]}"; do
+    entries+="\"$skill\":{\"status\":\"NOT_YET_RUN\"},"
+  done
+  echo "{${entries%,}}"
+}
+
+[ -f "$STATE_FILE" ] || init_state > "$STATE_FILE"
+
+icon_for() {
+  case "$1" in
+    APPROVED) echo "✅" ;;
+    CONDITIONAL) echo "⚠️" ;;
+    NEEDS_CHANGES) echo "❌" ;;
+    SKIPPED) echo "➖" ;;
+    STALE) echo "🔄" ;;
+    *) echo "⏸" ;;
+  esac
+}
+
+render_markdown() {
+  local json
+  json=$(cat "$STATE_FILE")
+  echo "## Approvals"
+  echo
+  for skill in "${SKILLS[@]}"; do
+    local status note date icon
+    status=$(echo "$json" | jq -r --arg s "$skill" '.[$s].status // "NOT_YET_RUN"')
+    note=$(echo "$json" | jq -r --arg s "$skill" '.[$s].note // ""')
+    date=$(echo "$json" | jq -r --arg s "$skill" '.[$s].date // ""')
+    icon=$(icon_for "$status")
+
+    if [ "$status" = "NOT_YET_RUN" ]; then
+      printf -- "- %s /%s — not yet run\n" "$icon" "$skill"
+    else
+      local meta=""
+      [ -n "$date" ] && meta=" — $date"
+      [ -n "$note" ] && [ "$note" != "null" ] && meta="$meta — $note"
+      printf -- "- %s /%s%s\n" "$icon" "$skill" "$meta"
+    fi
+  done
+}
+
+find_design_doc() {
+  ls -t "$PROJ_DIR/"*-"$BRANCH"-design-*.md 2>/dev/null | head -1
+}
+
+# Splice "## Approvals" section into the design doc.
+# - If section exists, replace it (up to the next "## " heading or EOF).
+# - If absent, insert before the first "## " heading after the metadata.
+sync_to_design_doc() {
+  local doc
+  doc=$(find_design_doc)
+  [ -z "$doc" ] && return 0
+
+  local rendered
+  rendered=$(render_markdown)
+  local tmp
+  tmp=$(mktemp)
+
+  if grep -q '^## Approvals' "$doc"; then
+    awk -v new="$rendered" '
+      BEGIN { skip = 0 }
+      /^## Approvals[[:space:]]*$/ { print new; skip = 1; next }
+      skip && /^## / && !/^## Approvals/ { skip = 0 }
+      !skip { print }
+    ' "$doc" > "$tmp"
+  else
+    awk -v new="$rendered" '
+      BEGIN { inserted = 0 }
+      !inserted && /^## / { print new; print ""; inserted = 1 }
+      { print }
+      END { if (!inserted) { print ""; print new } }
+    ' "$doc" > "$tmp"
+  fi
+
+  mv "$tmp" "$doc"
+}
+
+# Detect required gates from the current diff context.
+required_gates() {
+  local base
+  base=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##' || true)
+  [ -z "$base" ] && base="main"
+
+  echo "eng-review"
+
+  local ui_diff
+  ui_diff=$(git diff "origin/$base" --name-only 2>/dev/null | grep -E '\.(tsx|jsx|svelte|vue|astro|css|scss)$|tailwind\.config\.|globals\.css' | head -1)
+  [ -n "$ui_diff" ] && echo "design-review"
+}
+
+CMD="${1:-get}"
+shift || true
+
+case "$CMD" in
+  get)
+    render_markdown
+    ;;
+  get-json)
+    cat "$STATE_FILE"
+    ;;
+  set)
+    SKILL="${1:-}"; STATUS="${2:-}"
+    [ -z "$SKILL" ] || [ -z "$STATUS" ] && { echo "usage: smriti-approvals set <skill> <status> [--note '...']" >&2; exit 1; }
+    shift 2 || true
+    NOTE=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --note) NOTE="$2"; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    case "$STATUS" in
+      APPROVED|CONDITIONAL|NEEDS_CHANGES|SKIPPED|STALE|NOT_YET_RUN) ;;
+      *) echo "invalid status: $STATUS (allowed: APPROVED, CONDITIONAL, NEEDS_CHANGES, SKIPPED, STALE, NOT_YET_RUN)" >&2; exit 1 ;;
+    esac
+
+    DATE=$(date +%Y-%m-%d)
+    NEW=$(jq --arg s "$SKILL" --arg st "$STATUS" --arg n "$NOTE" --arg d "$DATE" \
+      '.[$s] = {status:$st, note:$n, date:$d}' "$STATE_FILE")
+    echo "$NEW" > "$STATE_FILE"
+    sync_to_design_doc
+    icon=$(icon_for "$STATUS")
+    printf "approval: %s /%s → %s\n" "$icon" "$SKILL" "$STATUS"
+    ;;
+  required)
+    required_gates
+    ;;
+  check)
+    OK=1
+    MISSING=()
+    while IFS= read -r skill; do
+      [ -z "$skill" ] && continue
+      STATUS=$(jq -r --arg s "$skill" '.[$s].status // "NOT_YET_RUN"' "$STATE_FILE")
+      case "$STATUS" in
+        APPROVED|CONDITIONAL|SKIPPED) ;;
+        *) OK=0; MISSING+=("/$skill ($STATUS)") ;;
+      esac
+    done < <(required_gates)
+
+    if [ "$OK" -eq 1 ]; then
+      echo "approvals: all required gates passed."
+      exit 0
+    else
+      echo "approvals: missing — ${MISSING[*]}" >&2
+      exit 1
+    fi
+    ;;
+  sync)
+    sync_to_design_doc
+    DOC=$(find_design_doc)
+    if [ -n "$DOC" ]; then
+      echo "approvals synced to $DOC"
+    else
+      echo "approvals: no design doc on $BRANCH (state still maintained at $STATE_FILE)"
+    fi
+    ;;
+  *)
+    cat <<USAGE >&2
+usage:
+  smriti-approvals get                          # render approvals as markdown
+  smriti-approvals get-json                     # raw JSON state
+  smriti-approvals set <skill> <status> [--note '...']
+  smriti-approvals required                     # print required gates for /ship
+  smriti-approvals check                        # exit 0 iff required gates pass
+  smriti-approvals sync                         # re-render section into design doc
+
+statuses: APPROVED CONDITIONAL NEEDS_CHANGES SKIPPED STALE NOT_YET_RUN
+USAGE
+    exit 1
+    ;;
+esac

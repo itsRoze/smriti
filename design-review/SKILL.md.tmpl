@@ -6,7 +6,7 @@ description: |
   — that's deferred to v2 alongside browser support. Auto-fixes mechanical drift (token
   swaps); asks user judgment on hierarchy/layout calls. Commits fixes atomically with
   the prefix "style(design):".
-  Use after implementing a UI feature, alongside /eng-review, before /create-pr.
+  Use after implementing a UI feature, alongside /eng-review, before /ship.
   Honest scope: this catches "code violates DESIGN.md", not "this looks bad rendered."
 allowed-tools:
   - Bash
@@ -41,6 +41,7 @@ UI_FILES=$(git diff "origin/$BASE_BRANCH" --name-only \
 
 if [ -z "$UI_FILES" ]; then
   echo "/design-review: no UI files in diff. Skipping."
+  smriti-approvals set design-review SKIPPED --note "no UI files in diff"
   exit 0
 fi
 
@@ -148,7 +149,7 @@ For each finding **in impact order** (high → medium → polish):
 
 - **ASK**: issue one AskUserQuestion. Options should be concrete (the proposed fix, an alternative, "leave as-is"). Apply the user's choice, commit atomically with the same `style(design):` prefix.
 
-**Atomic commits matter** — they let `/create-pr` group cleanly and let you `git revert` an individual fix if it causes regression.
+**Atomic commits matter** — they let `/ship` group cleanly and let you `git revert` an individual fix if it causes regression.
 
 ## Phase 5: Report
 
@@ -186,6 +187,16 @@ jq -n -c \
   >> "$HOME/.smriti/projects/$SLUG/reviews.jsonl"
 ```
 
+**Stamp the approval** based on outcomes:
+
+```bash
+# APPROVED      — zero high-impact findings outstanding (auto-fixed and committed)
+# CONDITIONAL   — high-impact findings deferred to TODOS.md (debt accepted)
+# NEEDS_CHANGES — user couldn't justify hard-rule (AI-slop) violations
+smriti-approvals set design-review <STATUS> \
+  --note "<high>h/<medium>m/<polish>p; <auto>auto-fixed"
+```
+
 ## Phase 6: TODOS.md update
 
 For deferred findings, add entries to `TODOS.md`:
@@ -199,7 +210,7 @@ For deferred findings, add entries to `TODOS.md`:
 ```
 /design-review (static v1): <total> findings, <auto-fixed> auto-fixed, <asked> resolved with input, <deferred> deferred to TODOS.md.
 
-Next: /create-pr will commit + open the PR (your atomic style(design): commits are already in history).
+Next: /ship will commit + open the PR (your atomic style(design): commits are already in history).
 
 Note: this was a static audit — I read code, not pixels. For a live render audit, wait for /design-review v2 (browser-enabled).
 ```

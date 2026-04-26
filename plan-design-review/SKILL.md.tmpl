@@ -186,6 +186,17 @@ jq -n -c \
   >> "$HOME/.smriti/projects/$SLUG/reviews.jsonl"
 ```
 
+**Stamp the approval** based on outcomes:
+
+```bash
+# APPROVED      — every pass at 8/10+; zero open issues
+# CONDITIONAL   — open issues but user explicitly accepted the debt
+# NEEDS_CHANGES — Pass 4 (AI-slop) violations the user couldn't justify, or
+#                 a pass stuck below 6/10
+smriti-approvals set plan-design-review <STATUS> \
+  --note "avg <X>/10; <K> open"
+```
+
 ## Phase: Handoff
 
 ```
