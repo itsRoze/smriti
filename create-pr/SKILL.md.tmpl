@@ -1,0 +1,339 @@
+---
+name: create-pr
+description: |
+  Composes the full smriti pipeline into one ship command. Tests, coverage audit, plan
+  completion audit, /eng-review (and /design-review if frontend changed), version bump,
+  CHANGELOG, bisectable commits, push, and PR via `gh`. Manual fallback if no GitHub
+  remote. Idempotent — safe to re-run on the same branch.
+  Use when implementation is complete and you want to ship.
+allowed-tools:
+  - Bash
+  - Read
+  - Edit
+  - Write
+  - Glob
+  - Grep
+  - AskUserQuestion
+---
+
+{{PREAMBLE}}
+
+# /create-pr — full ship pipeline
+
+12 steps. Each step idempotent (safe to re-run). Composes `/eng-review` and `/design-review` internally so the user runs **one** command from "code is done" to "PR is open."
+
+## Step 1: Pre-flight
+
+```bash
+{{BASE_BRANCH_DETECT}}
+CURRENT=$(git branch --show-current)
+[ "$CURRENT" = "$BASE_BRANCH" ] && { echo "/create-pr: on $BASE_BRANCH; switch to a feature branch first."; exit 0; }
+
+# Diff stats vs origin/<base>
+git fetch --quiet origin "$BASE_BRANCH" 2>/dev/null || true
+DIFF_LINES=$(git diff "origin/$BASE_BRANCH" --shortstat 2>/dev/null | grep -oE '[0-9]+ insertion' | awk '{print $1}')
+DIFF_LINES="${DIFF_LINES:-0}"
+DIFF_FILES=$(git diff "origin/$BASE_BRANCH" --name-only | wc -l | tr -d ' ')
+
+# Has GitHub remote?
+HAS_GH=no
+git remote get-url origin 2>/dev/null | grep -q github.com && command -v gh >/dev/null 2>&1 && HAS_GH=yes
+```
+
+If `DIFF_FILES=0`: *"No changes vs origin/$BASE_BRANCH. Nothing to ship."* — exit.
+
+Read the latest review log to know what's already been done:
+
+```bash
+REVIEW_LOG="$HOME/.smriti/projects/$SLUG/reviews.jsonl"
+[ -f "$REVIEW_LOG" ] && tail -10 "$REVIEW_LOG" | jq -c 'select(.branch == env.BRANCH)'
+```
+
+Surface readiness: was `/eng-review` run on this branch? `/plan-eng-review`? `/design-review`? Don't gate — just inform.
+
+## Step 2: Distribution check
+
+If the diff adds a **new artifact** (CLI binary in `bin/`, library entry point, public route file), check that a release / distribution path exists:
+
+- New CLI? Is there a way for users to install it?
+- New library? Is there a publish step in `package.json` scripts or CI?
+- New API route? Does the deploy pipeline pick it up?
+
+If a new artifact has no distribution path, raise via AskUserQuestion: **add distribution to this PR / defer / decision: not needed**.
+
+## Step 3: Merge base branch
+
+```bash
+git fetch origin "$BASE_BRANCH" --quiet
+if ! git merge --no-edit "origin/$BASE_BRANCH" 2>/dev/null; then
+  echo "/create-pr: merge conflict with $BASE_BRANCH. Resolve, commit, then re-run."
+  git merge --abort 2>/dev/null
+  exit 1
+fi
+```
+
+If already up to date, this is a no-op — fine.
+
+## Step 4: Test framework bootstrap (only if missing)
+
+```bash
+HAS_TEST_SCRIPT=no
+[ -f package.json ] && jq -e '.scripts.test' package.json >/dev/null 2>&1 && HAS_TEST_SCRIPT=yes
+[ -f pyproject.toml ] && grep -q '\[tool.pytest' pyproject.toml && HAS_TEST_SCRIPT=yes
+[ -f Cargo.toml ] && HAS_TEST_SCRIPT=yes  # cargo test is built-in
+```
+
+If no test framework is detectable, ask via AskUserQuestion: **scaffold one (vitest for TS / pytest for Python / built-in for Rust+Go) / proceed without tests / abort**. Default skip (don't impose on prototype work).
+
+## Step 5: Run tests
+
+```bash
+# Pick the right runner
+if [ -f package.json ] && jq -e '.scripts.test' package.json >/dev/null 2>&1; then
+  TEST_CMD="bun run test 2>&1 || npm test 2>&1"
+elif [ -f pyproject.toml ]; then
+  TEST_CMD="pytest 2>&1"
+elif [ -f Cargo.toml ]; then
+  TEST_CMD="cargo test 2>&1"
+elif [ -f go.mod ]; then
+  TEST_CMD="go test ./... 2>&1"
+fi
+
+[ -n "$TEST_CMD" ] && eval "$TEST_CMD" || echo "(no tests configured)"
+```
+
+If failures: triage in-branch (caused by this branch's changes) vs pre-existing (failing on `$BASE_BRANCH` too). Run the tests on `$BASE_BRANCH` if needed to compare.
+
+- **In-branch failure:** stop. Surface failures to user via AskUserQuestion: **fix and re-run / commit-as-WIP and continue (not recommended) / abort**.
+- **Pre-existing:** proceed but include a note in the PR body about which tests were already broken.
+
+## Step 6: Coverage audit (subagent)
+
+Dispatch a subagent (Task / general-purpose) with this prompt:
+
+> Compute test coverage for the current branch's diff vs `origin/$BASE_BRANCH`. Output JSON:
+> `{ "coverage_pct": <0-100>, "tests_added": <int>, "untested_changes": [{ "file": "...", "line_range": "..." }, ...] }`
+> Use the project's existing coverage tooling if any (vitest --coverage, pytest --cov, etc.); otherwise estimate by counting tested vs untested changed functions.
+
+Surface coverage in the PR body. If `coverage_pct < 60` and `LEAN=senior`, ask via AskUserQuestion whether to add tests before shipping.
+
+## Step 7: Plan completion audit (subagent)
+
+If a design doc exists for this branch (`~/.smriti/projects/$SLUG/*-$BRANCH-design-*.md`), dispatch a subagent:
+
+> Read the design doc at `<path>` and the current branch's diff. For each item in the design doc's "Recommended approach" / "Next steps" / "Open questions", classify as DONE / CHANGED / DEFERRED. Output a markdown table.
+
+If **DEFERRED** items exist, AskUserQuestion: **fine to defer / add to TODOS.md / block the ship until done**.
+
+## Step 8: Run /eng-review internally
+
+Invoke the `/eng-review` skill flow inline. Read `eng-review/checklist.md`, run both passes against the diff, classify findings as AUTO-FIX or ASK, apply auto-fixes, batch-ask the rest.
+
+If frontend files changed (any of `*.tsx`, `*.jsx`, `*.svelte`, `*.vue`, `*.css`, `*.scss`), also run `/design-review` static audit inline.
+
+If review surfaces **critical** findings the user defers, surface via AskUserQuestion: **abort ship / ship with debt (creates TODO entries)**. Default: don't auto-ship with critical debt.
+
+## Step 9: Version bump
+
+```bash
+[ -f VERSION ] && CURRENT_VERSION=$(cat VERSION)
+[ -f package.json ] && PKG_VERSION=$(jq -r '.version // empty' package.json)
+
+# Idempotency check: did this branch already bump?
+DIFF_VERSION=$(git diff "origin/$BASE_BRANCH" -- VERSION package.json 2>/dev/null)
+ALREADY_BUMPED=no
+[ -n "$DIFF_VERSION" ] && ALREADY_BUMPED=yes
+```
+
+**Auto-decide for small changes:**
+
+| Heuristic | Bump |
+|-----------|------|
+| < 50 lines diff, no new files | MICRO (0.0.0.X) |
+| < 200 lines diff, no breaking signals | PATCH (0.0.X) |
+| New feature / new public API / > 200 lines | MINOR — **ask user** |
+| Breaking change keyword in commit messages (`BREAKING CHANGE`, `breaking:`) | MAJOR — **ask user** |
+
+If `ALREADY_BUMPED=yes`, skip (don't double-bump on re-run).
+
+Apply the bump to **both** `VERSION` and `package.json` if both exist (keep them in sync). Use `jq` for the JSON edit, not sed:
+
+```bash
+NEW="<computed>"
+echo "$NEW" > VERSION
+[ -f package.json ] && jq --arg v "$NEW" '.version = $v' package.json > /tmp/pkg.tmp && mv /tmp/pkg.tmp package.json
+```
+
+## Step 10: CHANGELOG + TODOS.md
+
+**CHANGELOG.md** (auto-generate from commit messages on this branch):
+
+```bash
+TODAY=$(date +%Y-%m-%d)
+ENTRIES=$(git log "origin/$BASE_BRANCH"..HEAD --pretty=format:'- %s' 2>/dev/null | grep -v '^- Merge ')
+
+if [ -f CHANGELOG.md ]; then
+  # Insert new section near the top, under any "# Changelog" header
+  awk -v today="$TODAY" -v ver="$NEW" -v entries="$ENTRIES" '
+    NR==1 && /^# /  { print; print ""; print "## " ver " — " today; print ""; print entries; print ""; next }
+    NR==1           { print "# Changelog"; print ""; print "## " ver " — " today; print ""; print entries; print ""; print; next }
+    { print }
+  ' CHANGELOG.md > /tmp/cl.tmp && mv /tmp/cl.tmp CHANGELOG.md
+else
+  cat > CHANGELOG.md <<EOF
+# Changelog
+
+## $NEW — $TODAY
+
+$ENTRIES
+EOF
+fi
+```
+
+**TODOS.md** — auto-detect items that this PR closes:
+
+```bash
+[ -f TODOS.md ] && cat TODOS.md
+```
+
+Walk each `- [ ]` item; if the PR's diff substantively addresses it (file references, keyword match), propose marking it `- [x]` via AskUserQuestion (single bundled question if 3+).
+
+## Step 11: Bisectable commits
+
+If the working tree has changes from auto-fixes (Step 8), `eng-review` doc-staleness fixes, version bump, CHANGELOG, TODOS update — split into logical commits in this order:
+
+1. `chore: apply /eng-review auto-fixes` — bug-fix changes from review
+2. `style(design): batch from /design-review` — if any design auto-fixes (likely already committed as atomic ones during Step 8)
+3. `docs: update TODOS / docs for ship` — TODOS marks, doc-staleness fixes
+4. `chore: bump version to <N>, update CHANGELOG` — VERSION + package.json + CHANGELOG.md
+
+Each commit gets the co-author trailer:
+
+{{CO_AUTHOR_TRAILER}}
+
+This gives `git bisect` clean targets — bugs from review fixes are isolated from version churn.
+
+## Step 12: Push + open PR
+
+### If `HAS_GH=yes`:
+
+```bash
+git push -u origin "$BRANCH" 2>&1
+```
+
+Check if a PR already exists:
+
+```bash
+EXISTING_PR=$(gh pr list --head "$BRANCH" --json number,url,state --jq '.[0]')
+```
+
+- **No PR exists** → `gh pr create` with the body below
+- **PR exists, OPEN** → `gh pr edit <num> --body "<new body>"` (update in place; idempotent)
+- **PR exists, MERGED/CLOSED** → AskUserQuestion: **reopen** / **create a new PR** / **abort**
+
+PR title: take the first line of the most recent non-WIP commit (or ask the user to confirm if it looks generic).
+
+PR body template:
+
+```markdown
+## Summary
+
+<2-3 sentences synthesizing the change — read the diff and the design doc to write this; don't just dump commit messages>
+
+## Coverage
+
+- Test coverage: <pct>%
+- Tests added: <count>
+- Untested changes: <list or "none">
+
+## Pre-Landing Review
+
+- /eng-review: <N> findings (<auto-fixed> auto-fixed, <asked> resolved, <deferred> deferred)
+- /design-review: <N> findings (<if frontend changed; else "n/a">)
+- Codex cross-check: <ran|skipped>
+
+## Plan Completion (vs design doc)
+
+| Item | Status |
+|------|--------|
+| ... | DONE / CHANGED / DEFERRED |
+
+## TODOS
+
+- Closed by this PR: <list>
+- Deferred: <list>
+
+## Test Plan
+
+- [ ] <one bullet per behavioral change the reviewer should verify>
+
+🤖 Generated via /create-pr — smriti
+```
+
+```bash
+gh pr create --title "<title>" --body "$(cat <<'EOF'
+<body above>
+EOF
+)" 2>&1
+```
+
+### If `HAS_GH=no` (fallback):
+
+```bash
+git push origin "$BRANCH" 2>&1 || echo "(push skipped — no remote configured)"
+```
+
+Then **print** the PR title and body to the terminal so the user can paste them into whatever PR tool they use:
+
+```
+=== smriti /create-pr — manual PR fallback ===
+
+Title:
+<title>
+
+Body:
+<body>
+
+=== copy/paste the above into your PR tool ===
+```
+
+## Step 13: Persist metrics
+
+```bash
+TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+jq -n -c \
+  --arg skill "create-pr" --arg ts "$TS" --arg branch "$BRANCH" \
+  --arg version "$NEW" --argjson coverage_pct <pct> \
+  --argjson tests_added <count> --argjson eng_findings <count> \
+  --argjson design_findings <count> --argjson plan_done <count> \
+  --argjson plan_deferred <count> --arg pr_url "<url-or-empty>" \
+  '{skill:$skill,ts:$ts,branch:$branch,version:$version,coverage_pct:$coverage_pct,tests_added:$tests_added,eng_findings:$eng_findings,design_findings:$design_findings,plan_done:$plan_done,plan_deferred:$plan_deferred,pr_url:$pr_url}' \
+  >> "$HOME/.smriti/projects/$SLUG/reviews.jsonl"
+```
+
+## Done
+
+```
+/create-pr: shipped.
+
+Version: <new>
+PR: <url-or-"manual fallback printed above">
+Coverage: <pct>%
+Findings auto-fixed: <count>
+Plan items DONE / CHANGED / DEFERRED: <breakdown>
+
+Next:
+- Watch CI on the PR.
+- After merge: pull main, delete the local branch.
+```
+
+If the PR is opened, paste the PR URL prominently — the user wants to click it.
+
+---
+
+{{LEARNINGS_LOG}}
+
+Prefer keys like:
+- `pattern-version-bump-<size>` — what bump levels keep landing here
+- `pitfall-test-<area>` — recurring test failures on this codebase
+- `tool-gh-<observation>` — gh CLI quirks worth remembering
