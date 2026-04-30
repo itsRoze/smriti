@@ -6,6 +6,18 @@ A personal Claude Code skill stack — opinionated, learns across sessions, gets
 
 ---
 
+## Contents
+
+- [The pipeline](#the-pipeline)
+- [Approval gates](#approval-gates)
+- [Install](#install)
+- [What a session looks like](#what-a-session-looks-like)
+- [Architecture](#architecture)
+- [Configuration](#configuration)
+- [What's deferred (v0.2 / later)](#whats-deferred-v02--later)
+- [Acknowledgments](#acknowledgments)
+- [License](#license)
+
 ## The pipeline
 
 Each skill produces an artifact the next one reads. Run them in order; downstream skills know what came before.
