@@ -1,0 +1,610 @@
+#!/usr/bin/env bun
+// smriti-browse — localhost-only browser audit CLI for /design-review v2.
+//
+// Subcommands:
+//   audit <url> [<url>...]    Capture screenshots, ARIA snapshot, console log per URL.
+//   login <url>               Headed Chromium; user logs in; storageState saved.
+//   install                   bunx playwright install chromium (on-demand binary).
+//   update                    bun update playwright + reinstall Chromium binary.
+//   help                      Show help.
+//
+// Exit codes:
+//   0  ok
+//   1  usage error (bad args)
+//   2  runtime/browser error (Chromium crash, navigation timeout)
+//   3  auth state stale (login redirect heuristic detected)
+//   4  URL gate violation (non-localhost without --allow-remote)
+
+import { mkdirSync, writeFileSync, chmodSync, existsSync, statSync } from 'node:fs';
+import { join, dirname, resolve } from 'node:path';
+import { spawnSync } from 'node:child_process';
+
+const TOOL_VERSION = '0.3.0';
+const SCHEMA_VERSION = 1;
+const DEFAULT_VIEWPORTS = '1440x900,768x1024,375x667';
+const SETTLE_MS = 250;
+const NAV_TIMEOUT_MS = 15_000;
+
+// ─── Localhost gate ─────────────────────────────────────────────────────────
+//
+// Strict allowlist: the URL must be parseable, http(s), and the hostname must
+// match an exact label (`localhost`, `127.0.0.1`, `::1`) or end in `.localhost`.
+// Never use string-includes("localhost") — `http://localhost.evil.com` would
+// pass naively. (Codex flagged this; tests in scripts/test/browse.bats lock it.)
+function isLocalhostUrl(urlStr: string): boolean {
+  let u: URL;
+  try { u = new URL(urlStr); } catch { return false; }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') return false;
+  const host = u.hostname.toLowerCase();
+  if (host === 'localhost' || host === '127.0.0.1' || host === '::1') return true;
+  if (host.endsWith('.localhost')) return true;
+  return false;
+}
+
+// Stale-auth heuristic: page navigated to a login-shaped URL from a
+// non-login starting URL.
+function looksLikeLoginRedirect(startUrl: string, finalUrl: string): boolean {
+  const re = /(sign[-_ ]?in|log[-_ ]?in|auth)/i;
+  let s: URL, f: URL;
+  try { s = new URL(startUrl); f = new URL(finalUrl); } catch { return false; }
+  return !re.test(s.pathname) && re.test(f.pathname);
+}
+
+// ─── Helpers ────────────────────────────────────────────────────────────────
+
+type Viewport = { label: string; width: number; height: number };
+
+function parseViewports(spec: string): Viewport[] {
+  const out: Viewport[] = [];
+  for (const part of spec.split(',').map(s => s.trim()).filter(Boolean)) {
+    const m = part.match(/^(\d+)x(\d+)(?::(.+))?$/);
+    if (!m) throw new Error(`bad viewport spec: ${part} (expected WxH or WxH:label)`);
+    const w = parseInt(m[1], 10);
+    const h = parseInt(m[2], 10);
+    const label = m[3] ?? labelFor(w);
+    out.push({ label, width: w, height: h });
+  }
+  return out;
+}
+
+function labelFor(width: number): string {
+  if (width >= 1280) return 'desktop';
+  if (width >= 700) return 'tablet';
+  return 'mobile';
+}
+
+function urlSlug(urlStr: string): string {
+  try {
+    const u = new URL(urlStr);
+    const path = (u.pathname.replace(/\/+$/, '') || '/root').replace(/\//g, '-').replace(/^-/, '');
+    return (path || 'root').toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').slice(0, 40);
+  } catch {
+    return 'unknown';
+  }
+}
+
+function untrusted(kind: string, value: string): UntrustedObs {
+  return { id: '', kind, value };
+}
+
+type UntrustedObs = { id: string; kind: string; value: string };
+
+function assignIds(obs: UntrustedObs[]): UntrustedObs[] {
+  return obs.map((o, i) => ({ ...o, id: `obs-${String(i + 1).padStart(3, '0')}` }));
+}
+
+function ensureDir(path: string, mode: number): void {
+  mkdirSync(path, { recursive: true, mode });
+  try { chmodSync(path, mode); } catch { /* dir may exist with different mode; chmod best-effort */ }
+}
+
+function writeJson(path: string, obj: unknown): void {
+  writeFileSync(path, JSON.stringify(obj, null, 2) + '\n');
+}
+
+function isoNow(): string { return new Date().toISOString(); }
+
+function err(msg: string): never {
+  process.stderr.write(`smriti-browse: ${msg}\n`);
+  process.exit(1);
+}
+
+function usage(): never {
+  process.stderr.write(`smriti-browse v${TOOL_VERSION}
+
+Subcommands:
+  audit <url> [<url>...] [--viewports WxH,...] [--storage <state.json>]
+        [--out <dir>] [--allow-remote] [--headed]
+                          Capture screenshots, ARIA snapshot, console log per URL.
+
+  login <url> [--storage <state.json>]
+                          Headed Chromium; user logs in; storageState saved.
+
+  install                 Install Chromium binary on-demand (bunx playwright install chromium).
+  update                  bun update playwright + reinstall Chromium binary.
+  help                    Show this help.
+
+Exit codes: 0=ok 1=usage 2=runtime/browser 3=auth-stale 4=URL-gate-violation
+`);
+  process.exit(1);
+}
+
+// ─── Subcommands ────────────────────────────────────────────────────────────
+
+async function cmdInstall(): Promise<number> {
+  const r = spawnSync('bunx', ['playwright', 'install', 'chromium'], { stdio: 'inherit' });
+  return r.status ?? 1;
+}
+
+async function cmdUpdate(): Promise<number> {
+  const r1 = spawnSync('bun', ['update', 'playwright'], { stdio: 'inherit' });
+  if (r1.status !== 0) return r1.status ?? 2;
+  const r2 = spawnSync('bunx', ['playwright', 'install', 'chromium'], { stdio: 'inherit' });
+  return r2.status ?? 2;
+}
+
+type AuditArgs = {
+  urls: string[];
+  viewports: Viewport[];
+  storage: string | null;
+  out: string;
+  allowRemote: boolean;
+  headed: boolean;
+};
+
+function parseAuditArgs(args: string[]): AuditArgs {
+  const urls: string[] = [];
+  let viewports = DEFAULT_VIEWPORTS;
+  let storage: string | null = null;
+  let out: string | null = null;
+  let allowRemote = false;
+  let headed = false;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '--viewports') viewports = args[++i] ?? '';
+    else if (a === '--storage') storage = args[++i] ?? null;
+    else if (a === '--out') out = args[++i] ?? null;
+    else if (a === '--allow-remote') allowRemote = true;
+    else if (a === '--headed') headed = true;
+    else if (a.startsWith('--')) err(`unknown flag: ${a}`);
+    else urls.push(a);
+  }
+  if (urls.length === 0) err('audit: at least one URL required');
+  if (!out) err('audit: --out <dir> required');
+  return { urls, viewports: parseViewports(viewports), storage, out, allowRemote, headed };
+}
+
+async function cmdAudit(args: string[]): Promise<number> {
+  const a = parseAuditArgs(args);
+
+  // Localhost gate — do this BEFORE importing playwright so a gate violation
+  // never spins up a browser (cheap, deterministic, testable without Chromium).
+  for (const u of a.urls) {
+    if (!a.allowRemote && !isLocalhostUrl(u)) {
+      process.stderr.write(`smriti-browse: URL gate violation: ${u}\n`);
+      process.stderr.write(`  Only localhost URLs are allowed by default. Pass --allow-remote to override.\n`);
+      return 4;
+    }
+    if (a.allowRemote && !isLocalhostUrl(u)) {
+      process.stderr.write(`smriti-browse: WARNING --allow-remote: auditing non-localhost URL ${u}\n`);
+    }
+  }
+
+  // Lazy import — keeps gate-violation path Playwright-free for tests.
+  let chromium: typeof import('playwright').chromium;
+  try {
+    ({ chromium } = await import('playwright'));
+  } catch (e) {
+    process.stderr.write('smriti-browse: playwright is not installed.\n');
+    process.stderr.write('  Run: smriti-browse install   (downloads Chromium ~140MB)\n');
+    return 2;
+  }
+
+  // Verify Chromium binary is downloaded.
+  let browser: import('playwright').Browser;
+  try {
+    browser = await chromium.launch({ headless: !a.headed });
+  } catch (e: any) {
+    const msg = String(e?.message ?? e);
+    if (msg.includes("Executable doesn't exist") || msg.includes('install chromium')) {
+      process.stderr.write('smriti-browse: Chromium binary missing.\n');
+      process.stderr.write('  Run: smriti-browse install\n');
+      return 2;
+    }
+    process.stderr.write(`smriti-browse: failed to launch browser: ${msg}\n`);
+    return 2;
+  }
+
+  ensureDir(a.out, 0o700);
+
+  const runs: Array<{
+    index: number;
+    url: string;
+    subdir: string;
+    audit_status: 'ok' | 'failed' | 'auth_stale';
+    exit_code: number;
+  }> = [];
+
+  let worstExit = 0;
+
+  try {
+    for (let i = 0; i < a.urls.length; i++) {
+      const url = a.urls[i];
+      const subdir = `${String(i).padStart(2, '0')}-${urlSlug(url)}`;
+      const runDir = join(a.out, subdir);
+      ensureDir(runDir, 0o700);
+
+      const result = await runOne(browser, url, a, runDir);
+      writeJson(join(runDir, 'audit.json'), result);
+
+      runs.push({
+        index: i,
+        url,
+        subdir,
+        audit_status: result.audit_status,
+        exit_code: result.exit_code,
+      });
+      if (result.exit_code > worstExit) worstExit = result.exit_code;
+    }
+  } finally {
+    await browser.close().catch(() => {});
+  }
+
+  const index = {
+    schema_version: SCHEMA_VERSION,
+    tool: 'smriti-browse',
+    tool_version: TOOL_VERSION,
+    audited_at: isoNow(),
+    invoked_with: {
+      urls: a.urls,
+      viewports: a.viewports,
+      storage: a.storage,
+      allow_remote: a.allowRemote,
+      headed: a.headed,
+    },
+    runs,
+    worst_exit_code: worstExit,
+  };
+  writeJson(join(a.out, 'index.json'), index);
+
+  return worstExit;
+}
+
+async function runOne(
+  browser: import('playwright').Browser,
+  url: string,
+  a: AuditArgs,
+  runDir: string,
+): Promise<AuditResult> {
+  const startedAt = Date.now();
+  const obs: UntrustedObs[] = [];
+
+  // Fresh context per URL — even from the same storageState. This isolates
+  // cookies, localStorage, sessionStorage, permissions, and service workers.
+  const contextOpts: any = {
+    acceptDownloads: false,
+    permissions: [],
+  };
+  if (a.storage) {
+    if (!existsSync(a.storage)) {
+      process.stderr.write(`smriti-browse: storage state file not found: ${a.storage}\n`);
+      return failedResult(url, 2, 'storage state file not found', obs, startedAt, a, false);
+    }
+    contextOpts.storageState = a.storage;
+  }
+
+  const context = await browser.newContext(contextOpts);
+  const page = await context.newPage();
+
+  // Disable animations + transitions for stable screenshots.
+  await context.addInitScript(() => {
+    const s = document.createElement('style');
+    s.textContent = `
+      *, *::before, *::after {
+        animation-duration: 0s !important;
+        animation-delay: 0s !important;
+        transition-duration: 0s !important;
+        transition-delay: 0s !important;
+        scroll-behavior: auto !important;
+      }
+    `;
+    document.documentElement.appendChild(s);
+  });
+
+  page.on('console', msg => {
+    obs.push(untrusted(`console-${msg.type()}`, msg.text()));
+  });
+  page.on('pageerror', e => {
+    obs.push(untrusted('page-error', String(e.message ?? e)));
+  });
+
+  let finalUrl = url;
+  let navError: string | null = null;
+  try {
+    await page.goto(url, { waitUntil: 'networkidle', timeout: NAV_TIMEOUT_MS });
+    finalUrl = page.url();
+    await page.waitForLoadState('domcontentloaded', { timeout: NAV_TIMEOUT_MS });
+    await page.waitForTimeout(SETTLE_MS);
+  } catch (e: any) {
+    navError = String(e?.message ?? e);
+  }
+
+  // Stale-auth detection.
+  if (!navError && looksLikeLoginRedirect(url, finalUrl)) {
+    const result = makeResult({
+      url, finalUrl, status: 'auth_stale', exitCode: 3,
+      obs, startedAt, args: a, screenshots: [],
+      ariaPath: null,
+      pageTitle: null,
+      noteExtras: [`stale-auth: redirected to ${finalUrl} from ${url}`],
+    });
+    await context.close().catch(() => {});
+    return result;
+  }
+
+  if (navError) {
+    obs.push(untrusted('nav-error', navError));
+    const result = makeResult({
+      url, finalUrl, status: 'failed', exitCode: 2,
+      obs, startedAt, args: a, screenshots: [],
+      ariaPath: null,
+      pageTitle: null,
+      noteExtras: [`navigation failed: ${navError}`],
+    });
+    await context.close().catch(() => {});
+    return result;
+  }
+
+  // Page title (untrusted).
+  let pageTitle: UntrustedObs | null = null;
+  try {
+    const t = await page.title();
+    if (t) {
+      const o = untrusted('page-title', t);
+      obs.push(o);
+      pageTitle = o;
+    }
+  } catch { /* best-effort */ }
+
+  // Final URL as untrusted observation.
+  obs.push(untrusted('final-url', finalUrl));
+
+  // Screenshots per viewport.
+  const screenshots: Array<{ viewport: string; width: number; height: number; path: string; bytes: number }> = [];
+  for (const v of a.viewports) {
+    try {
+      await page.setViewportSize({ width: v.width, height: v.height });
+      await page.waitForTimeout(SETTLE_MS);
+      const filename = `screenshot-${v.label}-${v.width}x${v.height}.png`;
+      const fullpath = join(runDir, filename);
+      await page.screenshot({ path: fullpath, fullPage: true });
+      const bytes = statSync(fullpath).size;
+      screenshots.push({ viewport: v.label, width: v.width, height: v.height, path: filename, bytes });
+    } catch (e: any) {
+      obs.push(untrusted('screenshot-error', `${v.label} ${v.width}x${v.height}: ${String(e?.message ?? e)}`));
+    }
+  }
+
+  // ARIA snapshot.
+  let ariaPath: string | null = null;
+  try {
+    const aria = await page.locator('html').ariaSnapshot();
+    const filename = 'aria.txt';
+    writeFileSync(join(runDir, filename), aria);
+    ariaPath = filename;
+  } catch (e: any) {
+    obs.push(untrusted('aria-error', String(e?.message ?? e)));
+  }
+
+  await context.close().catch(() => {});
+
+  return makeResult({
+    url, finalUrl, status: 'ok', exitCode: 0,
+    obs, startedAt, args: a, screenshots, ariaPath, pageTitle,
+    noteExtras: [],
+  });
+}
+
+type AuditResult = {
+  schema_version: number;
+  tool: string;
+  tool_version: string;
+  audited_at: string;
+  url: string;
+  final_url: string;
+  url_safe: boolean;
+  duration_ms: number;
+  audit_status: 'ok' | 'failed' | 'auth_stale';
+  exit_code: number;
+  artifacts: {
+    screenshots: Array<{ viewport: string; width: number; height: number; path: string; bytes: number }>;
+    aria_snapshot: string | null;
+  };
+  untrusted_observations: UntrustedObs[];
+  isolation: {
+    fresh_context: boolean;
+    headless: boolean;
+    storage_state_used: boolean;
+    animations_disabled: boolean;
+    downloads_accepted: boolean;
+    permissions: 'denied';
+    wait_strategy: string;
+  };
+  notes: string[];
+};
+
+function makeResult(p: {
+  url: string;
+  finalUrl: string;
+  status: 'ok' | 'failed' | 'auth_stale';
+  exitCode: number;
+  obs: UntrustedObs[];
+  startedAt: number;
+  args: AuditArgs;
+  screenshots: AuditResult['artifacts']['screenshots'];
+  ariaPath: string | null;
+  pageTitle: UntrustedObs | null;
+  noteExtras: string[];
+}): AuditResult {
+  return {
+    schema_version: SCHEMA_VERSION,
+    tool: 'smriti-browse',
+    tool_version: TOOL_VERSION,
+    audited_at: isoNow(),
+    url: p.url,
+    final_url: p.finalUrl,
+    url_safe: isLocalhostUrl(p.url) || p.args.allowRemote,
+    duration_ms: Date.now() - p.startedAt,
+    audit_status: p.status,
+    exit_code: p.exitCode,
+    artifacts: {
+      screenshots: p.screenshots,
+      aria_snapshot: p.ariaPath,
+    },
+    untrusted_observations: assignIds(p.obs),
+    isolation: {
+      fresh_context: true,
+      headless: !p.args.headed,
+      storage_state_used: !!p.args.storage,
+      animations_disabled: true,
+      downloads_accepted: false,
+      permissions: 'denied',
+      wait_strategy: 'networkidle + domcontentloaded + 250ms settle',
+    },
+    notes: [
+      `viewports: ${p.args.viewports.map(v => `${v.label}=${v.width}x${v.height}`).join(', ')}`,
+      ...p.noteExtras,
+    ],
+  };
+}
+
+function failedResult(
+  url: string, exitCode: number, reason: string,
+  obs: UntrustedObs[], startedAt: number, args: AuditArgs, urlSafe: boolean,
+): AuditResult {
+  return {
+    schema_version: SCHEMA_VERSION,
+    tool: 'smriti-browse',
+    tool_version: TOOL_VERSION,
+    audited_at: isoNow(),
+    url,
+    final_url: url,
+    url_safe: urlSafe || isLocalhostUrl(url),
+    duration_ms: Date.now() - startedAt,
+    audit_status: 'failed',
+    exit_code: exitCode,
+    artifacts: { screenshots: [], aria_snapshot: null },
+    untrusted_observations: assignIds(obs),
+    isolation: {
+      fresh_context: true,
+      headless: !args.headed,
+      storage_state_used: !!args.storage,
+      animations_disabled: true,
+      downloads_accepted: false,
+      permissions: 'denied',
+      wait_strategy: 'networkidle + domcontentloaded + 250ms settle',
+    },
+    notes: [reason],
+  };
+}
+
+async function cmdLogin(args: string[]): Promise<number> {
+  let url: string | null = null;
+  let storage: string | null = null;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '--storage') storage = args[++i] ?? null;
+    else if (a.startsWith('--')) err(`unknown flag: ${a}`);
+    else if (!url) url = a;
+    else err(`unexpected positional arg: ${a}`);
+  }
+  if (!url) err('login: URL required');
+  if (!storage) err('login: --storage <state.json> required');
+
+  if (!isLocalhostUrl(url)) {
+    process.stderr.write(`smriti-browse: URL gate violation: ${url}\n`);
+    return 4;
+  }
+
+  let chromium: typeof import('playwright').chromium;
+  try {
+    ({ chromium } = await import('playwright'));
+  } catch {
+    process.stderr.write('smriti-browse: playwright is not installed. Run: smriti-browse install\n');
+    return 2;
+  }
+
+  ensureDir(dirname(resolve(storage)), 0o700);
+
+  let browser: import('playwright').Browser;
+  try {
+    browser = await chromium.launch({ headless: false });
+  } catch (e: any) {
+    process.stderr.write(`smriti-browse: failed to launch browser: ${String(e?.message ?? e)}\n`);
+    return 2;
+  }
+
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  await page.goto(url).catch(e => {
+    process.stderr.write(`smriti-browse login: failed to open ${url}: ${String(e?.message ?? e)}\n`);
+    process.stderr.write('  The browser is still open. Navigate manually to log in, then close the window.\n');
+  });
+
+  process.stderr.write('\nsmriti-browse login: complete the login in the browser, then close the window.\n');
+  process.stderr.write(`  Storage state will be saved to: ${storage}\n\n`);
+
+  // Poll until all pages are closed (user closed window). Save state before
+  // the browser fully disconnects.
+  await new Promise<void>(resolveWait => {
+    let saved = false;
+    const tick = async () => {
+      try {
+        if (context.pages().length === 0) {
+          if (!saved) {
+            saved = true;
+            try {
+              await context.storageState({ path: storage as string });
+              chmodSync(storage as string, 0o600);
+              process.stderr.write(`smriti-browse: saved storage state to ${storage}\n`);
+            } catch (e) {
+              process.stderr.write(`smriti-browse: failed to save storage state: ${String(e)}\n`);
+            }
+            resolveWait();
+            return;
+          }
+        }
+      } catch { /* context closed already */ }
+      setTimeout(tick, 250);
+    };
+    tick();
+  });
+
+  await browser.close().catch(() => {});
+  return 0;
+}
+
+// ─── Main ───────────────────────────────────────────────────────────────────
+
+async function main() {
+  const argv = process.argv.slice(2);
+  const sub = argv[0];
+  const rest = argv.slice(1);
+
+  if (!sub || sub === 'help' || sub === '--help' || sub === '-h') usage();
+
+  let code: number;
+  switch (sub) {
+    case 'audit':   code = await cmdAudit(rest); break;
+    case 'login':   code = await cmdLogin(rest); break;
+    case 'install': code = await cmdInstall(); break;
+    case 'update':  code = await cmdUpdate(); break;
+    default:        err(`unknown subcommand: ${sub}`);
+  }
+  process.exit(code);
+}
+
+main().catch(e => {
+  process.stderr.write(`smriti-browse: ${String(e?.message ?? e)}\n`);
+  process.exit(2);
+});

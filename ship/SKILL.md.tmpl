@@ -110,9 +110,17 @@ If no test framework is detectable, ask via AskUserQuestion: **scaffold one (vit
 ## Step 5: Run tests
 
 ```bash
-# Pick the right runner
+# Pick the right runner. bun first; pnpm fallback. Never npm — smriti is a
+# bun-only stack and a silent npm fallback hides real install/lockfile drift.
 if [ -f package.json ] && jq -e '.scripts.test' package.json >/dev/null 2>&1; then
-  TEST_CMD="bun run test 2>&1 || npm test 2>&1"
+  if command -v bun >/dev/null 2>&1; then
+    TEST_CMD="bun run test 2>&1"
+  elif command -v pnpm >/dev/null 2>&1; then
+    TEST_CMD="pnpm test 2>&1"
+  else
+    echo "smriti/ship: bun (or pnpm) is required to run tests; npm is not supported." >&2
+    TEST_CMD=""
+  fi
 elif [ -f pyproject.toml ]; then
   TEST_CMD="pytest 2>&1"
 elif [ -f Cargo.toml ]; then
