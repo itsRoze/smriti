@@ -26,7 +26,7 @@ Walk a design doc through 7 passes, rate each 0–10, fix gaps via inline plan e
 
 ```bash
 # Most recent design doc on this branch (from /office-hours)
-DESIGN_DOC=$(ls -t "${SMRITI_HOME:-$HOME/.smriti}/projects/$SLUG/"*-"$BRANCH"-design-*.md 2>/dev/null | head -1)
+DESIGN_DOC=$(ls -t "${SMRITI_HOME:-$HOME/.smriti}/projects/$SLUG/"*-"$BRANCH_SLUG"-design-*.md 2>/dev/null | head -1)
 [ -z "$DESIGN_DOC" ] && { echo "/plan-design-review: no design doc found for branch '$BRANCH'. Run /office-hours first."; exit 0; }
 
 # DESIGN.md is source of truth; warn if missing

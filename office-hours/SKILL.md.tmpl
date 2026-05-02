@@ -57,7 +57,7 @@ Load relevant prior learnings:
 **Check for prior design docs on this branch:**
 
 ```bash
-ls -t "${SMRITI_HOME:-$HOME/.smriti}/projects/$SLUG/"*-"$BRANCH"-design-*.md 2>/dev/null
+ls -t "${SMRITI_HOME:-$HOME/.smriti}/projects/$SLUG/"*-"$BRANCH_SLUG"-design-*.md 2>/dev/null
 ```
 
 If any exist, list their titles + dates back to the user:
@@ -184,7 +184,7 @@ When you run Codex, give it the design context (the user's mode, forcing-questio
 TS=$(date -u +%Y-%m-%dT%H-%M-%SZ)
 DESIGN_DIR="${SMRITI_HOME:-$HOME/.smriti}/projects/$SLUG"
 mkdir -p "$DESIGN_DIR"
-DESIGN_FILE="$DESIGN_DIR/$BRANCH-design-$TS.md"
+DESIGN_FILE="$DESIGN_DIR/$BRANCH_SLUG-design-$TS.md"
 ```
 
 **Template:**

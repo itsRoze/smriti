@@ -1,12 +1,13 @@
 {
   "name": "smriti",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Personal Claude Code skill stack — opinionated, learns across sessions.",
   "license": "MIT",
   "type": "module",
   "scripts": {
     "gen:skill-docs": "bun run scripts/gen-skill-docs.ts",
-    "skill:check": "bun run scripts/skill-check.ts"
+    "skill:check": "bun run scripts/skill-check.ts",
+    "test": "scripts/test-version-bump.sh"
   },
   "engines": {
     "bun": ">=1.0.0"

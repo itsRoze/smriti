@@ -9,6 +9,9 @@ eval "$(smriti-slug 2>/dev/null)" 2>/dev/null
 SLUG="${SLUG:-unknown}"
 IS_FIRST_TIME="${IS_FIRST_TIME:-no}"
 BRANCH=$(git branch --show-current 2>/dev/null || echo unknown)
+# Filename-safe form (slashes break path globbing + create unintended subdirs).
+# Use BRANCH for git/display, BRANCH_SLUG when interpolating into file paths.
+BRANCH_SLUG="${BRANCH//\//--}"
 
 # Config
 LEAN=$(smriti-config get lean 2>/dev/null || echo senior)
@@ -50,6 +53,7 @@ fi
 |-----|---------|
 | `SLUG` | Per-project identity (cached). |
 | `BRANCH` | Current git branch. |
+| `BRANCH_SLUG` | Filename-safe form of `BRANCH` (slashes → `--`). Use for paths. |
 | `IS_FIRST_TIME` | `yes` if this is the first smriti run in this repo. |
 | `LEAN` | `senior` or `prototype`. Skills should honor this. |
 | `CODEX_AVAILABLE` | `1` if Codex CLI is installed and authed. |
