@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # smriti-approvals — manage per-branch approval gates.
-# State: $SMRITI_HOME/projects/<slug>/<branch>-approvals.json
+# State: $SMRITI_HOME/projects/<slug>/<branch-slug>-approvals.json
+#        (branch-slug = $BRANCH with `/` replaced by `--` for filename safety)
 # View:  rendered into the most-recent design doc on the current branch
 #        as a "## Approvals" section (if a design doc exists).
 #
@@ -34,10 +35,24 @@ SMRITI_BIN="$(cd "$(dirname "$0")" && pwd -P)"
 eval "$("$SMRITI_BIN/smriti-slug" 2>/dev/null)" 2>/dev/null
 SLUG="${SLUG:-unknown}"
 BRANCH="${BRANCH:-$(git branch --show-current 2>/dev/null || echo unknown)}"
+# Filename-safe form of the branch (slashes break path globbing + create
+# unintended subdirs). Use BRANCH for git/display, BRANCH_SLUG for paths.
+BRANCH_SLUG="${BRANCH//\//--}"
 
 PROJ_DIR="${SMRITI_HOME:-$HOME/.smriti}/projects/$SLUG"
-STATE_FILE="$PROJ_DIR/${BRANCH}-approvals.json"
+STATE_FILE="$PROJ_DIR/${BRANCH_SLUG}-approvals.json"
 mkdir -p "$PROJ_DIR"
+
+# Migrate state from the pre-fix path (when $BRANCH had a slash, the file
+# landed in a subdirectory). One-shot move so existing approvals survive.
+if [ "$BRANCH" != "$BRANCH_SLUG" ]; then
+  LEGACY_FILE="$PROJ_DIR/${BRANCH}-approvals.json"
+  if [ -f "$LEGACY_FILE" ] && [ ! -f "$STATE_FILE" ]; then
+    mv "$LEGACY_FILE" "$STATE_FILE"
+    LEGACY_DIR=$(dirname "$LEGACY_FILE")
+    [ "$LEGACY_DIR" != "$PROJ_DIR" ] && rmdir "$LEGACY_DIR" 2>/dev/null || true
+  fi
+fi
 
 # Skill order in renderings (top-to-bottom pipeline order)
 SKILLS=(office-hours plan-eng-review plan-design-review eng-review design-review ship)
@@ -87,7 +102,7 @@ render_markdown() {
 }
 
 find_design_doc() {
-  ls -t "$PROJ_DIR/"*-"$BRANCH"-design-*.md 2>/dev/null | head -1
+  ls -t "$PROJ_DIR/"*-"$BRANCH_SLUG"-design-*.md 2>/dev/null | head -1
 }
 
 # Splice "## Approvals" section into the design doc.

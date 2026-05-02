@@ -26,7 +26,7 @@ Walk the design doc through four ordered review sections. Surface hidden assumpt
 
 ```bash
 # Most recent design doc on this branch (from /office-hours)
-DESIGN_DOC=$(ls -t "${SMRITI_HOME:-$HOME/.smriti}/projects/$SLUG/"*-"$BRANCH"-design-*.md 2>/dev/null | head -1)
+DESIGN_DOC=$(ls -t "${SMRITI_HOME:-$HOME/.smriti}/projects/$SLUG/"*-"$BRANCH_SLUG"-design-*.md 2>/dev/null | head -1)
 
 if [ -z "$DESIGN_DOC" ]; then
   echo "/plan-eng-review: no design doc found for branch '$BRANCH'."
