@@ -17,8 +17,53 @@ BIN_DIR="$HOME/.local/bin"
 cd "$SMRITI_DIR"
 
 # 1. Install deps
+#
+# Browser-audit support: ./setup asks once whether to install Chromium for
+# /design-review v2's browser audits. Persisted to ~/.smriti/config as
+# `browse_enabled=true|false`. Chromium itself (~140MB) is downloaded on first
+# audit by `smriti-browse install` only when browse_enabled=true; the Playwright
+# npm package itself is small and always installed.
+SMRITI_HOME="${SMRITI_HOME:-$HOME/.smriti}"
+SMRITI_CONFIG_FILE="$SMRITI_HOME/config"
+mkdir -p "$SMRITI_HOME"
+chmod 700 "$SMRITI_HOME" 2>/dev/null || true
+
+BROWSE_ENABLED=""
+if [ -f "$SMRITI_CONFIG_FILE" ]; then
+  BROWSE_ENABLED=$(grep -E '^browse_enabled=' "$SMRITI_CONFIG_FILE" 2>/dev/null | tail -1 | cut -d= -f2-)
+fi
+
+if [ -z "$BROWSE_ENABLED" ]; then
+  echo ""
+  echo "smriti can audit rendered UI in /design-review v2 via a Playwright wrapper."
+  echo "First audit will download ~140MB of Chromium. The npm package itself is small."
+  if [ -t 0 ]; then
+    printf "Enable browser-audit support? [Y/n] "
+    # Tolerate EOF (Ctrl-D) — `set -e` would otherwise kill setup on a
+    # non-zero `read` exit. Empty answer hits the default branch (true) below.
+    read -r ANSWER || ANSWER=""
+  else
+    # Non-interactive shell (e.g., CI): default to disabled, user can flip later.
+    ANSWER="n"
+    echo "  (non-interactive shell — defaulting to disabled; flip later with: smriti-config set browse_enabled true)"
+  fi
+  case "$ANSWER" in
+    n|N|no|NO) BROWSE_ENABLED=false ;;
+    *)         BROWSE_ENABLED=true ;;
+  esac
+  printf 'browse_enabled=%s\n' "$BROWSE_ENABLED" >> "$SMRITI_CONFIG_FILE"
+  echo "  saved: browse_enabled=$BROWSE_ENABLED  (edit $SMRITI_CONFIG_FILE to change)"
+  echo ""
+fi
+
 if [ -f package.json ]; then
-  bun install --silent 2>/dev/null || bun install
+  if [ "$BROWSE_ENABLED" = "true" ]; then
+    bun install --silent 2>/dev/null || bun install
+  else
+    # User opted out: skip Playwright's postinstall Chromium download.
+    PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 bun install --silent 2>/dev/null \
+      || PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 bun install
+  fi
 fi
 
 # 2. Generate SKILL.md from .tmpl files (when the engine exists)

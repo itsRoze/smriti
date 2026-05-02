@@ -14,6 +14,7 @@ A personal Claude Code skill stack — opinionated, learns across sessions, gets
 - [What a session looks like](#what-a-session-looks-like)
 - [Architecture](#architecture)
 - [Configuration](#configuration)
+- [Browser audit](#browser-audit-design-review-v2)
 - [What's deferred (v0.2 / later)](#whats-deferred-v02--later)
 - [Acknowledgments](#acknowledgments)
 - [License](#license)
@@ -40,7 +41,7 @@ Each skill produces an artifact the next one reads. Run them in order; downstrea
 | Plan | `/plan-eng-review` | Engineering Review Decisions section in design doc |
 | Plan | `/plan-design-review` | Design Review Decisions section + 0–10 scores |
 | Review | `/eng-review` | Auto-fixes + entries in `reviews.jsonl` |
-| Review | `/design-review` | Atomic `style(design):` commits + audit report |
+| Review | `/design-review` | Atomic `style(design):` commits + audit report (+ optional rendered audit via `smriti-browse`) |
 | Ship | `/ship` | Tests, version, CHANGELOG, bisectable commits, PR |
 | Memory | `/learn` | `~/.smriti/projects/<slug>/learnings.jsonl` |
 
@@ -125,9 +126,9 @@ Claude: Phase 3 (4 of 4 forcing questions, one at a time):
 
 ```
 ~/.claude/skills/smriti/                   ← code (this repo)
-├── bin/                                     # smriti-{slug,config,learnings-*,codex-probe,update-check,approvals,version-bump,pr-title-rewrite}
+├── bin/                                     # smriti-{slug,config,learnings-*,codex-probe,update-check,approvals,version-bump,pr-title-rewrite,browse}
 ├── lib/resolvers/                           # {{PLACEHOLDER}} content (preamble, rubric, hard-rules, etc.)
-├── scripts/                                 # gen-skill-docs.ts, skill-check.ts, test-version-bump.sh + test/*.bats
+├── scripts/                                 # gen-skill-docs.ts, skill-check.ts, run-tests.sh + test/*.bats + test/*.test.ts
 ├── eng-review/checklist.md                  # the artifact /eng-review reads
 └── <skill>/SKILL.md.tmpl                    # one per skill (generated SKILL.md is gitignored)
 
@@ -141,6 +142,9 @@ Claude: Phase 3 (4 of 4 forcing questions, one at a time):
     ├── reviews.jsonl                          # one entry per review run
     ├── <branch>-approvals.json                # per-branch approval state
     ├── <branch>-design-<ts>.md                # design docs (one per /office-hours run)
+    ├── audit-urls.txt                         # /design-review v2 — URLs to audit (in smriti state, not project repo)
+    ├── auth-state.json                        # /design-review v2 — Playwright storageState (mode 0600, never committed)
+    ├── audits/<branch>-<ts>/                  # /design-review v2 — screenshots, ARIA snapshots, audit.json per URL
     └── design-audit-<ts>.md                   # /design-review reports
 
 <your-repo>/
@@ -157,12 +161,38 @@ Claude: Phase 3 (4 of 4 forcing questions, one at a time):
 |-----|--------|---------|--------|
 | `lean` | `senior` / `prototype` | `senior` | review depth — `senior` insists on failure-mode coverage; `prototype` ships rough |
 | `codex_default` | `on` / `ask` / `off` | `ask` | whether `/office-hours` and `/plan-eng-review` auto-prompt for a Codex second opinion |
+| `browse_enabled` | `true` / `false` | (asked at `./setup`) | enables `/design-review` v2 rendered-audit step via `smriti-browse` (Playwright) |
 | `proactive` | `true` / `false` | `true` | reserved (proactive skill suggestions) |
 | `explain_level` | `default` / `terse` | `default` | reserved (output verbosity) |
 
+## Browser audit (`/design-review` v2)
+
+`/design-review` v1 catches code-level drift (token misuse, AI-slop patterns, hierarchy mistakes) by reading the diff. v2 adds a **rendered audit** via `smriti-browse` — a thin Playwright wrapper that captures screenshots at multiple viewports, the ARIA snapshot, and console errors per URL.
+
+**Scope is deliberately narrow:**
+
+- **Localhost only.** URLs must parse to `localhost`, `127.0.0.1`, `::1`, or `*.localhost`. `--allow-remote` is the deliberate escape hatch for public pages, off by default.
+- **Audit-only.** Read-only navigation; no clicks, no form fills, no agent-drivable interactive surface. (Out of scope for v0.2; revisit when a second consumer earns it.)
+- **Ephemeral context per URL.** Fresh Playwright context every audit; no persistent profile; no shared cookies/storage; downloads disabled; permissions denied. CSS animations + transitions disabled for stable screenshots.
+
+**Auth on localhost** is handled via Playwright's `storageState` pattern:
+
+```bash
+smriti-browse login http://localhost:3000 --storage ~/.smriti/projects/<slug>/auth-state.json
+# Headed Chromium opens. Log in manually. Close the window.
+# State saved to auth-state.json (mode 0600).
+```
+
+Subsequent audits reuse it: `smriti-browse audit ... --storage <path>`. If the session expires, smriti-browse exits with code 3 (auth_stale) and `/design-review` prompts to re-login.
+
+**Output:** the agent gets a structured `audit.json` per URL with all page-derived strings wrapped as `{untrusted: true, kind, value}` observations. **The wrapper is provenance, not enforcement** — `/design-review` never feeds the raw audit to an LLM; trusted findings reference observation IDs from `untrusted_observations[]` instead of embedding page text.
+
+**Exit codes:** `0` ok · `1` usage · `2` browser/runtime · `3` auth-stale · `4` URL gate violation.
+
+**Updating:** `smriti-browse update` bumps the npm package and refreshes the bundled Chromium binary in lockstep (avoids a binary/package version mismatch).
+
 ## What's deferred (v0.2 / later)
 
-- **Live browser audits in `/design-review`** — v1 is static (code-level only). v2 adds screenshots, console-error capture, and responsive checks via a browser daemon.
 - **`smriti-project` CLI** — `list` / `current` / `forget` / `archive` helpers for managing tracked projects ([ELI-19](https://linear.app/itselijah/issue/ELI-19)).
 - **`STALE` approval auto-detection** — currently manual; v0.2 hashes plan content and auto-invalidates approvals when the plan changes underneath them.
 - **Cross-machine memory sync** — runtime state in `~/.smriti/` is local-only; no sync layer.
