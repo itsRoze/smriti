@@ -6,7 +6,8 @@
   "type": "module",
   "scripts": {
     "gen:skill-docs": "bun run scripts/gen-skill-docs.ts",
-    "skill:check": "bun run scripts/skill-check.ts"
+    "skill:check": "bun run scripts/skill-check.ts",
+    "test": "scripts/test-version-bump.sh"
   },
   "engines": {
     "bun": ">=1.0.0"

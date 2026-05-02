@@ -141,7 +141,7 @@ Surface coverage in the PR body. If `coverage_pct < 60` and `LEAN=senior`, ask v
 
 ## Step 7: Plan completion audit (subagent)
 
-If a design doc exists for this branch (`~/.smriti/projects/$SLUG/*-$BRANCH-design-*.md`), dispatch a subagent:
+If a design doc exists for this branch (`~/.smriti/projects/$SLUG/*-$BRANCH_SLUG-design-*.md`), dispatch a subagent:
 
 > Read the design doc at `<path>` and the current branch's diff. For each item in the design doc's "Recommended approach" / "Next steps" / "Open questions", classify as DONE / CHANGED / DEFERRED. Output a markdown table.
 
@@ -157,34 +157,75 @@ If review surfaces **critical** findings the user defers, surface via AskUserQue
 
 ## Step 9: Version bump
 
-```bash
-[ -f VERSION ] && CURRENT_VERSION=$(cat VERSION)
-[ -f package.json ] && PKG_VERSION=$(jq -r '.version // empty' package.json)
+The classifier in `bin/smriti-version-bump` is a 4-state dispatch over (VERSION vs base, package.json vs VERSION). It catches the silent corruption mode where one of the two files drifts behind the other on a bumped branch.
 
-# Idempotency check: did this branch already bump?
-DIFF_VERSION=$(git diff "origin/$BASE_BRANCH" -- VERSION package.json 2>/dev/null)
-ALREADY_BUMPED=no
-[ -n "$DIFF_VERSION" ] && ALREADY_BUMPED=yes
+```bash
+STATE=$(smriti-version-bump classify "origin/$BASE_BRANCH")
+NEW=""
 ```
 
-**Auto-decide for small changes:**
+| State | Meaning | Action |
+|-------|---------|--------|
+| `FRESH` | VERSION at base; pkg synced (or absent) | run bump heuristics, then `smriti-version-bump apply <new>` |
+| `ALREADY_BUMPED` | VERSION ahead; pkg synced | skip — already done |
+| `DRIFT_STALE_PKG` | VERSION ahead; pkg stale | `smriti-version-bump repair` (sync pkg only — **no re-bump**) |
+| `DRIFT_UNEXPECTED` | VERSION at base; pkg differs | AskUserQuestion: which file is authoritative? |
+
+### `FRESH` — compute and apply the bump
+
+Auto-decide for small changes:
 
 | Heuristic | Bump |
 |-----------|------|
-| < 50 lines diff, no new files | MICRO (0.0.0.X) |
+| < 50 lines diff, no new files | PATCH (0.0.X) |
 | < 200 lines diff, no breaking signals | PATCH (0.0.X) |
 | New feature / new public API / > 200 lines | MINOR — **ask user** |
 | Breaking change keyword in commit messages (`BREAKING CHANGE`, `breaking:`) | MAJOR — **ask user** |
 
-If `ALREADY_BUMPED=yes`, skip (don't double-bump on re-run).
-
-Apply the bump to **both** `VERSION` and `package.json` if both exist (keep them in sync). Use `jq` for the JSON edit, not sed:
+Then:
 
 ```bash
-NEW="<computed>"
-echo "$NEW" > VERSION
-[ -f package.json ] && jq --arg v "$NEW" '.version = $v' package.json > /tmp/pkg.tmp && mv /tmp/pkg.tmp package.json
+# NEW is computed from heuristics above (e.g., 0.1.0 → 0.1.1).
+NEW=$(smriti-version-bump apply "$NEW")
 ```
+
+`apply` validates `$NEW` against `^[0-9]+\.[0-9]+\.[0-9]+$` and refuses malformed input — a safety net against shell metacharacters making it into the version string.
+
+### `ALREADY_BUMPED` — skip
+
+```bash
+NEW=$(smriti-version-bump read-version)
+```
+
+Don't double-bump on re-run. Just record the version that's already there for downstream steps.
+
+### `DRIFT_STALE_PKG` — repair only
+
+```bash
+NEW=$(smriti-version-bump repair)
+```
+
+Syncs `package.json.version` to `VERSION` without invoking the bump. The critical correctness property: a previous `/ship` already incremented VERSION; re-bumping here would compound the drift instead of fixing it.
+
+### `DRIFT_UNEXPECTED` — ask the user
+
+VERSION matches base but `package.json` was hand-edited (or vice versa). Smriti can't tell which is authoritative — ask.
+
+Issue **one** AskUserQuestion. Bash for each option:
+
+```bash
+# VERSION wins (overwrite pkg with VERSION's value)
+NEW=$(smriti-version-bump repair)
+
+# package.json wins (overwrite VERSION with pkg's value)
+NEW=$(jq -r '.version' package.json)
+printf '%s\n' "$NEW" > VERSION
+
+# Abort
+exit 0
+```
+
+Default to "VERSION wins" if `LEAN=senior` (treats the dedicated VERSION file as canonical); otherwise "Abort".
 
 ## Step 10: CHANGELOG + TODOS.md
 
@@ -250,10 +291,16 @@ EXISTING_PR=$(gh pr list --head "$BRANCH" --json number,url,state --jq '.[0]')
 ```
 
 - **No PR exists** → `gh pr create` with the body below
-- **PR exists, OPEN** → `gh pr edit <num> --body "<new body>"` (update in place; idempotent)
+- **PR exists, OPEN** → `gh pr edit <num> --title "<new title>" --body "<new body>"` (update in place; idempotent — title rewrite catches stale `v<old-version>` prefixes when version bumped after PR opened)
 - **PR exists, MERGED/CLOSED** → AskUserQuestion: **reopen** / **create a new PR** / **abort**
 
-PR title: take the first line of the most recent non-WIP commit (or ask the user to confirm if it looks generic).
+**PR title:** pick the most descriptive non-WIP commit subject from this branch's history (skip `WIP`, `fixup`, `chore: bump version`, `chore: apply /eng-review` — those are mechanical). If the chosen title looks generic (`fix`, `update`), ask the user to confirm. Then run it through the rewriter:
+
+```bash
+TITLE=$(smriti-pr-title-rewrite "$NEW" "$RAW_TITLE")
+```
+
+`smriti-pr-title-rewrite` is idempotent: calling it on a title already starting with `v$NEW ` returns the title unchanged; calling it on a title starting with `v<other-version> ` replaces the stale prefix. This means re-running `/ship` after a version bump always produces a correct, current title.
 
 PR body template:
 
@@ -293,7 +340,7 @@ PR body template:
 ```
 
 ```bash
-gh pr create --title "<title>" --body "$(cat <<'EOF'
+gh pr create --title "$TITLE" --body "$(cat <<'EOF'
 <body above>
 EOF
 )" 2>&1

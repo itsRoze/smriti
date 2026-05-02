@@ -72,7 +72,7 @@ Each review skill stamps its verdict at the top of the design doc. `/ship` reads
 
 ## Install
 
-Requires [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Bun](https://bun.sh) ≥ 1.0, [Git](https://git-scm.com), [jq](https://jqlang.github.io/jq/), and optionally [`gh`](https://cli.github.com) for `/ship`'s GitHub path.
+Requires [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Bun](https://bun.sh) ≥ 1.0, [Git](https://git-scm.com), [jq](https://jqlang.github.io/jq/), and optionally [`gh`](https://cli.github.com) for `/ship`'s GitHub path. To run the test suite (`bun run test`): [bats-core](https://github.com/bats-core/bats-core) (`brew install bats-core`).
 
 ```bash
 git clone https://github.com/itsRoze/smriti.git ~/.claude/skills/smriti
@@ -125,9 +125,9 @@ Claude: Phase 3 (4 of 4 forcing questions, one at a time):
 
 ```
 ~/.claude/skills/smriti/                   ← code (this repo)
-├── bin/                                     # smriti-{slug,config,learnings-*,codex-probe,update-check,approvals}
+├── bin/                                     # smriti-{slug,config,learnings-*,codex-probe,update-check,approvals,version-bump,pr-title-rewrite}
 ├── lib/resolvers/                           # {{PLACEHOLDER}} content (preamble, rubric, hard-rules, etc.)
-├── scripts/                                 # gen-skill-docs.ts, skill-check.ts
+├── scripts/                                 # gen-skill-docs.ts, skill-check.ts, test-version-bump.sh + test/*.bats
 ├── eng-review/checklist.md                  # the artifact /eng-review reads
 └── <skill>/SKILL.md.tmpl                    # one per skill (generated SKILL.md is gitignored)
 
