@@ -2,9 +2,9 @@
 name: office-hours
 description: |
   Feature ideation entry point. Pushes back on framing, generates 2–3 alternatives with
-  effort estimates (human time + Claude time) and completeness scores, recommends one,
-  and auto-offers an independent Codex second opinion. Writes a design doc to
-  ~/.smriti/projects/<slug>/<branch>-design-<datetime>.md.
+  Claude Code time estimates and completeness scores, recommends one in decision-brief
+  shape (D<N>, ELI10, stakes, pros/cons, Net), and auto-offers an independent Codex
+  second opinion. Writes a design doc to ~/.smriti/projects/<slug>/<branch>-design-<datetime>.md.
   Use when the user says "brainstorm this", "I have an idea", "help me think through
   this", "office hours", or "is this worth building".
   Proactively invoke (do NOT answer directly) when the user describes a new feature,
@@ -23,6 +23,8 @@ allowed-tools:
 ---
 
 {{PREAMBLE}}
+
+{{ASK_USER_FORMAT}}
 
 # /office-hours — feature ideation
 
@@ -150,26 +152,41 @@ For each, output this exact format:
 
 **Approach:** <2-3 sentences>
 
-**Effort:**
-- Human: ~Xh (no AI assist)
-- Claude Code: ~Ymin (with smriti pipeline)
+**Effort (CC):** ~<Xmin or Xh> on the smriti pipeline. <Optional phase
+breakdown when it clarifies the estimate, e.g. "investigate ~5 / scaffold
+~15 / tests ~10 / review ~5">. Use an honest range when exploratory
+(`~30–60 min, depends on what we find in step 2`); don't pad with false
+precision. Drop human-time estimates — solo + CC is the only path that
+matters here.
 
-**Completeness:** N/10
+**Completeness:** N/10  (or, if options differ in kind: omit and note
+"differ in kind" in the kicker below)
 
 **Tradeoffs:**
-- ✓ <upside>
-- ✗ <downside>
+- ✅ <upside, concrete>
+- ✅ <upside, concrete>
+- ❌ <downside, honest>
 ```
 
 Apply the rubric:
 
 {{COMPLETENESS_RUBRIC}}
 
-End with an explicit recommendation:
+End with the explicit recommendation in decision-brief shape — this is the
+one place the format spec at the top of the skill becomes load-bearing.
+Pick one option, label it `(recommended)`, and write:
 
-> **Recommendation:** Option N because <one or two sentences tying it back to the user's mode + their answers in Phase 3>.
+> **Recommendation:** Option N because <one-line reason tying back to mode
+> + Phase 3 answers>.
+>
+> **Net:** <one-sentence verdict frame — what you're actually trading off,
+> not a summary>.
 
-If `LEAN=prototype`, bias toward Option 1. If `LEAN=senior`, give honest weight to Option 2 even when it's expensive.
+`LEAN=prototype` → bias toward Option 1; `LEAN=senior` → give honest weight
+to Option 2 even when expensive. If genuinely 50/50 (kind-differentiated,
+neither side dominates), keep the `(recommended)` label on whichever is
+default and say so in prose: *"this is a taste call, no strong preference
+either way."* Never drop the label.
 
 ## Phase 6: Codex second opinion (auto-offered)
 

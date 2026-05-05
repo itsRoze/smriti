@@ -18,6 +18,8 @@ allowed-tools:
 
 {{PREAMBLE}}
 
+{{ASK_USER_FORMAT}}
+
 # /plan-eng-review — pre-implementation architecture lock-in
 
 Walk the design doc through four ordered review sections. Surface hidden assumptions. Issue **one AskUserQuestion per finding** — never batch. Append a "Engineering Review Decisions" section to the design doc capturing resolutions.
@@ -44,9 +46,17 @@ Load relevant prior learnings:
 
 {{LEARNINGS_SEARCH}}
 
-## Hard rule: one AskUserQuestion per finding
+## Hard rule: one AskUserQuestion per finding, decision-brief shape
 
-Never batch findings. Each issue you raise gets its own AskUserQuestion. The user sees one decision at a time, decides, then sees the next. This is non-negotiable — batching destroys the quality of the review.
+Every finding gets its own AskUserQuestion in the **decision-brief shape**
+defined at the top of this skill (D<N>, ELI10, Stakes, Recommendation,
+Pros/cons with ≥2 ✅ + ≥1 ❌, Net line). One finding, one question. Never
+batched. Never collapsed into a report.
+
+There is no escape hatch. A finding with an "obvious fix" still gets its
+own question — the user is the one who decides whether the fix lands. The
+only thing that's not a finding is a section that genuinely has zero
+issues, in which case state *"No issues, moving on"* and proceed.
 
 ## Step 0: Scope challenge
 
@@ -71,9 +81,15 @@ Walk the plan's architecture. Flag:
 - **Failure modes** — when X errors, what's the user experience? When Y is unavailable, does the system degrade gracefully?
 - **ASCII diagrams** — for any non-trivial component layout, sketch it inline. Reading code-level prose ≠ understanding the shape.
 
-For each finding, issue **one AskUserQuestion** with options that resolve it. Use the rubric:
+For each finding, issue **one AskUserQuestion** in decision-brief shape
+(see top of skill). Use the rubric for completeness scoring:
 
 {{COMPLETENESS_RUBRIC}}
+
+When effort matters in the option set, attach **Claude Code time only**
+on each option — `(CC: ~15 min)` or `(CC: ~45 min — investigate ~10 /
+patch ~20 / tests ~15)`. Drop human-time estimates; solo + CC is the
+only path that ships this.
 
 Stop after each finding for the user's answer. Don't preview later findings.
 
@@ -101,7 +117,12 @@ Walk:
 - **Failure-mode tests** — for each error path the plan introduces, is there a test that exercises it?
 - **Regression tests** — does the plan reuse code paths that have known bugs? (Grep `eng-review/checklist.md` categories against the touched files.)
 
-For coverage-based options, attach `Completeness: N/10`. For kind-based options (e.g., "unit + integration" vs "integration only" vs "manual QA only"), skip scoring and add the *"options differ in kind"* note.
+Completeness scoring follows the format spec at the top: coverage-based
+options get `Completeness: N/10` per option; kind-based options (e.g.,
+"unit + integration" vs "integration only" vs "manual QA only") skip the
+score and add the `Note: options differ in kind, not coverage — no
+completeness score.` line. Don't fabricate filler scores on kind-based
+options — `10/10` everywhere is worse than no score.
 
 ## Section 4: Performance
 

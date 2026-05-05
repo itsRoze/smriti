@@ -18,6 +18,8 @@ allowed-tools:
 
 {{PREAMBLE}}
 
+{{ASK_USER_FORMAT}}
+
 # /plan-design-review — designer's-eye review
 
 Walk a design doc through 7 passes, rate each 0–10, fix gaps via inline plan edits, re-rate. Target 10. Issue **one AskUserQuestion per finding** — never batch. Reads `DESIGN.md` as source of truth.
@@ -45,9 +47,15 @@ Load relevant prior learnings:
 
 {{LEARNINGS_SEARCH}}
 
-## Hard rule: one AskUserQuestion per finding
+## Hard rule: one AskUserQuestion per finding, decision-brief shape
 
-Never batch. Each pass produces 0+ findings; each finding gets its own AskUserQuestion. Within a single pass, ask one, wait, then the next.
+Each pass produces 0+ findings; each finding gets its own AskUserQuestion
+in the **decision-brief shape** defined at the top of this skill (D<N>,
+ELI10, Stakes, Recommendation, Pros/cons with ≥2 ✅ + ≥1 ❌, Net line).
+Within a single pass, ask one, wait, then the next.
+
+There is no escape hatch — a finding with an "obvious fix" still gets its
+own question. Pass-level "no findings here" is the only way to skip.
 
 ## Step 0: Design scope assessment
 
