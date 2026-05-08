@@ -20,7 +20,7 @@ allowed-tools:
 
 # /ship — full ship pipeline
 
-12 steps. Each step idempotent (safe to re-run). Composes `/eng-review` and `/design-review` internally so the user runs **one** command from "code is done" to "PR is open."
+13 steps (plus sub-step 5b for new-CLI smoke-testing). Each step idempotent (safe to re-run). Composes `/eng-review` and `/design-review` internally so the user runs **one** command from "code is done" to "PR is open."
 
 ## Step 1: Pre-flight
 
@@ -136,6 +136,36 @@ If failures: triage in-branch (caused by this branch's changes) vs pre-existing 
 
 - **In-branch failure:** stop. Surface failures to user via AskUserQuestion: **fix and re-run / commit-as-WIP and continue (not recommended) / abort**.
 - **Pre-existing:** proceed but include a note in the PR body about which tests were already broken.
+
+## Step 5b: Smoke-test new CLIs (production-shape invocation)
+
+If the diff adds or modifies any `bin/smriti-*` script, exercise it **via the PATH symlink** (`smriti-<name>`, not the absolute repo path) so path-resolution and shebang bugs that absolute-path tests miss surface here. This is the guardrail against the ELI-36 class of bug: green tests + broken CLI.
+
+The smoke invocation must reach the script's path-resolution code. An early-exit `--help` is **not enough** — that's exactly what ELI-36 would have passed. Pick a no-op that runs through the normal code path, sandboxing if it would mutate user state.
+
+```bash
+CHANGED_BINS=$(git diff --name-only "origin/$BASE_BRANCH" -- 'bin/smriti-*' \
+  | xargs -n1 -I{} basename {} 2>/dev/null)
+```
+
+For each changed CLI, the right invocation depends on what it does:
+
+| CLI shape | Smoke invocation |
+|-----------|-----------------|
+| Pure transform (no FS / network — e.g. `smriti-pr-title-rewrite`, `smriti-slug --print`) | run with valid args; assert exit 0 and expected output shape |
+| Read-only state probe (e.g. `smriti-codex-probe`, `smriti-config list`, `smriti-approvals get`) | invoke directly; assert exit 0 |
+| Subcommand-dispatched (e.g. `smriti-version-bump`, `smriti-approvals`) | invoke a read-only subcommand (`classify`, `get-json`, `list`) that runs through path resolution |
+| Mutates user files (e.g. `smriti-principles-install`, `smriti-learnings-log`) | sandbox via `mktemp -d` + `cd` + optional `git init -q`, then invoke production-shape |
+
+Sandbox template for destructive CLIs:
+
+```bash
+SANDBOX=$(mktemp -d)
+( cd "$SANDBOX" && git init -q && smriti-principles-install ) >/dev/null
+rm -rf "$SANDBOX"
+```
+
+If a smoke invocation fails (non-zero exit, unexpected output): stop. The CLI is broken in production shape even though `bun run test` passed. Issue an AskUserQuestion: **fix and re-run / abort**. Don't ship a broken binary.
 
 ## Step 6: Coverage audit (subagent)
 
