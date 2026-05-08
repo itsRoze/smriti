@@ -243,3 +243,32 @@ EOF
   cd /
   rm -rf "$NONGIT"
 }
+
+# ─── Story 14: PATH-launched invocation via symlink ───────────────────────
+
+# Regression test for the bug where invoking the CLI through a symlink
+# (e.g., ~/.local/bin/smriti-principles-install → repo's bin/) caused $0 to
+# be the symlink path and the smriti_root resolution to derive from the
+# symlink's parent dir rather than the actual repo. The @-line in CLAUDE.md
+# would point to a non-existent path.
+
+@test "symlink-launched CLI: @-line resolves to the real repo's principles.md" {
+  # Create a symlink to the CLI in a separate dir, mimicking ~/.local/bin/
+  mkdir -p fake-bin-dir
+  ln -sf "$CLI" fake-bin-dir/smriti-principles-install
+
+  # Invoke via the symlink, not the real CLI path.
+  run fake-bin-dir/smriti-principles-install
+  [ "$status" -eq 0 ]
+
+  # The @-line must point to the REAL repo's lib/resolvers/principles.md, not
+  # to a path derived from fake-bin-dir's parent (which would be the test WORK).
+  ACTUAL_AT=$(grep '^@' CLAUDE.md)
+
+  # Compare against the canonical line from a direct CLI invocation.
+  mkdir reference
+  ( cd reference && git init -q && "$CLI" >/dev/null )
+  EXPECTED_AT=$(grep '^@' reference/CLAUDE.md)
+
+  [ "$ACTUAL_AT" = "$EXPECTED_AT" ]
+}

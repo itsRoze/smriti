@@ -5,3 +5,10 @@ dist/
 
 # Generated SKILL.md files — source of truth is SKILL.md.tmpl
 **/SKILL.md
+
+# Per-developer dogfood install of smriti's coding principles. The @-line in
+# this file resolves to the developer's local smriti install path (e.g.,
+# ~/dev/smriti/lib/resolvers/principles.md), which is machine-specific. Each
+# developer runs `smriti-principles-install` locally to generate it.
+# Anchored to repo root so a fixture or sub-dir named CLAUDE.md isn't ignored.
+/CLAUDE.md

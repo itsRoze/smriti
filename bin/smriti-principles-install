@@ -37,8 +37,13 @@ resolve_repo_root() {
 
 resolve_principles_import_path() {
   # Absolute path of lib/resolvers/principles.md inside this smriti install.
-  local bin_dir smriti_root abs
-  bin_dir="$(cd "$(dirname "$0")" && pwd -P)"
+  local script_path bin_dir smriti_root abs
+  # Dereference $0 first — PATH-launched invocations (~/.local/bin/<name>)
+  # are symlinks to the actual script in the smriti repo. Without resolving
+  # the symlink, dirname($0) is the symlink dir and smriti_root would
+  # incorrectly resolve to its parent (e.g., ~/.local instead of the repo).
+  script_path="$(resolve_symlink_one_level "$0")"
+  bin_dir="$(cd "$(dirname "$script_path")" && pwd -P)"
   smriti_root="$(cd "$bin_dir/.." && pwd -P)"
   abs="$smriti_root/lib/resolvers/principles.md"
 
