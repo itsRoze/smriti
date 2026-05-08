@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.4.0 — 2026-05-07
+
+### Added
+- `lib/resolvers/principles.md` — single-source-of-truth coding-principles file shared across every project that opts in. Tier 1 (hard gates) operationalizes "optimize for AI" as four behaviors: searchability, locality, explicitness, consistency. Tier 2 captures user preferences (small functions, descriptive names, comments-for-WHY, facade-only-on-second-consumer, etc.). Tier 2b operationalizes "leave the garden better" as a review-effort budget. Tier 3 is a narrative tie-breaker. Smell appendix names rigidity / fragility / immobility / opacity for cite-ability — diagnoses, not rules. Conflict ladder: lower-numbered tier wins. ([ELI-33](https://linear.app/itselijah/issue/ELI-33))
+- `bin/smriti-principles-install` — idempotent CLI that adds (or updates) a sentinel-marker block in the project's `CLAUDE.md`:
+  ```
+  # smriti:principles
+  @~/.claude/skills/smriti/lib/resolvers/principles.md
+  ```
+  Repo-root resolution via `git rev-parse --show-toplevel` (pwd fallback for non-git). Atomic temp-write + `mv` (portable across BSD/GNU). Strips CR for line comparison; normalizes CRLF to LF on rewrite. Five behaviors: create-if-missing / append-if-marker-absent / no-op-if-already-installed / migrate-on-path-change / **fail-loud** if marker present but the line below is unrelated user content (zero silent overwrites). One-level symlink resolution so the underlying target file is mutated, not the symlink replaced. Prints reload notice so the user knows to restart Claude Code to pick up the new `@`-import.
+- `{{PRINCIPLES}}` resolver injected into `eng-review/SKILL.md.tmpl` (new Phase 1b + Pass 3) and `plan-eng-review/SKILL.md.tmpl` (new "Principles" section). Reviews now cite findings by tier and rule (`Tier 1b (locality)`, `Tier 2.7 (premature facade)`).
+- `bootstrap/SKILL.md.tmpl` — Phase 3d calls `smriti-principles-install` after `PROJECT.md` write so new repos get the @-import automatically. Documents fail-loud behavior so /bootstrap doesn't paper over a non-zero exit.
+- `lib/resolvers/preamble.md` — `HAS_PRINCIPLES` check verifies BOTH the marker line AND the adjacent `@`-line (matches the install contract; broken-install states correctly trigger the nudge instead of being suppressed). Soft auto-nudge fires early in skill output: *"NOTE: principles not installed in this repo. Run 'smriti-principles-install' to enable cross-project coding principles."*
+- `scripts/test/principles.bats` — 14-scenario suite: self-contained lint (rejects relative paths AND `{{...}}` placeholders), CLI idempotency, fresh-create, preserve-existing user content, marker-update on path migration, fail-loud on adjacency violation, fail-loud when marker is the last line, subdirectory cwd resolution, empty CLAUDE.md, CRLF input detection, symlinked CLAUDE.md (mutates target, preserves symlink), byte-exact `@`-line assertion via reference install, non-git pwd fallback. Total test count: 64 bats + 4 bun.
+
+### Changed
+- `README.md` — new "Principles" section documents the file's role, install command, soft-nudge rollout, and v1 trade-offs accepted (path portability, no cite-by-ID, mid-session reload). TOC + architecture diagram + bin/ list updated.
+
+### Cross-project propagation
+
+Editing `lib/resolvers/principles.md` in this repo propagates to every project that has run `smriti-principles-install` — the @-import points at the smriti install path, so the next Claude Code session in any installed repo picks up the new content. No per-project sync.
+
+### Follow-up
+
+- v2 (structured + `smriti-principles` CLI with cite-by-ID and schema validation) tracked as [ELI-32](https://linear.app/itselijah/issue/ELI-32).
+
 ## 0.3.0 — 2026-05-02
 
 ### Added

@@ -1,0 +1,236 @@
+#!/usr/bin/env bash
+# smriti-principles-install — install the smriti principles @-import into the project's CLAUDE.md.
+# Idempotent. Uses a sentinel marker for safe re-runs and path migrations.
+#
+# Marker block written (two lines, adjacent):
+#   # smriti:principles
+#   @<smriti-install-path>/lib/resolvers/principles.md
+#
+# Behavior:
+#   - No CLAUDE.md                                     → create with marker block
+#   - Marker absent in existing CLAUDE.md              → append marker block (with separator)
+#   - Marker present, line below matches expected      → no-op (idempotent re-run)
+#   - Marker present, line below is smriti-shape but   → update the @-line, marker preserved
+#     path differs (path-migration case)
+#   - Marker present, line below is anything else      → fail loud, zero silent overwrites
+#
+# Target resolution: $(git rev-parse --show-toplevel)/CLAUDE.md; fallback $(pwd)/CLAUDE.md.
+# Atomic write via temp file + mv (portable across macOS/Linux; safer than sed -i).
+# CRLF normalized to LF on rewrite (mixed-ending input is read OK; output is pure LF).
+
+set -e
+
+readonly MARKER='# smriti:principles'
+readonly EXIT_BAD_USAGE=2
+readonly EXIT_ADJACENCY_VIOLATION=3
+readonly EXIT_NO_TARGET=4
+
+# ─── Path resolution ───────────────────────────────────────────────────────
+
+resolve_repo_root() {
+  if git rev-parse --show-toplevel >/dev/null 2>&1; then
+    git rev-parse --show-toplevel
+  else
+    pwd -P
+  fi
+}
+
+resolve_principles_import_path() {
+  # Absolute path of lib/resolvers/principles.md inside this smriti install.
+  local bin_dir smriti_root abs
+  bin_dir="$(cd "$(dirname "$0")" && pwd -P)"
+  smriti_root="$(cd "$bin_dir/.." && pwd -P)"
+  abs="$smriti_root/lib/resolvers/principles.md"
+
+  # Convert to ~/-prefixed form when under $HOME (portable across machines
+  # where smriti lives at the same ~/-relative path).
+  if [ -n "$HOME" ] && [ "${abs#$HOME/}" != "$abs" ]; then
+    printf '~/%s' "${abs#$HOME/}"
+  else
+    printf '%s' "$abs"
+  fi
+}
+
+# ─── Pure-shell line predicates ────────────────────────────────────────────
+
+is_smriti_at_line() {
+  # A line is "smriti-shaped" if it starts with @ and ends with /principles.md.
+  # That's a wider net than exact match — used to detect the path-migration case.
+  local line="$1"
+  case "$line" in
+    @*principles.md) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# ─── Atomic write ──────────────────────────────────────────────────────────
+
+resolve_symlink_one_level() {
+  # Portable single-level symlink resolution. macOS's BSD `readlink` doesn't
+  # have GNU's `-f`, so we do it by hand. Multi-level symlinks resolve as far
+  # as one hop — rare enough that we don't recurse here.
+  local path="$1" link
+  if [ -L "$path" ]; then
+    link="$(readlink "$path")"
+    case "$link" in
+      /*) printf '%s' "$link" ;;
+      *)  printf '%s/%s' "$(cd "$(dirname "$path")" && pwd -P)" "$link" ;;
+    esac
+  else
+    printf '%s' "$path"
+  fi
+}
+
+write_atomic() {
+  # Args: target_path content_file
+  # Follow a symlinked target so we mutate the underlying file rather than
+  # replacing the symlink with a regular file (which would break shared
+  # CLAUDE.md setups in monorepos).
+  local target="$1" src="$2" resolved dir tmp
+  resolved="$(resolve_symlink_one_level "$target")"
+  dir="$(dirname "$resolved")"
+  tmp="$(mktemp "$dir/.CLAUDE.md.XXXXXX")"
+  cat "$src" > "$tmp"
+  mv "$tmp" "$resolved"
+}
+
+# ─── Core install logic ────────────────────────────────────────────────────
+
+install_principles_import() {
+  local target="$1" expected_at_line="$2"
+
+  local work
+  work="$(mktemp -t smriti-principles-install.XXXXXX)"
+  # shellcheck disable=SC2064 # capture target by value here, not at trap time
+  trap "rm -f '$work'" EXIT
+
+  # Case 1: target doesn't exist → create with marker block.
+  if [ ! -f "$target" ]; then
+    {
+      printf '%s\n' "$MARKER"
+      printf '%s\n' "$expected_at_line"
+    } > "$work"
+    write_atomic "$target" "$work"
+    echo "smriti-principles: created $target with @-import."
+    print_reload_warning
+    return 0
+  fi
+
+  # Read existing file, stripping CR for analysis (preserves UNIX & DOS files).
+  local existing_lf
+  existing_lf="$(mktemp -t smriti-principles-install-existing.XXXXXX)"
+  trap "rm -f '$work' '$existing_lf'" EXIT
+  tr -d '\r' < "$target" > "$existing_lf"
+
+  # Find the marker line number (1-indexed). 0 = absent.
+  local marker_line
+  marker_line="$(grep -nF -m 1 "$MARKER" "$existing_lf" | cut -d: -f1)"
+  marker_line="${marker_line:-0}"
+
+  # Case 2: marker absent → append marker block (with separator blank line if
+  # file is non-empty AND doesn't already end with a blank line).
+  if [ "$marker_line" -eq 0 ]; then
+    cat "$existing_lf" > "$work"
+    # Ensure trailing newline before appending.
+    if [ -s "$work" ] && [ "$(tail -c 1 "$work" | od -An -c | tr -d ' ')" != '\n' ]; then
+      printf '\n' >> "$work"
+    fi
+    # Add a separator blank line if the file is non-empty and last line wasn't blank.
+    if [ -s "$work" ] && [ -n "$(tail -n 1 "$work")" ]; then
+      printf '\n' >> "$work"
+    fi
+    printf '%s\n' "$MARKER" >> "$work"
+    printf '%s\n' "$expected_at_line" >> "$work"
+    write_atomic "$target" "$work"
+    echo "smriti-principles: added @-import to $target."
+    print_reload_warning
+    return 0
+  fi
+
+  # Marker present. Inspect the line directly below.
+  local total_lines line_below_num line_below
+  total_lines="$(wc -l < "$existing_lf" | tr -d ' ')"
+  line_below_num=$((marker_line + 1))
+
+  if [ "$line_below_num" -gt "$total_lines" ]; then
+    # Marker is the last line. Adjacency violation: nothing below.
+    echo "smriti-principles: ERROR — marker '$MARKER' is present in $target but has no line below it. Resolve manually: either delete the marker, or add the @-line ($expected_at_line) directly after." >&2
+    return $EXIT_ADJACENCY_VIOLATION
+  fi
+
+  line_below="$(sed -n "${line_below_num}p" "$existing_lf")"
+
+  # Case 3: line below is exactly the expected @-line → no-op.
+  if [ "$line_below" = "$expected_at_line" ]; then
+    echo "smriti-principles: already installed in $target (no changes)."
+    return 0
+  fi
+
+  # Case 4: line below is a smriti-shaped @-line at a different path → migrate.
+  if is_smriti_at_line "$line_below"; then
+    awk -v lb="$line_below_num" -v repl="$expected_at_line" '
+      NR == lb { print repl; next }
+      { print }
+    ' "$existing_lf" > "$work"
+    write_atomic "$target" "$work"
+    echo "smriti-principles: updated @-import path in $target (was: $line_below; now: $expected_at_line)."
+    print_reload_warning
+    return 0
+  fi
+
+  # Case 5: line below is unrelated user content → fail loud.
+  echo "smriti-principles: ERROR — marker '$MARKER' is present in $target but the line below is unrelated content:" >&2
+  echo "  line $line_below_num: $line_below" >&2
+  echo "Refusing to overwrite. Resolve manually: either move user content elsewhere, or delete the marker." >&2
+  return $EXIT_ADJACENCY_VIOLATION
+}
+
+print_reload_warning() {
+  echo "  (Restart your Claude Code session to pick up the new @-import.)"
+}
+
+# ─── Main ──────────────────────────────────────────────────────────────────
+
+usage() {
+  cat <<'EOF'
+smriti-principles-install — install smriti's principles @-import into project CLAUDE.md.
+
+Usage:
+  smriti-principles-install         install or update in the current repo
+  smriti-principles-install --help  print this message
+
+Idempotent. Safe to re-run. Aborts with a clear error if the marker block in
+CLAUDE.md has been edited in a way that's ambiguous to repair.
+EOF
+}
+
+main() {
+  case "${1:-}" in
+    -h|--help)
+      usage
+      return 0
+      ;;
+    "")
+      ;;
+    *)
+      echo "smriti-principles-install: unexpected argument '$1'" >&2
+      usage >&2
+      return $EXIT_BAD_USAGE
+      ;;
+  esac
+
+  local repo_root target import_path expected_at_line
+  repo_root="$(resolve_repo_root)"
+  target="$repo_root/CLAUDE.md"
+  import_path="$(resolve_principles_import_path)"
+  expected_at_line="@$import_path"
+
+  if [ -z "$repo_root" ]; then
+    echo "smriti-principles-install: could not resolve a repo root or working directory." >&2
+    return $EXIT_NO_TARGET
+  fi
+
+  install_principles_import "$target" "$expected_at_line"
+}
+
+main "$@"

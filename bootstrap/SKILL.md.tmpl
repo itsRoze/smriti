@@ -118,6 +118,25 @@ smriti-learnings-log \
   --source user-stated
 ```
 
+**3d. Install smriti's coding principles** into the project's `CLAUDE.md`:
+
+```bash
+smriti-principles-install
+```
+
+This adds (or updates) a sentinel-marker block that `@`-imports
+`lib/resolvers/principles.md` from the smriti install. Idempotent and
+runnable on any repo at any time — `/bootstrap` calls it for new repos,
+existing already-bootstrapped repos can run the CLI directly. The CLI
+prints a one-line reload notice so the user knows to restart Claude Code
+to pick up the new import.
+
+If the CLI exits non-zero (e.g., the project already has a stale
+`# smriti:principles` marker followed by unrelated user content),
+**stop here** — surface the CLI's error to the user and ask them to
+resolve the conflict in `CLAUDE.md` manually. Do not paper over it; the
+fail-loud is by design.
+
 ## Phase 4: Handoff
 
 - If `design priority = high` AND `DESIGN.md` does NOT exist:

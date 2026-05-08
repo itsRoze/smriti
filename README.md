@@ -14,6 +14,7 @@ A personal Claude Code skill stack — opinionated, learns across sessions, gets
 - [What a session looks like](#what-a-session-looks-like)
 - [Architecture](#architecture)
 - [Configuration](#configuration)
+- [Principles](#principles)
 - [Browser audit](#browser-audit-design-review-v2)
 - [What's deferred (v0.2 / later)](#whats-deferred-v02--later)
 - [Acknowledgments](#acknowledgments)
@@ -126,8 +127,8 @@ Claude: Phase 3 (4 of 4 forcing questions, one at a time):
 
 ```
 ~/.claude/skills/smriti/                   ← code (this repo)
-├── bin/                                     # smriti-{slug,config,learnings-*,codex-probe,update-check,approvals,version-bump,pr-title-rewrite,browse}
-├── lib/resolvers/                           # {{PLACEHOLDER}} content (preamble, rubric, hard-rules, etc.)
+├── bin/                                     # smriti-{slug,config,learnings-*,codex-probe,update-check,approvals,version-bump,pr-title-rewrite,browse,principles-install}
+├── lib/resolvers/                           # {{PLACEHOLDER}} content (preamble, rubric, hard-rules, principles, etc.)
 ├── scripts/                                 # gen-skill-docs.ts, skill-check.ts, run-tests.sh + test/*.bats + test/*.test.ts
 ├── eng-review/checklist.md                  # the artifact /eng-review reads
 └── <skill>/SKILL.md.tmpl                    # one per skill (generated SKILL.md is gitignored)
@@ -150,6 +151,7 @@ Claude: Phase 3 (4 of 4 forcing questions, one at a time):
 <your-repo>/
 ├── PROJECT.md                              # /bootstrap output (committed)
 ├── DESIGN.md                               # /design-consultation output (committed)
+├── CLAUDE.md                               # @-imports lib/resolvers/principles.md from smriti install
 └── TODOS.md                                # cross-referenced by every review skill
 ```
 
@@ -164,6 +166,48 @@ Claude: Phase 3 (4 of 4 forcing questions, one at a time):
 | `browse_enabled` | `true` / `false` | (asked at `./setup`) | enables `/design-review` v2 rendered-audit step via `smriti-browse` (Playwright) |
 | `proactive` | `true` / `false` | `true` | reserved (proactive skill suggestions) |
 | `explain_level` | `default` / `terse` | `default` | reserved (output verbosity) |
+
+## Principles
+
+`lib/resolvers/principles.md` is the authoritative coding-principles file shared across every project that opts in. Tier 1 (hard gates) operationalizes "optimize for AI" as four behaviors — searchability, locality, explicitness, consistency. Tier 2 captures user preferences (small functions, descriptive names, facade only on second consumer, etc.). Tier 3 is a narrative tie-breaker. A smell appendix names common failure modes (rigidity, fragility, immobility, opacity) for cite-ability in review findings.
+
+**Two consumers, one source of truth:**
+
+- **Write-time:** the project's `CLAUDE.md` `@`-imports the file, so Claude Code auto-loads the principles at session start in any repo that's installed.
+- **Review-time:** `/eng-review` and `/plan-eng-review` inject `{{PRINCIPLES}}` directly into their generated `SKILL.md`, treating the principles as explicit criteria — every finding cites a tier and rule.
+
+When you edit `lib/resolvers/principles.md`, every project that imports it picks up the change on the next Claude Code session. No per-project sync.
+
+### Install in a project
+
+```bash
+smriti-principles-install
+```
+
+Idempotent. Adds (or updates) a sentinel-marker block in the project's `CLAUDE.md`:
+
+```
+# smriti:principles
+@~/.claude/skills/smriti/lib/resolvers/principles.md
+```
+
+Run it once per repo. `/bootstrap` calls it automatically for new repos; existing already-bootstrapped repos run it directly. Re-running on the same repo is a no-op. If the install path ever moves, re-running updates the `@`-line in place via the marker. The CLI fails loud rather than silently overwriting if user content has been inserted between the marker and the `@`-line.
+
+### Soft auto-nudge
+
+Every smriti skill checks for the sentinel marker on entry. If it's missing, the preamble prints:
+
+```
+NOTE: principles not installed in this repo. Run 'smriti-principles-install' to enable cross-project coding principles.
+```
+
+That's the rollout signal — opt in when you see it. No interactive prompts; ignored skills get noticed eventually because the nudge is persistent.
+
+### Trade-offs accepted in v1
+
+- **Path portability.** The `@`-import uses the smriti install path (`~/.claude/skills/smriti/`). On machines where smriti lives elsewhere, the import won't resolve until the user updates the path. Acceptable trade-off in solo / intrapreneur use.
+- **No cite-by-ID.** Reviews say `Tier 1b (locality)` rather than `violates p1-locality`. Structured frontmatter + a `smriti-principles` CLI is tracked as a v2 follow-up ([ELI-32](https://linear.app/itselijah/issue/ELI-32)).
+- **Mid-session reload.** Adding the `@`-import in an already-running Claude Code session won't auto-load until the session restarts — the CLI prints a one-line reminder.
 
 ## Browser audit (`/design-review` v2)
 

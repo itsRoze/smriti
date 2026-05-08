@@ -28,13 +28,35 @@ HAS_PROJECT_DOC=no; [ -f PROJECT.md ] && HAS_PROJECT_DOC=yes
 HAS_DESIGN_DOC=no;  [ -f DESIGN.md ]  && HAS_DESIGN_DOC=yes
 HAS_TODOS=no;       [ -f TODOS.md ]   && HAS_TODOS=yes
 
+# Principles install check. The install contract is a two-line block: the
+# marker line followed immediately by an @-import line ending in
+# /principles.md. Marker alone is not enough — a half-installed CLAUDE.md
+# (marker without the import) should trigger the nudge, not suppress it.
+HAS_PRINCIPLES=no
+if [ -f CLAUDE.md ]; then
+  _claude_lf=$(tr -d '\r' < CLAUDE.md)
+  _marker_line=$(printf '%s\n' "$_claude_lf" | grep -nF -m 1 '# smriti:principles' | cut -d: -f1)
+  if [ -n "$_marker_line" ]; then
+    _next_line=$(printf '%s\n' "$_claude_lf" | sed -n "$((_marker_line + 1))p")
+    case "$_next_line" in
+      @*principles.md) HAS_PRINCIPLES=yes ;;
+    esac
+  fi
+  unset _claude_lf _marker_line _next_line
+fi
+
 # Echo session state
 echo "SLUG: $SLUG"
 echo "BRANCH: $BRANCH"
 echo "IS_FIRST_TIME: $IS_FIRST_TIME"
 echo "LEAN: $LEAN"
 echo "CODEX: available=$CODEX_AVAILABLE default=$CODEX_DEFAULT"
-echo "DOCS: project=$HAS_PROJECT_DOC design=$HAS_DESIGN_DOC todos=$HAS_TODOS"
+echo "DOCS: project=$HAS_PROJECT_DOC design=$HAS_DESIGN_DOC todos=$HAS_TODOS principles=$HAS_PRINCIPLES"
+
+# Soft auto-nudge: surface missing principles install early, not buried.
+if [ "$HAS_PRINCIPLES" = "no" ]; then
+  echo "NOTE: principles not installed in this repo. Run 'smriti-principles-install' to enable cross-project coding principles."
+fi
 
 # Surface top relevant prior learnings (if any)
 LEARNINGS_FILE="${SMRITI_HOME:-$HOME/.smriti}/projects/$SLUG/learnings.jsonl"
@@ -59,3 +81,4 @@ fi
 | `CODEX_AVAILABLE` | `1` if Codex CLI is installed and authed. |
 | `CODEX_DEFAULT` | `on` / `ask` / `off`. |
 | `HAS_PROJECT_DOC` / `HAS_DESIGN_DOC` / `HAS_TODOS` | `yes` / `no`. |
+| `HAS_PRINCIPLES` | `yes` if project's `CLAUDE.md` has the smriti principles `@`-import (via `smriti-principles-install`); `no` triggers a soft nudge. |
