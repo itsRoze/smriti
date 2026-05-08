@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.4.1 — 2026-05-07
+
+### Fixed
+- `bin/smriti-principles-install` resolved its install path from `$0` directly, but `$0` is the symlink path when invoked via PATH (`~/.local/bin/smriti-principles-install` → repo's `bin/`). `pwd -P` resolves the *directory's* symlinks, never the script's own — so `smriti_root` derived from the symlink's parent (`~/.local`) instead of the actual repo. Result: every project that ran `smriti-principles-install` got an `@`-line pointing at `~/.local/lib/resolvers/principles.md` (a non-existent path), Claude Code silently failed to load the principles, and the preamble's `HAS_PRINCIPLES=yes` check passed (it only verified marker + adjacent `@`-line *shape*, not that the referenced file existed) — so no nudge fired either. ([ELI-36](https://linear.app/itselijah/issue/ELI-36))
+- Fix: dereference `$0` via the existing `resolve_symlink_one_level` helper before deriving `bin_dir`. One-hop resolution is sufficient for the documented install shape (PATH symlink → repo file). Multi-hop is acknowledged as out of scope in the helper's comment.
+- **Migration:** users with existing installs re-run `smriti-principles-install` once per affected repo. The CLI's marker-update path detects the smriti-shaped `@`-line at the wrong path and replaces it. Idempotent; preserves user content.
+
+### Added
+- `scripts/test/principles.bats` Story 14 — regression test that invokes the CLI via a symlink in a sibling dir and asserts the resulting `@`-line matches the canonical line from a direct invocation. Closes the test-coverage gap that let the bug ship.
+
+### Process
+- `.gitignore` adds `/CLAUDE.md` (anchored to repo root) so smriti's own dev clone — where the CLI resolves the `@`-line to a machine-specific path like `~/dev/smriti/lib/resolvers/principles.md` — doesn't accidentally commit a non-portable CLAUDE.md. Anchored pattern prevents accidentally ignoring fixture or sub-dir CLAUDE.md files.
+- Filed [ELI-37](https://linear.app/itselijah/issue/ELI-37): adds a Pass-2 checklist item to `eng-review/checklist.md` ("CLI binary symlink coverage") and a `/ship` smoke step that invokes new `bin/*` scripts via PATH symlink before opening the PR. Permanent guardrail for the class of bug ELI-36 represents.
+
 ## 0.4.0 — 2026-05-07
 
 ### Added
