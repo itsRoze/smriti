@@ -55,6 +55,12 @@ cat "$CHECKLIST"
 
 This is a **hard requirement.** If `checklist.md` is missing, abort.
 
+## Phase 1b: Read the principles (required)
+
+The principles file below is the project's behavior guide. Treat it as criteria: every finding cites a tier and rule. Tier 1 violations are blocking; Tier 2 are flag-and-decide; Tier 3 only when nothing higher applies. Smells (rigidity, fragility, immobility, opacity) are evidence of a tier violation, never rules in their own right.
+
+{{PRINCIPLES}}
+
 ## Phase 2: Get the diff
 
 ```bash
@@ -72,6 +78,8 @@ git diff "origin/$BASE_BRANCH" --name-only
 Walk **Pass 1 (CRITICAL)** first: SQL safety, race conditions, LLM trust boundary, shell injection, enum completeness, secret leakage, unhandled errors.
 
 Then **Pass 2 (INFORMATIONAL)**: validation at boundaries, N+1, indexes, async/sync, prompt issues, type coercion, completeness gaps, doc staleness.
+
+Then **Pass 3 (PRINCIPLES)**: walk the diff against the principles read in Phase 1b. For each violation, cite the tier and rule (e.g., `Tier 1b (locality)`, `Tier 2.7 (premature facade)`). Tier 1 violations are critical; Tier 2 informational; Tier 3 informational only.
 
 For each finding, capture:
 - **File:line**

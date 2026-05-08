@@ -46,6 +46,12 @@ Load relevant prior learnings:
 
 {{LEARNINGS_SEARCH}}
 
+## Principles (criteria for findings)
+
+The principles file below governs code in this project. Treat it as the criteria for findings: when surfacing an architecture, code-quality, test, or performance concern, cite the tier and rule it would violate (e.g., `Tier 1b (locality)`, `Tier 2.7 (premature facade)`). Tier 1 violations are blocking architecture issues; Tier 2 are decisions to make; Tier 3 only as tie-breakers when nothing higher applies. Smells (rigidity, fragility, immobility, opacity) are evidence of a tier violation, never rules on their own.
+
+{{PRINCIPLES}}
+
 ## Hard rule: one AskUserQuestion per finding, decision-brief shape
 
 Every finding gets its own AskUserQuestion in the **decision-brief shape**
