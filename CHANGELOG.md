@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.5.0 — 2026-05-07
+
+### Added
+- `eng-review/checklist.md` Pass 2 — new "CLI binary symlink coverage" item flags new or modified `bin/` scripts that derive their install location from `$0` / `$BASH_SOURCE` / `dirname` but lack a symlink-invocation test. Production invocations through `~/.local/bin/` are symlinks; absolute-path tests miss path-resolution bugs (the ELI-36 class). ([ELI-37](https://linear.app/itselijah/issue/ELI-37))
+- `ship/SKILL.md.tmpl` Step 5b — smoke-test new CLIs via the PATH symlink before opening the PR. Sits between Step 5 (tests) and Step 6 (coverage audit); detects changed `bin/smriti-*` scripts and exercises each through the production install path, sandboxing destructive CLIs via `mktemp -d`. Calls out explicitly that `--help` alone is insufficient — early-exit help short-circuits before path resolution, exactly the gap that let ELI-36 ship.
+
+### Changed
+- `ship/SKILL.md.tmpl` intro — pre-existing "12 steps" undercount corrected to "13 steps (plus sub-step 5b)" to match the actual numbered steps.
+
+### Why
+
+ELI-36 shipped with green tests because the suite invoked the binary by absolute repo path while production invokes via `~/.local/bin/` symlink — `$0` differs between the two. Filing a permanent checklist item + smoke step is the durable fix for that bug class; "remember to test it manually" is not.
+
 ## 0.4.1 — 2026-05-07
 
 ### Fixed
