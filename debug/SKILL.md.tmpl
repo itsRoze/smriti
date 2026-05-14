@@ -1,0 +1,279 @@
+---
+name: debug
+description: |
+  Systematically find root causes and fix bugs. Investigates before fixing; cites
+  Tier 1/2/3 principles when the root cause is a structural violation. Use when
+  debugging errors, investigating test failures, reproducing bugs from issue
+  trackers (GitHub, Linear), or stuck after failed fix attempts.
+  Trigger phrases: "debug this", "why is this failing", "find the bug", "trace
+  this error", or pasting a stack trace, error message, or issue reference.
+  Proactively invoke when the user reports broken behavior or asks why something
+  is failing. Hands off to /eng-review before /ship; does not replace it.
+allowed-tools:
+  - Bash
+  - Read
+  - Edit
+  - Write
+  - Glob
+  - Grep
+  - AskUserQuestion
+---
+
+{{PREAMBLE}}
+
+{{ASK_USER_FORMAT}}
+
+# /debug — systematic root-cause investigation
+
+Find the root cause, then fix it. Investigate the full causal chain before proposing a fix. Cite tier-and-rule when the root cause is a structural violation of the principles file.
+
+<bug_description> #$ARGUMENTS </bug_description>
+
+## Hard rules
+
+1. **Investigate before fixing.** No fix until you can explain the causal chain from trigger to symptom with no gaps. *"Somehow X leads to Y"* is a gap.
+2. **Predictions for uncertain links.** When the chain has uncertain links, form a falsifiable prediction — something in a different code path that must also be true. If the prediction is wrong but a fix "works," you found a symptom, not the cause.
+3. **One change at a time.** Test one hypothesis, change one thing. Multiple simultaneous changes = shotgun debugging.
+4. **When stuck, diagnose why — don't just try harder.** Hypotheses that span subsystems mean architecture problem, not localized bug.
+
+## Phase 0: Pre-flight + triage
+
+Silently read (do not echo):
+
+```bash
+[ -f PROJECT.md ] && cat PROJECT.md
+[ -f TODOS.md ]   && cat TODOS.md
+git log --oneline -10 2>/dev/null
+git status --short 2>/dev/null
+```
+
+Parse `<bug_description>` to a clear problem statement:
+
+| Input shape | What to do |
+|-------------|------------|
+| GitHub issue ref (`#123`, `org/repo#123`, github URL) | `gh issue view <num> --json title,body,comments,labels` — read **every** comment, especially the latest |
+| Linear issue ref (Linear URL or `ELI-NNN`) | Use the Linear MCP `get_issue` tool. If unavailable, ask the user to paste the issue body + comment thread |
+| Stack trace / error message / free-form description | The input is the problem statement |
+
+Read the *full* conversation when fetched — comments often contain narrower repro steps, prior failed attempts, and revised root-cause suspicions. Treating the opening post as the whole picture sends investigation in the wrong direction.
+
+**Trivial-bug fast-path.** If the cause is immediately readable from the input (single-file typo, missing import, obvious null deref, off-by-one with a one-line fix) and verification doesn't require tracing, present the cause + the proposed fix and run the **Fix-now / Diagnosis-only** AskUserQuestion below before editing. The fast-path saves investigation ceremony, not the user's fix-or-not choice. Skip to Phase 4 if the user picks fix.
+
+**Questions:** investigate first — don't ask by default. Read code and run tests before asking. Exception: if the user says they've already tried things ("I've been trying", "keeps failing", "stuck"), ask what they tried before investigating to avoid repeating dead ends.
+
+## Phase 1: Reproduce + verify environment
+
+### 1.1 Reproduce
+
+Trigger the bug — run the failing test, hit the endpoint, follow the repro steps. Confirm it fails for the reason described.
+
+- **Doesn't reproduce after 2-3 attempts:** intermittent. Note timing/state dependencies; consider seed values, concurrency, time-of-day effects.
+- **Can't reproduce in this environment:** document what was tried and what conditions appear missing; ask the user for the missing piece.
+
+If the project has testing conventions (a testing skill, an `AGENTS.md`/`CLAUDE.md` testing section, or a clear style in existing tests), follow them when authoring a repro test. Otherwise write a minimal failing test, named so the failure message explains the bug.
+
+### 1.2 Environment sanity
+
+Before tracing deep, confirm the environment matches assumptions:
+
+- Correct branch checked out; no unexpected uncommitted changes
+- Dependencies installed and current (`bun install`, `npm install`, `bundle install`) — stale `node_modules` is a frequent false lead
+- Runtime version matches `.tool-versions` / `.nvmrc` / `Gemfile`
+- Required env vars present and non-empty
+- No stale build artifacts (`dist/`, `.next/`, compiled binaries from another branch)
+
+## Phase 2: Trace the code path
+
+Trace data flow **backward** from the symptom to where valid state first became invalid:
+
+1. Read the stack trace bottom-to-top. Open each frame.
+2. Identify the first frame where the input data is already invalid — that's the upper bound.
+3. Instrument the boundaries around that frame: targeted prints, debugger breakpoints, or assertions that capture **actual** values at function entry/exit. Assumed values lie; observed values don't.
+4. Walk the boundaries until valid input becomes invalid output. That transition is the root cause site.
+
+Do not stop at the first function that *looks* wrong. The root cause is where bad state originates, not where it's first observed.
+
+As you trace:
+- `git log --oneline -10 -- <file>` on each file you read — recent changes often explain the bug
+- If it looks like a regression (*"it worked before"*), `git bisect` against a known-good revision
+- Check project observability if any: error trackers (Sentry, Datadog), app logs, browser console, DB state
+
+## Phase 3: Root cause
+
+Read this before forming hypotheses. If your internal monologue contains any of these, stop and re-examine:
+
+- *"Quick fix for now, investigate later"*
+- *"This should work"* (without a tested prediction)
+- *"Let me just try..."* (without a hypothesis)
+
+These mark mode-drift toward symptom patches.
+
+### 3.1 Assumption audit (before hypothesis formation)
+
+List the *"this must be true"* beliefs your understanding depends on — the framework behaves as named, this function returns what its name implies, the caller passes non-null, the database is in the state the test implies. Mark each **verified** (you read the code, checked state, ran it) or **assumed**. Assumptions are the most common source of stuck debugging.
+
+### 3.2 Form hypotheses
+
+Rank by likelihood. For each:
+
+- **What** is wrong and **where** (file:line)
+- **At least one grounding observation** — a runtime variable value, a log line, an instrumented boundary capture, a behavior delta vs a working comparison case. *"X seems off"* is not evidence; *"X equals null at line 42 because Y was never initialized in the constructor path that runs under condition Z"* is.
+- **The causal chain** — how the trigger leads to the observed symptom, step by step
+- **For uncertain links:** a prediction — something in a different code path that must also be true if this link is correct. When the chain is obvious (missing import, clear type error, explicit null deref), the chain itself is sufficient — no prediction required.
+
+Before forming a new hypothesis, review what's been ruled out and why.
+
+### 3.3 Causal chain gate
+
+Do not proceed to Phase 4 until you can explain the full chain — from trigger through every step to the observed symptom — with no gaps. The user can explicitly authorize proceeding with the best-available hypothesis if investigation is stuck.
+
+*Reminder: if a prediction was wrong but the fix appears to work, you found a symptom. The real cause is still active.*
+
+### 3.4 Tier citation when the root cause is structural
+
+If the root cause is a violation of the principles file (auto-imported via the project's `CLAUDE.md`), cite the tier and rule when presenting findings. Examples:
+
+- **Tier 1a (searchability)** — *"the bug hid because `userId` and `uid` are both used for the same concept; the caller used one, the callee checked the other."*
+- **Tier 1b (locality)** — *"the broken behavior spans three files connected only by string lookups in a registry; no grep starting point would have surfaced the chain."*
+- **Tier 1c (explicit)** — *"dispatch by string lookup made this invisible to grep; the registry mutation that wired up the wrong handler runs as an import side-effect."*
+- **Tier 1d (consistency)** — *"two patterns for the same job (option-object vs positional) coexist; the LLM blended them and produced a third."*
+
+Tier citations make structural lessons reusable in the learning log. Smells (rigidity, fragility, immobility, opacity) are evidence of a tier violation, never rules on their own.
+
+### 3.5 Smart escalation
+
+If 2-3 hypotheses are exhausted without confirmation, diagnose why:
+
+| Pattern | Diagnosis | Next move |
+|---|---|---|
+| Hypotheses point to different subsystems | Architecture problem, not localized bug | Present findings, suggest `/brainstorm` to rethink the design |
+| Evidence contradicts itself | Wrong mental model of the code | Step back, re-read without assumptions |
+| Works locally, fails in CI/prod | Environment problem | Focus on env differences, config, dependencies, timing |
+| Fix works but prediction was wrong | Symptom fix, not root cause | Real cause still active — keep investigating |
+
+### 3.6 Present findings
+
+Issue an AskUserQuestion in decision-brief shape (see top of skill). Options:
+
+| Option | Behavior |
+|---|---|
+| **Fix it now** | Proceed to Phase 4 |
+| **Diagnosis only — I'll take it from here** | Skip Phase 4; proceed to Phase 6's summary; end the skill |
+| **Rethink the design** (`/brainstorm`) | Only when the root cause reveals a design problem — see below |
+
+**When to suggest `/brainstorm`:** only when investigation reveals the bug cannot be properly fixed within the current design.
+
+- The root cause is a wrong responsibility or interface, not wrong logic
+- Requirements are wrong or incomplete (the system behaves as designed; the design doesn't match what users need)
+- Every fix is a workaround — you keep wanting to add special cases instead of a direct correction
+
+Do not suggest `/brainstorm` for bugs that are large but have a clear fix.
+
+## Phase 4: Fix
+
+*Reminder: one change at a time.*
+
+If the user chose "Diagnosis only" in Phase 3.6, skip to Phase 6.
+
+### 4.1 Workspace + branch check
+
+```bash
+{{BASE_BRANCH_DETECT}}
+CURRENT=$(git branch --show-current)
+```
+
+- **Uncommitted changes** in files you need to modify → AskUserQuestion: overwrite / stash / abort. Don't silently overwrite in-progress work.
+- **On the base branch** → AskUserQuestion: create a feature branch (default — derive name from the bug) / commit to base anyway (requires explicit yes). Never commit directly to base without explicit permission.
+
+### 4.2 Test-first fix
+
+1. Write a failing test that captures the bug (or use the existing failing test)
+2. Verify it fails for the **right reason** — the root cause, not unrelated setup
+3. Implement the **minimal** fix — address the root cause and nothing else. No drive-by refactors, formatting, or unrelated cleanup bundled in (Tier 2b — cleanup scope).
+4. Verify the test passes
+5. Run the broader test suite for regressions
+6. Self-review the diff before declaring done — read every changed line for style violations, missed edge cases, regressions in adjacent behavior, missing test coverage for the fix
+
+### 4.3 On a failed fix
+
+Return to Phase 3 and **explicitly invalidate the current hypothesis** before forming a new one. State what evidence ruled out the prior hypothesis, then form a new one with its own grounding observation and prediction. Do not retry variants of the same theory — that's rationalization, not iteration.
+
+**3 failed fix attempts = smart escalation.** Apply Phase 3.5's table. If fixes keep failing, root-cause identification was likely wrong — return to Phase 3.
+
+## Phase 5: Codex second opinion (auto-offered)
+
+{{CODEX_SECOND_OPINION}}
+
+When you run Codex, give it: the bug description, your root-cause hypothesis with causal chain, the proposed fix, and any tier citation. Ask: *"Is the root cause right? What did I miss? What else might be active downstream?"*
+
+Render Codex output verbatim. When findings disagree, surface the disagreement explicitly and let the user decide before continuing.
+
+## Phase 6: Persist + handoff
+
+### 6.1 Write the debug artifact
+
+```bash
+TS=$(date -u +%Y-%m-%dT%H-%M-%SZ)
+DEBUG_DIR="${SMRITI_HOME:-$HOME/.smriti}/projects/$SLUG"
+mkdir -p "$DEBUG_DIR"
+DEBUG_FILE="$DEBUG_DIR/$BRANCH_SLUG-debug-$TS.md"
+```
+
+**Template:**
+
+```markdown
+# Debug: <one-line title>
+
+- **Slug:** <slug>
+- **Branch:** <branch>
+- **Date:** <YYYY-MM-DD>
+- **Outcome:** <fix-applied | diagnosis-only | escalated-to-brainstorm>
+
+## Problem
+<what was broken — the original symptom, in one short paragraph>
+
+## Reproduction
+<exact steps / failing test / repro command>
+
+## Root cause
+<the full causal chain, file:line references at each step>
+
+### Tier citation (if applicable)
+<e.g., Tier 1c (explicit) — string-lookup dispatch hid the chain from grep>
+
+## Fix
+<what changed — or "diagnosis only" if Phase 4 was skipped>
+
+### Tests
+<tests added or modified; what they assert; why they would have caught this>
+
+## Cross-model perspective
+<Codex's independent take, verbatim if Codex ran; otherwise "Not run.">
+
+## Confidence
+<High | Medium | Low> — <one-line reason>
+
+## Open follow-ups
+- <anything still unresolved, e.g., similar pattern elsewhere worth scanning>
+```
+
+### 6.2 Recommend next step
+
+End with one of these, picked by context:
+
+- **Fix applied** → *"Run `/eng-review` to catch any drive-by issues in the fix, then `/ship`."*
+- **Diagnosis only** → *"Diagnosis written to `<debug-file>`. You're driving from here."*
+- **Escalated to brainstorm** → *"Root cause is a design problem. Run `/brainstorm` to rethink the surface that's failing."*
+
+State the recommendation; don't auto-invoke. The user runs the next skill themselves.
+
+---
+
+{{LEARNINGS_LOG}}
+
+When logging from this skill, prefer keys like:
+
+- `causal-<area>` — root-cause patterns worth recognizing next time (e.g., `causal-stale-cache-on-retry`)
+- `tier-<N><x>-violation` — structural lessons surfaced by debug (e.g., `tier-1c-violation-string-dispatch`)
+- `pitfall-<category>` — traps that came up in investigation (e.g., `pitfall-mock-divergence`)
+- `prediction-<topic>` — predictions that turned out wrong, so future debugging avoids the same trap

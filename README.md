@@ -31,7 +31,7 @@ Each skill produces an artifact the next one reads. Run them in order; downstrea
 /bootstrap → /brainstorm →                   →  (you write) →                       → /ship
                   └─ /plan-design-review  ─┘                  └─ /design-review  ─┘
 
-  /design-consultation                                                          /learn  (anytime)
+  /design-consultation                                              /debug   /learn  (anytime)
 ```
 
 | Stage | Skill | Writes |
@@ -44,6 +44,7 @@ Each skill produces an artifact the next one reads. Run them in order; downstrea
 | Review | `/eng-review` | Auto-fixes + entries in `reviews.jsonl` |
 | Review | `/design-review` | Atomic `style(design):` commits + audit report (+ optional rendered audit via `smriti-browse`) |
 | Ship | `/ship` | Tests, version, CHANGELOG, bisectable commits, PR |
+| Debug | `/debug` | `~/.smriti/projects/<slug>/<branch>-debug-<ts>.md` |
 | Memory | `/learn` | `~/.smriti/projects/<slug>/learnings.jsonl` |
 
 ## Approval gates
@@ -143,6 +144,7 @@ Claude: Phase 3 (4 of 4 forcing questions, one at a time):
     ├── reviews.jsonl                          # one entry per review run
     ├── <branch>-approvals.json                # per-branch approval state
     ├── <branch>-design-<ts>.md                # design docs (one per /brainstorm run)
+    ├── <branch>-debug-<ts>.md                 # debug summaries (one per /debug run)
     ├── audit-urls.txt                         # /design-review v2 — URLs to audit (in smriti state, not project repo)
     ├── auth-state.json                        # /design-review v2 — Playwright storageState (mode 0600, never committed)
     ├── audits/<branch>-<ts>/                  # /design-review v2 — screenshots, ARIA snapshots, audit.json per URL
