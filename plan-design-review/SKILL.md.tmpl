@@ -5,7 +5,7 @@ description: |
   (information architecture, interaction states, user journey, AI-slop risk, design
   system alignment, responsive/a11y, unresolved decisions). Each pass rated 0–10
   with what 10 looks like; re-rate after fixes. Reads DESIGN.md as source of truth.
-  Use AFTER /office-hours has produced a design doc with UI scope, BEFORE /plan-eng-review
+  Use AFTER /brainstorm has produced a design doc with UI scope, BEFORE /plan-eng-review
   (or in parallel — both feed implementation). One AskUserQuestion per finding.
 allowed-tools:
   - Bash
@@ -27,9 +27,9 @@ Walk a design doc through 7 passes, rate each 0–10, fix gaps via inline plan e
 ## Pre-audit
 
 ```bash
-# Most recent design doc on this branch (from /office-hours)
+# Most recent design doc on this branch (from /brainstorm)
 DESIGN_DOC=$(ls -t "${SMRITI_HOME:-$HOME/.smriti}/projects/$SLUG/"*-"$BRANCH_SLUG"-design-*.md 2>/dev/null | head -1)
-[ -z "$DESIGN_DOC" ] && { echo "/plan-design-review: no design doc found for branch '$BRANCH'. Run /office-hours first."; exit 0; }
+[ -z "$DESIGN_DOC" ] && { echo "/plan-design-review: no design doc found for branch '$BRANCH'. Run /brainstorm first."; exit 0; }
 
 # DESIGN.md is source of truth; warn if missing
 if [ ! -f DESIGN.md ]; then

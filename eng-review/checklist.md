@@ -204,7 +204,7 @@ When the diff adds a new enum value, status string, tier name, type discriminato
 - Features at 80–90% when 100% is achievable with modest additional code.
 
 **Skip when:**
-- The user explicitly chose a lower-completeness option (`/office-hours` Phase 5 captured this).
+- The user explicitly chose a lower-completeness option (`/brainstorm` Phase 5 captured this).
 - `LEAN=prototype` in `smriti-config` and the gap is in non-critical code.
 
 ## Documentation staleness

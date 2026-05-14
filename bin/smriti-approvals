@@ -54,8 +54,15 @@ if [ "$BRANCH" != "$BRANCH_SLUG" ]; then
   fi
 fi
 
+# Migrate legacy "office-hours" key to "brainstorm" (skill rename in v0.6.0).
+# Idempotent: no-op if the key isn't present.
+if [ -f "$STATE_FILE" ] && jq -e 'has("office-hours")' "$STATE_FILE" >/dev/null 2>&1; then
+  jq '. + {"brainstorm": .["office-hours"]} | del(.["office-hours"])' "$STATE_FILE" > "$STATE_FILE.tmp" \
+    && mv "$STATE_FILE.tmp" "$STATE_FILE"
+fi
+
 # Skill order in renderings (top-to-bottom pipeline order)
-SKILLS=(office-hours plan-eng-review plan-design-review eng-review design-review ship)
+SKILLS=(brainstorm plan-eng-review plan-design-review eng-review design-review ship)
 
 init_state() {
   local entries=""
