@@ -38,7 +38,7 @@ Net: <one-sentence verdict frame — what you're actually trading off>
 
 ### Element rules
 
-1. **D-numbering.** First question in a skill invocation is `D1`. Increment per question within the same skill. You count your own questions — there is no runtime counter. Drift over a long session is fine; minor inconsistency is not a bug. If a nested skill runs (e.g., `/plan-eng-review` calling `/office-hours` inline), it starts its own `D1`; disambiguate as `D1 (office-hours)` so the user can refer back unambiguously.
+1. **D-numbering.** First question in a skill invocation is `D1`. Increment per question within the same skill. You count your own questions — there is no runtime counter. Drift over a long session is fine; minor inconsistency is not a bug. If a nested skill runs (e.g., `/plan-eng-review` calling `/brainstorm` inline), it starts its own `D1`; disambiguate as `D1 (brainstorm)` so the user can refer back unambiguously.
 
 2. **ELI10 (always).** Plain English, concrete examples, no function names. Say what it *does*, not what it's *called*. Even if the user is technical, even in terse mode — they're about to make a decision and need context they may not have loaded.
 

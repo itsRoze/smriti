@@ -43,7 +43,7 @@ HAS_DESIGN=no
 [ -f README.md ] && head -80 README.md
 [ -f package.json ] && head -40 package.json
 
-# Most recent office-hours design doc on this branch (often has product-context signal)
+# Most recent brainstorm design doc on this branch (often has product-context signal)
 ls -t "${SMRITI_HOME:-$HOME/.smriti}/projects/$SLUG/"*-"$BRANCH_SLUG"-design-*.md 2>/dev/null | head -1
 ```
 
@@ -251,7 +251,7 @@ End with:
 > *"Design system written to `DESIGN.md`. HTML preview at `/tmp/smriti-design-preview-<ts>.html` (still open in your browser).*
 >
 > *Next steps:*
-> *- For new features with UI: run `/office-hours` then `/plan-design-review` — it'll grade designs 0–10 against this system.*
+> *- For new features with UI: run `/brainstorm` then `/plan-design-review` — it'll grade designs 0–10 against this system.*
 > *- For existing UI: run `/design-review` — it'll find drift and AI-slop in the code."*
 
 ---

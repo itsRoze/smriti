@@ -1,12 +1,12 @@
 ---
-name: office-hours
+name: brainstorm
 description: |
   Feature ideation entry point. Pushes back on framing, generates 2–3 alternatives with
   Claude Code time estimates and completeness scores, recommends one in decision-brief
   shape (D<N>, ELI10, stakes, pros/cons, Net), and auto-offers an independent Codex
   second opinion. Writes a design doc to ~/.smriti/projects/<slug>/<branch>-design-<datetime>.md.
   Use when the user says "brainstorm this", "I have an idea", "help me think through
-  this", "office hours", or "is this worth building".
+  this", or "is this worth building".
   Proactively invoke (do NOT answer directly) when the user describes a new feature,
   asks whether something is worth building, or wants to think through design decisions
   for something that does not yet exist as code.
@@ -26,7 +26,7 @@ allowed-tools:
 
 {{ASK_USER_FORMAT}}
 
-# /office-hours — feature ideation
+# /brainstorm — feature ideation
 
 Push back on the framing before any code is written. Generate 2–3 alternatives with effort estimates and completeness scores. Recommend one. Auto-offer a Codex second opinion. Save a design doc that downstream skills (`/plan-eng-review`, `/plan-design-review`) read.
 
@@ -256,7 +256,7 @@ If a prior design existed on this branch and the user wants to supersede:
 **Then stamp the approval** so downstream skills can read it:
 
 ```bash
-smriti-approvals set office-hours APPROVED \
+smriti-approvals set brainstorm APPROVED \
   --note "mode: <users|learn|prototype|intrapreneur|explore>; rec: Option N"
 ```
 

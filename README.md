@@ -28,22 +28,23 @@ Each skill produces an artifact the next one reads. Run them in order; downstrea
    THINK              PLAN                       BUILD              REVIEW                   SHIP
    ─────              ─────                      ─────              ─────                    ────
                   ┌─ /plan-eng-review     ─┐                  ┌─ /eng-review     ─┐
-/bootstrap → /office-hours →                   →  (you write) →                       → /ship
+/bootstrap → /brainstorm →                   →  (you write) →                       → /ship
                   └─ /plan-design-review  ─┘                  └─ /design-review  ─┘
 
-  /design-consultation                                                          /learn  (anytime)
+  /design-consultation                                              /debug   /learn  (anytime)
 ```
 
 | Stage | Skill | Writes |
 |-------|-------|--------|
 | Think | `/bootstrap` | `PROJECT.md` (one-time per repo) |
 | Think | `/design-consultation` | `DESIGN.md` + self-contained HTML preview |
-| Think | `/office-hours` | `~/.smriti/projects/<slug>/<branch>-design-<ts>.md` |
+| Think | `/brainstorm` | `~/.smriti/projects/<slug>/<branch>-design-<ts>.md` |
 | Plan | `/plan-eng-review` | Engineering Review Decisions section in design doc |
 | Plan | `/plan-design-review` | Design Review Decisions section + 0–10 scores |
 | Review | `/eng-review` | Auto-fixes + entries in `reviews.jsonl` |
 | Review | `/design-review` | Atomic `style(design):` commits + audit report (+ optional rendered audit via `smriti-browse`) |
 | Ship | `/ship` | Tests, version, CHANGELOG, bisectable commits, PR |
+| Debug | `/debug` | `~/.smriti/projects/<slug>/<branch>-debug-<ts>.md` |
 | Memory | `/learn` | `~/.smriti/projects/<slug>/learnings.jsonl` |
 
 ## Approval gates
@@ -53,7 +54,7 @@ Each review skill stamps its verdict at the top of the design doc. `/ship` reads
 ```
 ## Approvals
 
-- ✅ /office-hours       — 2026-04-26 — mode: users; rec: Option 2
+- ✅ /brainstorm       — 2026-04-26 — mode: users; rec: Option 2
 - ✅ /plan-eng-review    — 2026-04-26 — lean: senior; 0 unresolved
 - ⚠️ /plan-design-review — 2026-04-26 — avg 8.2/10; 1 deferred
 - ✅ /eng-review         — 2026-04-26 — 3 findings; 2 auto-fixed
@@ -98,7 +99,7 @@ Claude: SLUG: itsroze-myapp     BRANCH: main     IS_FIRST_TIME: yes
         Wrote PROJECT.md. Logged 1 architecture learning.
         Recommend /design-consultation next (design priority = high).
 
-You:    /office-hours
+You:    /brainstorm
 
 Claude: Phase 1 — context loaded.
         Phase 2 — what's the goal here?
@@ -142,7 +143,8 @@ Claude: Phase 3 (4 of 4 forcing questions, one at a time):
     ├── learnings.jsonl                        # append-only, decay-aware
     ├── reviews.jsonl                          # one entry per review run
     ├── <branch>-approvals.json                # per-branch approval state
-    ├── <branch>-design-<ts>.md                # design docs (one per /office-hours run)
+    ├── <branch>-design-<ts>.md                # design docs (one per /brainstorm run)
+    ├── <branch>-debug-<ts>.md                 # debug summaries (one per /debug run)
     ├── audit-urls.txt                         # /design-review v2 — URLs to audit (in smriti state, not project repo)
     ├── auth-state.json                        # /design-review v2 — Playwright storageState (mode 0600, never committed)
     ├── audits/<branch>-<ts>/                  # /design-review v2 — screenshots, ARIA snapshots, audit.json per URL
@@ -162,7 +164,7 @@ Claude: Phase 3 (4 of 4 forcing questions, one at a time):
 | Key | Values | Default | Effect |
 |-----|--------|---------|--------|
 | `lean` | `senior` / `prototype` | `senior` | review depth — `senior` insists on failure-mode coverage; `prototype` ships rough |
-| `codex_default` | `on` / `ask` / `off` | `ask` | whether `/office-hours` and `/plan-eng-review` auto-prompt for a Codex second opinion |
+| `codex_default` | `on` / `ask` / `off` | `ask` | whether `/brainstorm` and `/plan-eng-review` auto-prompt for a Codex second opinion |
 | `browse_enabled` | `true` / `false` | (asked at `./setup`) | enables `/design-review` v2 rendered-audit step via `smriti-browse` (Playwright) |
 | `proactive` | `true` / `false` | `true` | reserved (proactive skill suggestions) |
 | `explain_level` | `default` / `terse` | `default` | reserved (output verbosity) |

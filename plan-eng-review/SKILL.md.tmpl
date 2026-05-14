@@ -5,7 +5,7 @@ description: |
   sections (Architecture, Code Quality, Tests, Performance) plus a Step 0 scope
   challenge. Honors LEAN (senior vs prototype). Issues one AskUserQuestion per
   finding (never batched). Auto-offers Codex plan review.
-  Use AFTER /office-hours has produced a design doc, BEFORE implementation begins.
+  Use AFTER /brainstorm has produced a design doc, BEFORE implementation begins.
   Run `/plan-eng-review` to lock in architecture before you write code.
 allowed-tools:
   - Bash
@@ -27,12 +27,12 @@ Walk the design doc through four ordered review sections. Surface hidden assumpt
 ## Inputs
 
 ```bash
-# Most recent design doc on this branch (from /office-hours)
+# Most recent design doc on this branch (from /brainstorm)
 DESIGN_DOC=$(ls -t "${SMRITI_HOME:-$HOME/.smriti}/projects/$SLUG/"*-"$BRANCH_SLUG"-design-*.md 2>/dev/null | head -1)
 
 if [ -z "$DESIGN_DOC" ]; then
   echo "/plan-eng-review: no design doc found for branch '$BRANCH'."
-  echo "Run /office-hours first to produce one, or pass a path: /plan-eng-review <path>"
+  echo "Run /brainstorm first to produce one, or pass a path: /plan-eng-review <path>"
   exit 0
 fi
 ```

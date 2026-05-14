@@ -54,8 +54,26 @@ if [ "$BRANCH" != "$BRANCH_SLUG" ]; then
   fi
 fi
 
+# Migrate legacy "office-hours" key to "brainstorm" (skill rename in v0.6.0).
+# Idempotent: no-op if the key isn't present.
+# Conflict policy: if both keys exist, the newer "brainstorm" wins unless it's
+# still at the default (NOT_YET_RUN), in which case the legacy value is
+# promoted. Prevents the migration from silently overwriting fresh approvals.
+# Uses mktemp to avoid races between concurrent invocations on the same branch.
+if [ -f "$STATE_FILE" ] && jq -e 'has("office-hours")' "$STATE_FILE" >/dev/null 2>&1; then
+  _tmp=$(mktemp)
+  jq '
+    if (.brainstorm == null or .brainstorm.status == "NOT_YET_RUN")
+    then . + {"brainstorm": .["office-hours"]}
+    else .
+    end
+    | del(.["office-hours"])
+  ' "$STATE_FILE" > "$_tmp"
+  mv "$_tmp" "$STATE_FILE"
+fi
+
 # Skill order in renderings (top-to-bottom pipeline order)
-SKILLS=(office-hours plan-eng-review plan-design-review eng-review design-review ship)
+SKILLS=(brainstorm plan-eng-review plan-design-review eng-review design-review ship)
 
 init_state() {
   local entries=""

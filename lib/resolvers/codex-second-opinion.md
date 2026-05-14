@@ -20,7 +20,9 @@ When running Codex, **prepend this filesystem-boundary instruction** to the prom
 Then run:
 
 ```bash
-codex exec --model-reasoning-effort high "<filesystem boundary>\n\n<your prompt>"
+codex exec "<filesystem boundary>\n\n<your prompt>"
 ```
+
+The legacy `--model-reasoning-effort` flag was removed in codex 0.114.0; reasoning effort is now controlled via `~/.codex/config.toml` (or `-c model_reasoning_effort=high` per invocation) when the user wants to deviate from their default.
 
 Render Codex's output **verbatim** — do not summarize. If Codex disagrees materially with your conclusion, surface the disagreement explicitly: *"Claude said X; Codex said Y. Here's the gap."*
