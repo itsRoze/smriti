@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.0 — 2026-05-14
+
+- refactor(brainstorm): rename /office-hours → /brainstorm
+- feat(debug): add /debug skill for systematic root-cause investigation
+- chore: apply /eng-review fixes from Codex second opinion
+- fix(codex-second-opinion): drop obsolete --model-reasoning-effort flag
+
 ## 0.5.0 — 2026-05-07
 
 ### Added
