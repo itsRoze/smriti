@@ -57,7 +57,7 @@ Parse `<bug_description>` to a clear problem statement:
 
 Read the *full* conversation when fetched — comments often contain narrower repro steps, prior failed attempts, and revised root-cause suspicions. Treating the opening post as the whole picture sends investigation in the wrong direction.
 
-**Trivial-bug fast-path.** If the cause is immediately readable from the input (single-file typo, missing import, obvious null deref, off-by-one with a one-line fix) and verification doesn't require tracing, present the cause + the proposed fix and run the **Fix-now / Diagnosis-only** AskUserQuestion below before editing. The fast-path saves investigation ceremony, not the user's fix-or-not choice. Skip to Phase 4 if the user picks fix.
+**Trivial-bug fast-path.** If the cause is immediately readable from the input (single-file typo, missing import, obvious null deref, off-by-one with a one-line fix) and verification doesn't require tracing, present the cause + the proposed fix and issue the Phase 3.6 AskUserQuestion (Fix-now / Diagnosis-only / Rethink-design) before editing. For a trivial bug only the first two options realistically apply — design escalation is for cases the framework would have surfaced anyway. The fast-path saves investigation ceremony, not the user's fix-or-not choice. Skip to Phase 4 if the user picks fix.
 
 **Questions:** investigate first — don't ask by default. Read code and run tests before asking. Exception: if the user says they've already tried things ("I've been trying", "keeps failing", "stuck"), ask what they tried before investigating to avoid repeating dead ends.
 
@@ -131,7 +131,7 @@ Do not proceed to Phase 4 until you can explain the full chain — from trigger 
 
 ### 3.4 Tier citation when the root cause is structural
 
-If the root cause is a violation of the principles file (auto-imported via the project's `CLAUDE.md`), cite the tier and rule when presenting findings. Examples:
+If the root cause is a violation of the principles file (`lib/resolvers/principles.md` in the smriti install, imported into your project's `CLAUDE.md`), cite the tier and rule when presenting findings. Examples:
 
 - **Tier 1a (searchability)** — *"the bug hid because `userId` and `uid` are both used for the same concept; the caller used one, the callee checked the other."*
 - **Tier 1b (locality)** — *"the broken behavior spans three files connected only by string lookups in a registry; no grep starting point would have surfaced the chain."*
