@@ -273,23 +273,10 @@ Default to "VERSION wins" if `LEAN=senior` (treats the dedicated VERSION file as
 TODAY=$(date +%Y-%m-%d)
 ENTRIES=$(git log "origin/$BASE_BRANCH"..HEAD --pretty=format:'- %s' 2>/dev/null | grep -v '^- Merge ')
 
-if [ -f CHANGELOG.md ]; then
-  # Insert new section near the top, under any "# Changelog" header
-  awk -v today="$TODAY" -v ver="$NEW" -v entries="$ENTRIES" '
-    NR==1 && /^# /  { print; print ""; print "## " ver " — " today; print ""; print entries; print ""; next }
-    NR==1           { print "# Changelog"; print ""; print "## " ver " — " today; print ""; print entries; print ""; print; next }
-    { print }
-  ' CHANGELOG.md > /tmp/cl.tmp && mv /tmp/cl.tmp CHANGELOG.md
-else
-  cat > CHANGELOG.md <<EOF
-# Changelog
-
-## $NEW — $TODAY
-
-$ENTRIES
-EOF
-fi
+printf '%s\n' "$ENTRIES" | smriti-changelog-insert "$NEW" "$TODAY" > /tmp/cl.tmp && mv /tmp/cl.tmp CHANGELOG.md
 ```
+
+`smriti-changelog-insert` handles both the missing-file and insert-under-existing-header cases. It reads entries from stdin into a temp file and uses `getline` inside awk — BSD awk on macOS rejects multi-line values in `-v var=...`, which silently dropped the new section when more than one commit landed on the branch.
 
 **TODOS.md** — auto-detect items that this PR closes:
 
