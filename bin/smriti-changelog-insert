@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# smriti-changelog-insert — prepend a new section to CHANGELOG.md.
+#
+# Reads entries from stdin (one bullet per line, typically `- subject`), and
+# writes an updated CHANGELOG.md to stdout. Behavior:
+#   - CHANGELOG.md exists with a top-level `# ` header → insert the new
+#     `## <version> — <date>` block right under it.
+#   - CHANGELOG.md exists without a top-level header → prepend a fresh
+#     `# Changelog` header + new section, then the original content.
+#   - CHANGELOG.md missing → emit a fresh file.
+#
+# Why this exists: BSD awk (default on macOS) rejects newlines in `-v var=...`,
+# which broke the prior inline awk block in /ship Step 10 — multi-commit entry
+# lists caused `awk: newline in string` and the new section silently dropped.
+# Reading entries from a temp file with `getline` side-steps the limit portably.
+#
+# Usage:
+#   git log ...--pretty=format:'- %s' | smriti-changelog-insert <version> <date>
+set -e
+
+VER="$1"
+DATE="$2"
+
+if [ -z "$VER" ] || [ -z "$DATE" ]; then
+  echo "usage: smriti-changelog-insert <version> <date> < entries" >&2
+  exit 2
+fi
+
+ENTRIES_FILE=$(mktemp)
+trap 'rm -f "$ENTRIES_FILE"' EXIT
+cat > "$ENTRIES_FILE"
+
+if [ -f CHANGELOG.md ]; then
+  awk -v today="$DATE" -v ver="$VER" -v entries_file="$ENTRIES_FILE" '
+    function emit_entries(   line) {
+      while ((getline line < entries_file) > 0) print line
+      close(entries_file)
+    }
+    NR==1 && /^# / { print; print ""; print "## " ver " — " today; print ""; emit_entries(); print ""; next }
+    NR==1          { print "# Changelog"; print ""; print "## " ver " — " today; print ""; emit_entries(); print ""; print; next }
+                   { print }
+  ' CHANGELOG.md
+else
+  printf '# Changelog\n\n## %s — %s\n\n' "$VER" "$DATE"
+  cat "$ENTRIES_FILE"
+  printf '\n'
+fi

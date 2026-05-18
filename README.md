@@ -128,7 +128,7 @@ Claude: Phase 3 (4 of 4 forcing questions, one at a time):
 
 ```
 ~/.claude/skills/smriti/                   ← code (this repo)
-├── bin/                                     # smriti-{slug,config,learnings-*,codex-probe,update-check,approvals,version-bump,pr-title-rewrite,browse,principles-install}
+├── bin/                                     # smriti-{slug,config,learnings-*,codex-probe,update-check,approvals,version-bump,pr-title-rewrite,browse,principles-install,changelog-insert}
 ├── lib/resolvers/                           # {{PLACEHOLDER}} content (preamble, rubric, hard-rules, principles, etc.)
 ├── scripts/                                 # gen-skill-docs.ts, skill-check.ts, run-tests.sh + test/*.bats + test/*.test.ts
 ├── eng-review/checklist.md                  # the artifact /eng-review reads

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.1 — 2026-05-18
+
+- docs: add smriti-changelog-insert to README bin enumeration
+- fix(ship): smriti-changelog-insert helper to bypass BSD awk multi-line -v (ELI-43)
+
+
 ## 0.6.0 — 2026-05-14
 
 - refactor(brainstorm): rename /office-hours → /brainstorm
