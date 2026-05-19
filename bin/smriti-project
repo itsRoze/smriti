@@ -111,6 +111,17 @@ cmd_forget() {
     esac
   done
 
+  # Slug allowlist before rm -rf: a slug like '../slug-cache' would resolve to
+  # ~/.smriti/slug-cache and nuke every repo's path→slug mapping. The shape we
+  # accept matches what smriti-slug produces (kebab + path-<hash>) — bare names,
+  # no separators, no leading dot.
+  case "$slug" in
+    */*|.*)
+      echo "smriti-project: invalid slug '$slug' (must not contain '/' or start with '.')" >&2
+      exit 2
+      ;;
+  esac
+
   local dir="$PROJECTS_DIR/$slug"
   if [ ! -d "$dir" ]; then
     echo "smriti-project: no project named '$slug' under $PROJECTS_DIR" >&2

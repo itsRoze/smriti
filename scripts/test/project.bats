@@ -110,6 +110,26 @@ teardown() {
   [ -d "$SMRITI_HOME/projects/safe" ]
 }
 
+@test "forget: rejects slug with '/' or leading '.' before rm -rf (path-traversal guard)" {
+  # The vulnerability: without this guard, `forget ../slug-cache --yes` would
+  # resolve to ~/.smriti/slug-cache, pass the [ -d ] check, and rm -rf the
+  # entire slug-cache, making every repo on the machine forget its slug.
+  mkdir -p "$SMRITI_HOME/slug-cache"
+  printf 'sentinel' > "$SMRITI_HOME/slug-cache/sentinel"
+
+  run "$CLI" forget ../slug-cache --yes
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"invalid slug"* ]]
+  # Cache dir untouched — this is the load-bearing assertion.
+  [ -f "$SMRITI_HOME/slug-cache/sentinel" ]
+
+  run "$CLI" forget .hidden --yes
+  [ "$status" -eq 2 ]
+
+  run "$CLI" forget "with/slash" --yes
+  [ "$status" -eq 2 ]
+}
+
 @test "forget: missing slug arg exits 2 with usage" {
   run "$CLI" forget
   [ "$status" -eq 2 ]
