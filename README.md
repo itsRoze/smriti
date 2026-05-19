@@ -14,6 +14,7 @@ A personal Claude Code skill stack — opinionated, learns across sessions, gets
 - [What a session looks like](#what-a-session-looks-like)
 - [Architecture](#architecture)
 - [Configuration](#configuration)
+- [Managing tracked projects](#managing-tracked-projects)
 - [Principles](#principles)
 - [Browser audit](#browser-audit-design-review-v2)
 - [What's deferred (v0.2 / later)](#whats-deferred-v02--later)
@@ -128,7 +129,7 @@ Claude: Phase 3 (4 of 4 forcing questions, one at a time):
 
 ```
 ~/.claude/skills/smriti/                   ← code (this repo)
-├── bin/                                     # smriti-{slug,config,learnings-*,codex-probe,update-check,approvals,version-bump,pr-title-rewrite,browse,principles-install,changelog-insert}
+├── bin/                                     # smriti-{slug,config,project,learnings-*,codex-probe,update-check,approvals,version-bump,pr-title-rewrite,browse,principles-install,changelog-insert}
 ├── lib/resolvers/                           # {{PLACEHOLDER}} content (preamble, rubric, hard-rules, principles, etc.)
 ├── scripts/                                 # gen-skill-docs.ts, skill-check.ts, run-tests.sh + test/*.bats + test/*.test.ts
 ├── eng-review/checklist.md                  # the artifact /eng-review reads
@@ -168,6 +169,18 @@ Claude: Phase 3 (4 of 4 forcing questions, one at a time):
 | `browse_enabled` | `true` / `false` | (asked at `./setup`) | enables `/design-review` v2 rendered-audit step via `smriti-browse` (Playwright) |
 | `proactive` | `true` / `false` | `true` | reserved (proactive skill suggestions) |
 | `explain_level` | `default` / `terse` | `default` | reserved (output verbosity) |
+
+## Managing tracked projects
+
+`smriti-project` owns the *set* of projects under `~/.smriti/projects/` — per-project content (learnings, approvals, designs) is managed by the skills themselves.
+
+| Command | Purpose |
+|---------|---------|
+| `smriti-project list` | every tracked project: slug, last-used, learnings count, designs count |
+| `smriti-project current` | slug for `$PWD` (same value the preamble exposes as `SLUG`) |
+| `smriti-project forget <slug> [--yes]` | delete the project dir AND every slug-cache file pointing at it — interactive confirm unless `--yes`. In-repo `PROJECT.md` / `DESIGN.md` are git-tracked and not touched. |
+
+`forget` deletes both the project dir and the slug-cache entry; without the second step the next `cd` into the repo resurrects the same slug.
 
 ## Principles
 

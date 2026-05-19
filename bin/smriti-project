@@ -1,0 +1,180 @@
+#!/usr/bin/env bash
+# smriti-project — manage the *set* of smriti-tracked projects.
+# State: $SMRITI_HOME/projects/<slug>/   and   $SMRITI_HOME/slug-cache/<path-hash>
+#
+# Subcommands:
+#   smriti-project list                       columns: slug, last-used, learnings, designs
+#   smriti-project current                    slug for the current repo (wraps smriti-slug --print)
+#   smriti-project forget <slug> [--yes]      rm -rf project dir + slug-cache entries (destructive)
+#
+# Per-project state — `/learn`, `/eng-review`, `/design-review`, approvals — already has
+# its own helpers. This one owns the *set*: stop tracking, list what's tracked, resolve
+# the current repo's slug. Direct user action, no Claude reasoning.
+set -e
+
+SMRITI_HOME="${SMRITI_HOME:-$HOME/.smriti}"
+PROJECTS_DIR="$SMRITI_HOME/projects"
+SLUG_CACHE_DIR="$SMRITI_HOME/slug-cache"
+
+usage() {
+  cat <<'USAGE' >&2
+usage:
+  smriti-project list                       # list all tracked projects
+  smriti-project current                    # print slug for the current repo
+  smriti-project forget <slug> [--yes]      # delete project state + slug-cache (destructive)
+USAGE
+  exit 2
+}
+
+count_lines() {
+  if [ -f "$1" ]; then
+    wc -l < "$1" | tr -d ' '
+  else
+    echo 0
+  fi
+}
+
+count_designs() {
+  find "$1" -maxdepth 1 -type f -name '*-design-*.md' 2>/dev/null | wc -l | tr -d ' '
+}
+
+last_used() {
+  # Directory mtime as a stand-in for last activity. `date -r <file>` is portable
+  # across macOS (BSD) and Linux (GNU coreutils); `stat`'s flags are not.
+  date -r "$1" +%Y-%m-%d 2>/dev/null || echo "-"
+}
+
+# Slug-cache files are keyed by path-hash; their *contents* are the slug.
+# Reverse-lookup: every cache file whose content == <slug>. A single slug can map
+# to multiple cache files (same repo cloned to two paths), so emit all matches.
+cache_files_for_slug() {
+  local target="$1"
+  [ -d "$SLUG_CACHE_DIR" ] || return 0
+  for f in "$SLUG_CACHE_DIR"/*; do
+    [ -f "$f" ] || continue
+    if [ "$(cat "$f")" = "$target" ]; then
+      printf '%s\n' "$f"
+    fi
+  done
+}
+
+cmd_list() {
+  if [ ! -d "$PROJECTS_DIR" ]; then
+    echo "no projects tracked yet ($PROJECTS_DIR missing)"
+    return 0
+  fi
+  printf '%-40s  %-10s  %9s  %7s\n' "SLUG" "LAST-USED" "LEARNINGS" "DESIGNS"
+  local any=0
+  for dir in "$PROJECTS_DIR"/*/; do
+    [ -d "$dir" ] || continue
+    local slug
+    slug=$(basename "$dir")
+    # _archive holds archived projects (future subcommand); skip from `list`.
+    [ "$slug" = "_archive" ] && continue
+    any=1
+    printf '%-40s  %-10s  %9s  %7s\n' \
+      "$slug" \
+      "$(last_used "$dir")" \
+      "$(count_lines "$dir/learnings.jsonl")" \
+      "$(count_designs "$dir")"
+  done
+  if [ "$any" -eq 0 ]; then
+    echo "  (none — run /bootstrap in a project to start tracking)"
+  fi
+}
+
+cmd_current() {
+  # Resolve sibling helper via $0's dir. PATH-install puts both helpers in the same
+  # ~/.local/bin/ (siblings, so `dirname $0` finds smriti-slug); repo-clone runs do
+  # the same since bin/ is the source dir. PATH fallback covers exotic invocations.
+  local self_dir
+  self_dir="$(cd "$(dirname "$0")" && pwd -P)"
+  if [ -x "$self_dir/smriti-slug" ]; then
+    "$self_dir/smriti-slug" --print
+  elif command -v smriti-slug >/dev/null 2>&1; then
+    smriti-slug --print
+  else
+    echo "smriti-project: smriti-slug not found (looked in $self_dir and \$PATH)" >&2
+    exit 1
+  fi
+}
+
+cmd_forget() {
+  local slug="${1:-}"
+  [ -z "$slug" ] && { echo "usage: smriti-project forget <slug> [--yes]" >&2; exit 2; }
+  shift
+  local yes=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --yes|-y) yes=1; shift ;;
+      *) echo "smriti-project: unknown flag '$1'" >&2; exit 2 ;;
+    esac
+  done
+
+  # Slug allowlist before rm -rf: a slug like '../slug-cache' would resolve to
+  # ~/.smriti/slug-cache and nuke every repo's path→slug mapping. The shape we
+  # accept matches what smriti-slug produces (kebab + path-<hash>) — bare names,
+  # no separators, no leading dot.
+  case "$slug" in
+    */*|.*)
+      echo "smriti-project: invalid slug '$slug' (must not contain '/' or start with '.')" >&2
+      exit 2
+      ;;
+  esac
+
+  local dir="$PROJECTS_DIR/$slug"
+  if [ ! -d "$dir" ]; then
+    echo "smriti-project: no project named '$slug' under $PROJECTS_DIR" >&2
+    exit 1
+  fi
+
+  local learnings designs reviews
+  learnings=$(count_lines "$dir/learnings.jsonl")
+  designs=$(count_designs "$dir")
+  reviews=$(count_lines "$dir/reviews.jsonl")
+
+  local cache_files cache_count
+  cache_files=$(cache_files_for_slug "$slug")
+  cache_count=$(printf '%s' "$cache_files" | grep -c . || true)
+
+  if [ "$yes" -ne 1 ]; then
+    if [ ! -t 0 ]; then
+      echo "smriti-project: refusing to forget without --yes in non-interactive shell" >&2
+      exit 1
+    fi
+    echo "About to delete:"
+    echo "  $dir"
+    echo "    $learnings learnings, $designs designs, $reviews reviews"
+    echo "  $cache_count slug-cache file(s)"
+    printf "Delete? [y/N] "
+    read -r ans || ans=""
+    case "$ans" in
+      y|Y|yes|YES) ;;
+      *) echo "aborted."; exit 1 ;;
+    esac
+  fi
+
+  rm -rf "$dir"
+  while IFS= read -r f; do
+    [ -z "$f" ] && continue
+    rm -f "$f"
+  done <<< "$cache_files"
+
+  echo "forgot: $slug"
+  echo "  removed $dir"
+  echo "  removed $cache_count slug-cache file(s)"
+  echo ""
+  echo "Note: smriti's runtime state for this project is gone."
+  echo "PROJECT.md and DESIGN.md (if any) are still in your repo and tracked by git."
+  echo "Run 'git rm PROJECT.md DESIGN.md' if you want them gone too."
+}
+
+CMD="${1:-}"
+shift || true
+case "$CMD" in
+  list)         cmd_list "$@" ;;
+  current)      cmd_current "$@" ;;
+  forget)       cmd_forget "$@" ;;
+  ""|-h|--help) usage ;;
+  *) echo "smriti-project: unknown command '$CMD'" >&2; usage ;;
+esac
