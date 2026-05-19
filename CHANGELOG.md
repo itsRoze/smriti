@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.7.1 — 2026-05-19
+
+### Fixed
+- `setup` now discovers skills from the filesystem (every dir-with-SKILL.md) instead of a hardcoded `SKILL_NAMES` array. v0.6.0 renamed `/office-hours` → `/brainstorm` and added `/debug` in the repo but the array was never updated, so re-running setup silently skipped both new skills — they shipped to users without being installed. The array is gone; adding or renaming a skill no longer requires also editing setup.
+- `setup` now cleans up stale smriti-managed symlinks — entries in `~/.claude/skills/` whose target prefix is the smriti install path but whose source dir no longer exists. Catches the `/office-hours` symlink left dangling after the rename. Foreign symlinks (target outside the smriti install) are never touched.
+
+### Added
+- `scripts/test/setup.bats` — 7-scenario regression suite for the registration contract: registers every dir-with-SKILL.md, skips dirs without one, removes stale symlinks (the office-hours bug), leaves foreign symlinks alone, idempotent on re-run, refuses to clobber non-symlinks at the target path, lint-style guard that no hardcoded `SKILL_NAMES=` array can be reintroduced.
+
 ## 0.7.0 — 2026-05-18
 
 ### Added
