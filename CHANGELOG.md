@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.7.0 — 2026-05-18
+
+### Added
+- `bin/smriti-project` — CLI for managing the *set* of smriti-tracked projects under `~/.smriti/projects/`. Three subcommands in v1: `list` (slug, last-used, learnings count, designs count per project; excludes `_archive/`), `current` (prints the same slug as the preamble's `SLUG`, wrapping `smriti-slug --print`), and `forget <slug> [--yes]` (destructive — deletes both the project dir AND every slug-cache file pointing at it, so the next `cd` into the repo doesn't resurrect the same slug; interactive confirm unless `--yes`; refuses without `--yes` in non-interactive shells). Prints a reminder after `forget` that in-repo `PROJECT.md` / `DESIGN.md` are git-tracked and untouched. ([ELI-19](https://linear.app/itselijah/issue/ELI-19))
+- `scripts/test/project.bats` — 11-scenario suite: empty-state listing, design/learning counts, `_archive` exclusion, slug-cache reverse-lookup deletes every matching cache file while leaving unrelated entries intact, non-interactive refuses without `--yes`, unknown slug exits non-zero, usage/help exit codes. Invokes the CLI through a fake PATH symlink (per ELI-37) so sibling-resolution of `smriti-slug` from `current` is exercised in the production install shape.
+
+### Changed
+- `README.md` — new "Managing tracked projects" section + TOC entry; architecture diagram's bin enumeration adds `project`.
+
 ## 0.6.1 — 2026-05-18
 
 - docs: add smriti-changelog-insert to README bin enumeration
