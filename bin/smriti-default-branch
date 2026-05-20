@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# smriti-default-branch — echo the detected default branch name on stdout.
+#
+# Single source of truth for "what's this repo's base branch?" — used by both
+# lib/resolvers/base-branch-detect.md (skill templates) and bin/smriti-clean
+# (the /clean script). Extracting this once means a tweak to detection logic
+# (e.g., supporting `trunk`) lands in one place, not three.
+#
+# Detection order (each step falls through on empty / error):
+#   1. git symbolic-ref --short refs/remotes/origin/HEAD  (origin's truth)
+#   2. existence of refs/{heads,remotes/origin}/{main,master,develop}
+#   3. git config --get init.defaultBranch                (user preference for fresh repos)
+#   4. literal "main"
+#
+# Always exits 0 and always emits something — never returns empty, so callers
+# can safely do `BASE_BRANCH=$(smriti-default-branch)` without a fallback.
+set -e
+
+BASE=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##' || true)
+
+if [ -z "$BASE" ]; then
+  for candidate in main master develop; do
+    if git show-ref --verify --quiet "refs/heads/$candidate" 2>/dev/null \
+       || git show-ref --verify --quiet "refs/remotes/origin/$candidate" 2>/dev/null; then
+      BASE="$candidate"
+      break
+    fi
+  done
+fi
+
+if [ -z "$BASE" ]; then
+  BASE=$(git config --get init.defaultBranch 2>/dev/null || true)
+fi
+
+printf '%s\n' "${BASE:-main}"
