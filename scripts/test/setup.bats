@@ -116,6 +116,40 @@ run_setup() {
   [ -f "$FAKE_HOME/.claude/skills/alpha/user-file.md" ]
 }
 
+@test "symlinks umbrella dispatcher to ~/.local/bin/smriti" {
+  mkdir -p "$FAKE_SMRITI/bin"
+  printf '#!/usr/bin/env bash\necho dispatcher\n' > "$FAKE_SMRITI/bin/smriti"
+  chmod +x "$FAKE_SMRITI/bin/smriti"
+
+  run_setup
+
+  [ -L "$FAKE_HOME/.local/bin/smriti" ]
+  [ "$(readlink "$FAKE_HOME/.local/bin/smriti")" = "$FAKE_SMRITI/bin/smriti" ]
+}
+
+@test "removes stale smriti-managed helper symlinks from ~/.local/bin" {
+  mkdir -p "$FAKE_SMRITI/bin"
+  printf '#!/usr/bin/env bash\necho dispatcher\n' > "$FAKE_SMRITI/bin/smriti"
+  chmod +x "$FAKE_SMRITI/bin/smriti"
+
+  # Simulate old-style individual helper symlinks (the pre-umbrella layout).
+  mkdir -p "$FAKE_HOME/.local/bin"
+  ln -s "$FAKE_SMRITI/bin/smriti-config" "$FAKE_HOME/.local/bin/smriti-config"
+  ln -s "$FAKE_SMRITI/bin/smriti-slug"   "$FAKE_HOME/.local/bin/smriti-slug"
+  # Foreign symlink must survive cleanup.
+  ln -s "/tmp/other-tool" "$FAKE_HOME/.local/bin/other-tool"
+
+  run_setup
+
+  # Stale helper symlinks cleaned.
+  [ ! -e "$FAKE_HOME/.local/bin/smriti-config" ]
+  [ ! -e "$FAKE_HOME/.local/bin/smriti-slug" ]
+  # Umbrella dispatcher installed.
+  [ -L "$FAKE_HOME/.local/bin/smriti" ]
+  # Foreign symlink untouched.
+  [ -L "$FAKE_HOME/.local/bin/other-tool" ]
+}
+
 @test "no hardcoded SKILL_NAMES array — registration is filesystem-driven" {
   # Lint-style guard: the v0.6.0 silent-failure mode came from a hardcoded
   # array that drifted from the repo's skill dirs. If anyone reintroduces it,

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# smriti-clean — post-merge tidy: checkout default, pull, delete merged branch(es), prune.
+# smriti clean — post-merge tidy: checkout default, pull, delete merged branch(es), prune.
 #
 # Non-interactive. The /clean skill body is the only intended interactive caller —
 # it runs `--plan` first, issues an AskUserQuestion, then runs `--branch X` or

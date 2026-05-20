@@ -27,7 +27,7 @@ One-shot post-merge cleanup. The git work happens in `bin/smriti-clean` (non-int
 Run the script's `--plan` mode. It inspects the current git state, queries GitHub for merged PRs (falls back to `git branch --merged` when `gh` is unavailable), and returns one of four actions: `single`, `batch`, `noop`, `refuse`. Capture the JSON.
 
 ```bash
-PLAN=$(smriti-clean --plan 2>/dev/null) || { echo "/clean: smriti-clean --plan failed"; exit 0; }
+PLAN=$(smriti clean --plan 2>/dev/null) || { echo "/clean: smriti clean --plan failed"; exit 0; }
 ACTION=$(printf '%s' "$PLAN" | jq -r .action)
 DETECTION=$(printf '%s' "$PLAN" | jq -r .detection)
 REFUSAL_REASON=$(printf '%s' "$PLAN" | jq -r '.refusal_reason // empty')
@@ -93,9 +93,9 @@ Abort
   ✅ No cons — escape hatch
 ```
 
-Issue the AskUserQuestion. On `Delete + switch`, run `smriti-clean --branch "$CURRENT_BRANCH"` and surface its output. On `Switch only`, run `git checkout <default> && git pull --ff-only` (don't call the script; skip the deletion). On `Abort`, exit cleanly.
+Issue the AskUserQuestion. On `Delete + switch`, run `smriti clean --branch "$CURRENT_BRANCH"` and surface its output. On `Switch only`, run `git checkout <default> && git pull --ff-only` (don't call the script; skip the deletion). On `Abort`, exit cleanly.
 
-If `smriti-clean --branch` exits non-zero, surface stderr verbatim. Common non-zero outcomes after a `single` plan:
+If `smriti clean --branch` exits non-zero, surface stderr verbatim. Common non-zero outcomes after a `single` plan:
 
 | Code | Meaning | What to surface |
 |---|---|---|
@@ -141,9 +141,9 @@ Abort
   ✅ No cons — escape hatch
 ```
 
-On `Delete all`, run `smriti-clean --all` and surface its output (the script prints `(skipped: X — <reason>)` for branch-local soft refusals and a final `N deleted, K skipped` summary). On `Pick one at a time`, iterate over `candidates[]` and re-enter the single-branch flow for each. On `Abort`, exit cleanly.
+On `Delete all`, run `smriti clean --all` and surface its output (the script prints `(skipped: X — <reason>)` for branch-local soft refusals and a final `N deleted, K skipped` summary). On `Pick one at a time`, iterate over `candidates[]` and re-enter the single-branch flow for each. On `Abort`, exit cleanly.
 
-If `smriti-clean --all` exits 2 (dirty) or 6 (detached/unborn), surface stderr — these are global preconditions that hard-stop the batch.
+If `smriti clean --all` exits 2 (dirty) or 6 (detached/unborn), surface stderr — these are global preconditions that hard-stop the batch.
 
 ## Step 3: Handoff
 

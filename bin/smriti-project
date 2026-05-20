@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# smriti-project — manage the *set* of smriti-tracked projects.
+# smriti project — manage the *set* of smriti-tracked projects.
 # State: $SMRITI_HOME/projects/<slug>/   and   $SMRITI_HOME/slug-cache/<path-hash>
 #
 # Subcommands:
-#   smriti-project list                       columns: slug, last-used, learnings, designs
-#   smriti-project current                    slug for the current repo (wraps smriti-slug --print)
-#   smriti-project forget <slug> [--yes]      rm -rf project dir + slug-cache entries (destructive)
+#   smriti project new <name>                 scaffold a new project dir + git init
+#   smriti project list                       columns: slug, last-used, learnings, designs
+#   smriti project current                    slug for the current repo (wraps smriti-slug --print)
+#   smriti project forget <slug> [--yes]      rm -rf project dir + slug-cache entries (destructive)
 #
 # Per-project state — `/learn`, `/eng-review`, `/design-review`, approvals — already has
 # its own helpers. This one owns the *set*: stop tracking, list what's tracked, resolve
@@ -19,9 +20,10 @@ SLUG_CACHE_DIR="$SMRITI_HOME/slug-cache"
 usage() {
   cat <<'USAGE' >&2
 usage:
-  smriti-project list                       # list all tracked projects
-  smriti-project current                    # print slug for the current repo
-  smriti-project forget <slug> [--yes]      # delete project state + slug-cache (destructive)
+  smriti project new <name>                 # scaffold a new project directory + git init
+  smriti project list                       # list all tracked projects
+  smriti project current                    # print slug for the current repo
+  smriti project forget <slug> [--yes]      # delete project state + slug-cache (destructive)
 USAGE
   exit 2
 }
@@ -99,9 +101,30 @@ cmd_current() {
   fi
 }
 
+cmd_new() {
+  local name="${1:-}"
+  [ -z "$name" ] && { echo "usage: smriti project new <name>" >&2; exit 2; }
+
+  if [ -d "$name" ]; then
+    echo "smriti-project: directory '$name' already exists" >&2
+    exit 1
+  fi
+
+  mkdir -p "$name"
+  git -C "$name" init -q
+
+  echo "Created: $name/"
+  echo ""
+  echo "Next steps:"
+  echo "  cd $name"
+  echo "  claude                    # open Claude Code"
+  echo "  /bootstrap                # set up PROJECT.md + coding principles"
+  echo "  /brainstorm               # design your first feature"
+}
+
 cmd_forget() {
   local slug="${1:-}"
-  [ -z "$slug" ] && { echo "usage: smriti-project forget <slug> [--yes]" >&2; exit 2; }
+  [ -z "$slug" ] && { echo "usage: smriti project forget <slug> [--yes]" >&2; exit 2; }
   shift
   local yes=0
   while [ $# -gt 0 ]; do
@@ -172,6 +195,7 @@ cmd_forget() {
 CMD="${1:-}"
 shift || true
 case "$CMD" in
+  new)          cmd_new "$@" ;;
   list)         cmd_list "$@" ;;
   current)      cmd_current "$@" ;;
   forget)       cmd_forget "$@" ;;

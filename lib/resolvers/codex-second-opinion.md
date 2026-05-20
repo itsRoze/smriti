@@ -1,9 +1,9 @@
 ## Phase: Codex second opinion (auto-offered)
 
-Source `smriti-codex-probe` to detect availability:
+Source `smriti codex-probe` to detect availability:
 
 ```bash
-eval "$(smriti-codex-probe 2>/dev/null)" 2>/dev/null
+eval "$(smriti codex-probe 2>/dev/null)" 2>/dev/null
 ```
 
 If `CODEX_AVAILABLE=0`: skip this phase silently.

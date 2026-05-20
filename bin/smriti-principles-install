@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# smriti-principles-install — install the smriti principles @-import into the project's CLAUDE.md.
+# smriti principles-install — install the smriti principles @-import into the project's CLAUDE.md.
 # Idempotent. Uses a sentinel marker for safe re-runs and path migrations.
 #
 # Marker block written (two lines, adjacent):
@@ -198,11 +198,11 @@ print_reload_warning() {
 
 usage() {
   cat <<'EOF'
-smriti-principles-install — install smriti's principles @-import into project CLAUDE.md.
+smriti principles-install — install smriti's principles @-import into project CLAUDE.md.
 
 Usage:
-  smriti-principles-install         install or update in the current repo
-  smriti-principles-install --help  print this message
+  smriti principles-install         install or update in the current repo
+  smriti principles-install --help  print this message
 
 Idempotent. Safe to re-run. Aborts with a clear error if the marker block in
 CLAUDE.md has been edited in a way that's ambiguous to repair.

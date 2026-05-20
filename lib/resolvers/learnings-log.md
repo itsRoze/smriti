@@ -3,7 +3,7 @@
 If during this skill you observed a non-obvious pattern, pitfall, preference, architectural choice, tool quirk, or operational fact about this project — log it so future smriti runs can recall it:
 
 ```bash
-smriti-learnings-log \
+smriti learnings-log \
   --skill <skill-name> \
   --type <pattern|pitfall|preference|architecture|tool|operational> \
   --key <kebab-key> \

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# smriti-approvals — manage per-branch approval gates.
+# smriti approvals — manage per-branch approval gates.
 # State: $SMRITI_HOME/projects/<slug>/<branch-slug>-approvals.json
 #        (branch-slug = $BRANCH with `/` replaced by `--` for filename safety)
 # View:  rendered into the most-recent design doc on the current branch
@@ -180,7 +180,7 @@ case "$CMD" in
     ;;
   set)
     SKILL="${1:-}"; STATUS="${2:-}"
-    [ -z "$SKILL" ] || [ -z "$STATUS" ] && { echo "usage: smriti-approvals set <skill> <status> [--note '...']" >&2; exit 1; }
+    [ -z "$SKILL" ] || [ -z "$STATUS" ] && { echo "usage: smriti approvals set <skill> <status> [--note '...']" >&2; exit 1; }
     shift 2 || true
     NOTE=""
     while [ $# -gt 0 ]; do
@@ -237,12 +237,12 @@ case "$CMD" in
   *)
     cat <<USAGE >&2
 usage:
-  smriti-approvals get                          # render approvals as markdown
-  smriti-approvals get-json                     # raw JSON state
-  smriti-approvals set <skill> <status> [--note '...']
-  smriti-approvals required                     # print required gates for /ship
-  smriti-approvals check                        # exit 0 iff required gates pass
-  smriti-approvals sync                         # re-render section into design doc
+  smriti approvals get                          # render approvals as markdown
+  smriti approvals get-json                     # raw JSON state
+  smriti approvals set <skill> <status> [--note '...']
+  smriti approvals required                     # print required gates for /ship
+  smriti approvals check                        # exit 0 iff required gates pass
+  smriti approvals sync                         # re-render section into design doc
 
 statuses: APPROVED CONDITIONAL NEEDS_CHANGES SKIPPED STALE NOT_YET_RUN
 USAGE

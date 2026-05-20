@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# smriti-default-branch — echo the detected default branch name on stdout.
+# smriti default-branch — echo the detected default branch name on stdout.
 #
 # Single source of truth for "what's this repo's base branch?" — used by both
 # lib/resolvers/base-branch-detect.md (skill templates) and bin/smriti-clean

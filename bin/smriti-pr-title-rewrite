@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# smriti-pr-title-rewrite — prefix a PR title with `v<VERSION> ` deterministically.
+# smriti pr-title-rewrite — prefix a PR title with `v<VERSION> ` deterministically.
 #
 # Idempotent:
 #   - If title already starts with "v<VERSION> ", returned unchanged.
@@ -7,12 +7,12 @@
 #   - Otherwise, "v<VERSION> " is prepended.
 #
 # Usage:
-#   smriti-pr-title-rewrite <version> <title>
+#   smriti pr-title-rewrite <version> <title>
 #
 # Examples:
-#   smriti-pr-title-rewrite 1.2.3 "fix(ship): drift"        → "v1.2.3 fix(ship): drift"
-#   smriti-pr-title-rewrite 1.2.3 "v1.2.3 fix(ship): drift" → "v1.2.3 fix(ship): drift"
-#   smriti-pr-title-rewrite 1.2.3 "v1.0.0 fix(ship): drift" → "v1.2.3 fix(ship): drift"
+#   smriti pr-title-rewrite 1.2.3 "fix(ship): drift"        → "v1.2.3 fix(ship): drift"
+#   smriti pr-title-rewrite 1.2.3 "v1.2.3 fix(ship): drift" → "v1.2.3 fix(ship): drift"
+#   smriti pr-title-rewrite 1.2.3 "v1.0.0 fix(ship): drift" → "v1.2.3 fix(ship): drift"
 #
 # Exit codes:
 #   0   success
@@ -29,7 +29,7 @@ VERSION="${1:-}"
 TITLE="${2:-}"
 
 if [ -z "$VERSION" ] || [ -z "$TITLE" ]; then
-  echo "usage: smriti-pr-title-rewrite <version> <title>" >&2
+  echo "usage: smriti pr-title-rewrite <version> <title>" >&2
   exit 2
 fi
 

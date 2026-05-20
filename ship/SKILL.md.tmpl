@@ -54,16 +54,16 @@ Surface readiness: was `/eng-review` run on this branch? `/plan-eng-review`? `/d
 **Approvals gate (soft enforcement):**
 
 ```bash
-smriti-approvals get
+smriti approvals get
 echo
-if smriti-approvals check; then
+if smriti approvals check; then
   echo "All required gates passed."
 else
   : # gates missing — handle below
 fi
 ```
 
-If `smriti-approvals check` fails, the missing gates printed to stderr are required for ship. Issue a single AskUserQuestion:
+If `smriti approvals check` fails, the missing gates printed to stderr are required for ship. Issue a single AskUserQuestion:
 
 | Option | Behavior |
 |--------|----------|
@@ -139,7 +139,7 @@ If failures: triage in-branch (caused by this branch's changes) vs pre-existing 
 
 ## Step 5b: Smoke-test new CLIs (production-shape invocation)
 
-If the diff adds or modifies any `bin/smriti-*` script, exercise it **via the PATH symlink** (`smriti-<name>`, not the absolute repo path) so path-resolution and shebang bugs that absolute-path tests miss surface here. This is the guardrail against the ELI-36 class of bug: green tests + broken CLI.
+If the diff adds or modifies any `bin/smriti-*` script, exercise it **via the umbrella dispatcher** (`smriti <name>`, not the absolute repo path) so path-resolution and shebang bugs that absolute-path tests miss surface here. This is the guardrail against the ELI-36 class of bug: green tests + broken CLI.
 
 The smoke invocation must reach the script's path-resolution code. An early-exit `--help` is **not enough** — that's exactly what ELI-36 would have passed. Pick a no-op that runs through the normal code path, sandboxing if it would mutate user state.
 
@@ -152,16 +152,16 @@ For each changed CLI, the right invocation depends on what it does:
 
 | CLI shape | Smoke invocation |
 |-----------|-----------------|
-| Pure transform (no FS / network — e.g. `smriti-pr-title-rewrite`, `smriti-slug --print`) | run with valid args; assert exit 0 and expected output shape |
-| Read-only state probe (e.g. `smriti-codex-probe`, `smriti-config list`, `smriti-approvals get`) | invoke directly; assert exit 0 |
-| Subcommand-dispatched (e.g. `smriti-version-bump`, `smriti-approvals`) | invoke a read-only subcommand (`classify`, `get-json`, `list`) that runs through path resolution |
-| Mutates user files (e.g. `smriti-principles-install`, `smriti-learnings-log`) | sandbox via `mktemp -d` + `cd` + optional `git init -q`, then invoke production-shape |
+| Pure transform (no FS / network — e.g. `smriti pr-title-rewrite`, `smriti slug --print`) | run with valid args; assert exit 0 and expected output shape |
+| Read-only state probe (e.g. `smriti codex-probe`, `smriti config list`, `smriti approvals get`) | invoke directly; assert exit 0 |
+| Subcommand-dispatched (e.g. `smriti version-bump`, `smriti approvals`) | invoke a read-only subcommand (`classify`, `get-json`, `list`) that runs through path resolution |
+| Mutates user files (e.g. `smriti principles-install`, `smriti learnings-log`) | sandbox via `mktemp -d` + `cd` + optional `git init -q`, then invoke production-shape |
 
 Sandbox template for destructive CLIs:
 
 ```bash
 SANDBOX=$(mktemp -d)
-( cd "$SANDBOX" && git init -q && smriti-principles-install ) >/dev/null
+( cd "$SANDBOX" && git init -q && smriti principles-install ) >/dev/null
 rm -rf "$SANDBOX"
 ```
 
@@ -198,15 +198,15 @@ If review surfaces **critical** findings the user defers, surface via AskUserQue
 The classifier in `bin/smriti-version-bump` is a 4-state dispatch over (VERSION vs base, package.json vs VERSION). It catches the silent corruption mode where one of the two files drifts behind the other on a bumped branch.
 
 ```bash
-STATE=$(smriti-version-bump classify "origin/$BASE_BRANCH")
+STATE=$(smriti version-bump classify "origin/$BASE_BRANCH")
 NEW=""
 ```
 
 | State | Meaning | Action |
 |-------|---------|--------|
-| `FRESH` | VERSION at base; pkg synced (or absent) | run bump heuristics, then `smriti-version-bump apply <new>` |
+| `FRESH` | VERSION at base; pkg synced (or absent) | run bump heuristics, then `smriti version-bump apply <new>` |
 | `ALREADY_BUMPED` | VERSION ahead; pkg synced | skip — already done |
-| `DRIFT_STALE_PKG` | VERSION ahead; pkg stale | `smriti-version-bump repair` (sync pkg only — **no re-bump**) |
+| `DRIFT_STALE_PKG` | VERSION ahead; pkg stale | `smriti version-bump repair` (sync pkg only — **no re-bump**) |
 | `DRIFT_UNEXPECTED` | VERSION at base; pkg differs | AskUserQuestion: which file is authoritative? |
 
 ### `FRESH` — compute and apply the bump
@@ -224,7 +224,7 @@ Then:
 
 ```bash
 # NEW is computed from heuristics above (e.g., 0.1.0 → 0.1.1).
-NEW=$(smriti-version-bump apply "$NEW")
+NEW=$(smriti version-bump apply "$NEW")
 ```
 
 `apply` validates `$NEW` against `^[0-9]+\.[0-9]+\.[0-9]+$` and refuses malformed input — a safety net against shell metacharacters making it into the version string.
@@ -232,7 +232,7 @@ NEW=$(smriti-version-bump apply "$NEW")
 ### `ALREADY_BUMPED` — skip
 
 ```bash
-NEW=$(smriti-version-bump read-version)
+NEW=$(smriti version-bump read-version)
 ```
 
 Don't double-bump on re-run. Just record the version that's already there for downstream steps.
@@ -240,7 +240,7 @@ Don't double-bump on re-run. Just record the version that's already there for do
 ### `DRIFT_STALE_PKG` — repair only
 
 ```bash
-NEW=$(smriti-version-bump repair)
+NEW=$(smriti version-bump repair)
 ```
 
 Syncs `package.json.version` to `VERSION` without invoking the bump. The critical correctness property: a previous `/ship` already incremented VERSION; re-bumping here would compound the drift instead of fixing it.
@@ -253,7 +253,7 @@ Issue **one** AskUserQuestion. Bash for each option:
 
 ```bash
 # VERSION wins (overwrite pkg with VERSION's value)
-NEW=$(smriti-version-bump repair)
+NEW=$(smriti version-bump repair)
 
 # package.json wins (overwrite VERSION with pkg's value)
 NEW=$(jq -r '.version' package.json)
@@ -273,10 +273,10 @@ Default to "VERSION wins" if `LEAN=senior` (treats the dedicated VERSION file as
 TODAY=$(date +%Y-%m-%d)
 ENTRIES=$(git log "origin/$BASE_BRANCH"..HEAD --pretty=format:'- %s' 2>/dev/null | grep -v '^- Merge ')
 
-printf '%s\n' "$ENTRIES" | smriti-changelog-insert "$NEW" "$TODAY" > /tmp/cl.tmp && mv /tmp/cl.tmp CHANGELOG.md
+printf '%s\n' "$ENTRIES" | smriti changelog-insert "$NEW" "$TODAY" > /tmp/cl.tmp && mv /tmp/cl.tmp CHANGELOG.md
 ```
 
-`smriti-changelog-insert` handles both the missing-file and insert-under-existing-header cases. It reads entries from stdin into a temp file and uses `getline` inside awk — BSD awk on macOS rejects multi-line values in `-v var=...`, which silently dropped the new section when more than one commit landed on the branch.
+`smriti changelog-insert` handles both the missing-file and insert-under-existing-header cases. It reads entries from stdin into a temp file and uses `getline` inside awk — BSD awk on macOS rejects multi-line values in `-v var=...`, which silently dropped the new section when more than one commit landed on the branch.
 
 **TODOS.md** — auto-detect items that this PR closes:
 
@@ -322,10 +322,10 @@ EXISTING_PR=$(gh pr list --head "$BRANCH" --json number,url,state --jq '.[0]')
 **PR title:** pick the most descriptive non-WIP commit subject from this branch's history (skip `WIP`, `fixup`, `chore: bump version`, `chore: apply /eng-review` — those are mechanical). If the chosen title looks generic (`fix`, `update`), ask the user to confirm. Then run it through the rewriter:
 
 ```bash
-TITLE=$(smriti-pr-title-rewrite "$NEW" "$RAW_TITLE")
+TITLE=$(smriti pr-title-rewrite "$NEW" "$RAW_TITLE")
 ```
 
-`smriti-pr-title-rewrite` is idempotent: calling it on a title already starting with `v$NEW ` returns the title unchanged; calling it on a title starting with `v<other-version> ` replaces the stale prefix. This means re-running `/ship` after a version bump always produces a correct, current title.
+`smriti pr-title-rewrite` is idempotent: calling it on a title already starting with `v$NEW ` returns the title unchanged; calling it on a title starting with `v<other-version> ` replaces the stale prefix. This means re-running `/ship` after a version bump always produces a correct, current title.
 
 PR body template:
 
@@ -408,7 +408,7 @@ jq -n -c \
 **Stamp the approval:**
 
 ```bash
-smriti-approvals set ship APPROVED \
+smriti approvals set ship APPROVED \
   --note "version: $NEW; ${PR_URL:-no-pr}"
 ```
 

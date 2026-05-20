@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# smriti-changelog-insert — prepend a new section to CHANGELOG.md.
+# smriti changelog-insert — prepend a new section to CHANGELOG.md.
 #
 # Reads entries from stdin (one bullet per line, typically `- subject`), and
 # writes an updated CHANGELOG.md to stdout. Behavior:
@@ -15,14 +15,14 @@
 # Reading entries from a temp file with `getline` side-steps the limit portably.
 #
 # Usage:
-#   git log ...--pretty=format:'- %s' | smriti-changelog-insert <version> <date>
+#   git log ...--pretty=format:'- %s' | smriti changelog-insert <version> <date>
 set -e
 
 VER="$1"
 DATE="$2"
 
 if [ -z "$VER" ] || [ -z "$DATE" ]; then
-  echo "usage: smriti-changelog-insert <version> <date> < entries" >&2
+  echo "usage: smriti changelog-insert <version> <date> < entries" >&2
   exit 2
 fi
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# smriti-update-check — silent unless smriti is behind upstream.
+# smriti update-check — silent unless smriti is behind upstream.
 # Throttled to once per hour. Network-failure-safe (silent on any error).
 
 SMRITI_HOME="${SMRITI_HOME:-$HOME/.smriti}"

@@ -38,7 +38,7 @@ If the input doesn't match, default to **show recent**.
 ## Mode: show recent
 
 ```bash
-smriti-learnings-search --limit 20 --format text
+smriti learnings-search --limit 20 --format text
 ```
 
 Format the output to the user as a grouped list by `type` (pattern, pitfall, preference, architecture, tool, operational). For each entry: `[key] insight (confidence N, source)`.
@@ -48,7 +48,7 @@ If empty: *"No learnings yet. Run any smriti skill to start accumulating, or use
 ## Mode: search
 
 ```bash
-smriti-learnings-search --query "<user query>" --limit 20 --format text
+smriti learnings-search --query "<user query>" --limit 20 --format text
 ```
 
 Same format as **show recent**. If no matches: *"No learnings match `<query>`."*
@@ -59,7 +59,7 @@ Goal: drop stale (referenced files no longer exist) or contradictory (same key+t
 
 1. Dump everything as JSONL:
    ```bash
-   smriti-learnings-search --limit 1000 > /tmp/smriti-learn-prune.jsonl
+   smriti learnings-search --limit 1000 > /tmp/smriti-learn-prune.jsonl
    ```
 2. Walk the entries:
    - **Stale check:** if `files` is non-empty, check each path with `[ -f <path> ]`; if all files are missing, mark stale.
@@ -67,18 +67,18 @@ Goal: drop stale (referenced files no longer exist) or contradictory (same key+t
 3. For each flagged entry, ask via AskUserQuestion: **remove / keep / update**.
 4. To remove, append a tombstone (read-time dedup hides the original):
    ```bash
-   smriti-learnings-log --skill learn --type <type> --key <key> \
+   smriti learnings-log --skill learn --type <type> --key <key> \
      --insight "[REMOVED via /learn prune]" \
      --confidence 1 --source user-stated
    ```
-   *(`smriti-learnings-search` filters out entries whose insight starts with `[REMOVED`.)*
-5. To update: ask for new insight via free-text AskUserQuestion, then `smriti-learnings-log` with the same key+type and the new insight.
+   *(`smriti learnings-search` filters out entries whose insight starts with `[REMOVED`.)*
+5. To update: ask for new insight via free-text AskUserQuestion, then `smriti learnings-log` with the same key+type and the new insight.
 
 ## Mode: export
 
 1. Dump:
    ```bash
-   smriti-learnings-search --limit 1000 > /tmp/smriti-learn-export.jsonl
+   smriti learnings-search --limit 1000 > /tmp/smriti-learn-export.jsonl
    ```
 2. Format as markdown, one section per `type` (## Patterns, ## Pitfalls, etc.). Within each section, list entries as: `- **[key]** insight (confidence N, source)`.
 3. Ask via AskUserQuestion: append to `CLAUDE.md` / save to `LEARNINGS.md` at repo root / print to terminal only / abort.
@@ -93,7 +93,7 @@ Compute and display a small table:
 - Mean confidence (post-decay)
 
 ```bash
-smriti-learnings-search --limit 100000 | jq -s '
+smriti learnings-search --limit 100000 | jq -s '
   {
     total: length,
     by_type: (group_by(.type) | map({type: .[0].type, count: length}) | from_entries),
@@ -114,7 +114,7 @@ AskUserQuestion gathering:
 Then:
 
 ```bash
-smriti-learnings-log --skill learn \
+smriti learnings-log --skill learn \
   --type "$TYPE" --key "$KEY" \
   --insight "$INSIGHT" --confidence "$CONFIDENCE" \
   --source user-stated \
