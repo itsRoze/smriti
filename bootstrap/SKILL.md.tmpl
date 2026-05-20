@@ -76,7 +76,7 @@ After the user answers:
 **3a. Persist `lean` globally** (so `/plan-eng-review` and others can read it):
 
 ```bash
-smriti-config set lean <senior|prototype>
+smriti config set lean <senior|prototype>
 ```
 
 **3b. Write `PROJECT.md` to the repo root.** Synthesize the Overview — don't just echo the user's Phase 2 answers verbatim. Write a tight paragraph that captures what this project is, who it's for, and what success looks like.
@@ -109,7 +109,7 @@ smriti-config set lean <senior|prototype>
 **3c. Log a project-level architecture learning** at high confidence:
 
 ```bash
-smriti-learnings-log \
+smriti learnings-log \
   --skill bootstrap \
   --type architecture \
   --key project-overview \
@@ -121,7 +121,7 @@ smriti-learnings-log \
 **3d. Install smriti's coding principles** into the project's `CLAUDE.md`:
 
 ```bash
-smriti-principles-install
+smriti principles-install
 ```
 
 This adds (or updates) a sentinel-marker block that `@`-imports

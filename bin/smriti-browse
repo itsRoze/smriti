@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-// smriti-browse — localhost-only browser audit CLI for /design-review v2.
+// smriti browse — localhost-only browser audit CLI for /design-review v2.
 //
 // Subcommands:
 //   audit <url> [<url>...]    Capture screenshots, ARIA snapshot, console log per URL.
@@ -110,7 +110,7 @@ function err(msg: string): never {
 }
 
 function usage(): never {
-  process.stderr.write(`smriti-browse v${TOOL_VERSION}
+  process.stderr.write(`smriti browse v${TOOL_VERSION}
 
 Subcommands:
   audit <url> [<url>...] [--viewports WxH,...] [--storage <state.json>]
@@ -196,7 +196,7 @@ async function cmdAudit(args: string[]): Promise<number> {
     ({ chromium } = await import('playwright'));
   } catch (e) {
     process.stderr.write('smriti-browse: playwright is not installed.\n');
-    process.stderr.write('  Run: smriti-browse install   (downloads Chromium ~140MB)\n');
+    process.stderr.write('  Run: smriti browse install   (downloads Chromium ~140MB)\n');
     return 2;
   }
 
@@ -208,7 +208,7 @@ async function cmdAudit(args: string[]): Promise<number> {
     const msg = String(e?.message ?? e);
     if (msg.includes("Executable doesn't exist") || msg.includes('install chromium')) {
       process.stderr.write('smriti-browse: Chromium binary missing.\n');
-      process.stderr.write('  Run: smriti-browse install\n');
+      process.stderr.write('  Run: smriti browse install\n');
       return 2;
     }
     process.stderr.write(`smriti-browse: failed to launch browser: ${msg}\n`);
@@ -530,7 +530,7 @@ async function cmdLogin(args: string[]): Promise<number> {
   try {
     ({ chromium } = await import('playwright'));
   } catch {
-    process.stderr.write('smriti-browse: playwright is not installed. Run: smriti-browse install\n');
+    process.stderr.write('smriti-browse: playwright is not installed. Run: smriti browse install\n');
     return 2;
   }
 

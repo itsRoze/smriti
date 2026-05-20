@@ -136,6 +136,28 @@ teardown() {
   [[ "$output" == *"usage:"* ]]
 }
 
+@test "new: creates directory with git repo and prints next steps" {
+  cd "$WORK"
+  run "$CLI" new my-cool-project
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Created: my-cool-project/"* ]]
+  [[ "$output" == *"/bootstrap"* ]]
+  [ -d "$WORK/my-cool-project/.git" ]
+}
+
+@test "new: refuses if directory already exists" {
+  mkdir -p "$WORK/existing-dir"
+  run "$CLI" new "$WORK/existing-dir"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"already exists"* ]]
+}
+
+@test "new: missing name arg exits 2 with usage" {
+  run "$CLI" new
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"usage:"* ]]
+}
+
 @test "no args / -h / --help: prints usage, exits 2" {
   run "$CLI"
   [ "$status" -eq 2 ]

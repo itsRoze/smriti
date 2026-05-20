@@ -118,14 +118,40 @@ for entry in "$SKILLS_DIR"/*; do
   esac
 done
 
-# 4. Put bin/ helpers on PATH (~/.local/bin)
-if [ -d "$SMRITI_DIR/bin" ] && compgen -G "$SMRITI_DIR/bin/smriti-*" >/dev/null; then
+# 4. Put the umbrella dispatcher on PATH (~/.local/bin/smriti)
+#
+# Only the dispatcher is symlinked. Individual bin/smriti-* helpers are invoked
+# through the dispatcher (`smriti <command> [args...]`), which resolves the repo's
+# bin/ directory via its own symlink chain. Internal helpers that call siblings
+# already resolve via dirname($0) — the dispatcher's exec preserves $0.
+DISPATCHER="$SMRITI_DIR/bin/smriti"
+if [ -f "$DISPATCHER" ]; then
   mkdir -p "$BIN_DIR"
+  chmod +x "$DISPATCHER"
+  # Ensure all helpers are executable too (dispatcher exec's them directly).
   for helper in "$SMRITI_DIR"/bin/smriti-*; do
-    [ -f "$helper" ] || continue
-    chmod +x "$helper"
-    ln -sfn "$helper" "$BIN_DIR/$(basename "$helper")"
+    [ -f "$helper" ] && chmod +x "$helper"
   done
+  ln -sfn "$DISPATCHER" "$BIN_DIR/smriti"
+  echo "✓ smriti → $DISPATCHER"
+
+  # Clean up stale per-helper symlinks from pre-umbrella installs. Only remove
+  # symlinks whose target points into this smriti repo's bin/ — never touch
+  # foreign binaries that happen to share the smriti- prefix.
+  CLEANED=0
+  for entry in "$BIN_DIR"/smriti-*; do
+    [ -L "$entry" ] || continue
+    target=$(readlink "$entry")
+    case "$target" in
+      "$SMRITI_DIR"/bin/*)
+        rm "$entry"
+        echo "  ✗ removed stale $(basename "$entry") (now routed through dispatcher)"
+        CLEANED=$((CLEANED + 1))
+        ;;
+    esac
+  done
+  [ "$CLEANED" -gt 0 ] && echo "  ($CLEANED stale helper symlink(s) cleaned up)"
+
   case ":$PATH:" in
     *":$BIN_DIR:"*) ;;
     *) echo "" && echo "ℹ  Add $BIN_DIR to your PATH:" && echo "    export PATH=\"\$HOME/.local/bin:\$PATH\"" ;;

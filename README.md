@@ -43,7 +43,7 @@ Each skill produces an artifact the next one reads. Run them in order; downstrea
 | Plan | `/plan-eng-review` | Engineering Review Decisions section in design doc |
 | Plan | `/plan-design-review` | Design Review Decisions section + 0–10 scores |
 | Review | `/eng-review` | Auto-fixes + entries in `reviews.jsonl` |
-| Review | `/design-review` | Atomic `style(design):` commits + audit report (+ optional rendered audit via `smriti-browse`) |
+| Review | `/design-review` | Atomic `style(design):` commits + audit report (+ optional rendered audit via `smriti browse`) |
 | Ship | `/ship` | Tests, version, CHANGELOG, bisectable commits, PR |
 | Tidy | `/clean` | Post-merge: checkout default, pull, delete merged branch(es), prune |
 | Debug | `/debug` | `~/.smriti/projects/<slug>/<branch>-debug-<ts>.md` |
@@ -85,7 +85,7 @@ cd ~/.claude/skills/smriti
 ./setup
 ```
 
-`setup` symlinks each skill into `~/.claude/skills/<name>/` and the bin helpers into `~/.local/bin/smriti-*`. To update later: `git pull && ./setup`.
+`setup` symlinks each skill into `~/.claude/skills/<name>/` and the `smriti` umbrella dispatcher into `~/.local/bin/smriti`. All CLI helpers are accessed via `smriti <command>`. To update later: `git pull && ./setup`.
 
 ## What a session looks like
 
@@ -130,13 +130,13 @@ Claude: Phase 3 (4 of 4 forcing questions, one at a time):
 
 ```
 ~/.claude/skills/smriti/                   ← code (this repo)
-├── bin/                                     # smriti-{slug,config,project,learnings-*,codex-probe,update-check,approvals,version-bump,pr-title-rewrite,browse,principles-install,changelog-insert}
+├── bin/                                     # smriti (umbrella dispatcher) + smriti-{slug,config,project,learnings-*,codex-probe,update-check,approvals,version-bump,pr-title-rewrite,browse,principles-install,changelog-insert}
 ├── lib/resolvers/                           # {{PLACEHOLDER}} content (preamble, rubric, hard-rules, principles, etc.)
 ├── scripts/                                 # gen-skill-docs.ts, skill-check.ts, run-tests.sh + test/*.bats + test/*.test.ts
 ├── eng-review/checklist.md                  # the artifact /eng-review reads
 └── <skill>/SKILL.md.tmpl                    # one per skill (generated SKILL.md is gitignored)
 
-~/.local/bin/smriti-*                      ← CLI helpers (symlinks)
+~/.local/bin/smriti                        ← umbrella dispatcher (symlink → bin/smriti)
 
 ~/.smriti/                                 ← runtime state (never versioned)
 ├── config                                   # global k=v: lean, codex_default, …
@@ -161,25 +161,26 @@ Claude: Phase 3 (4 of 4 forcing questions, one at a time):
 
 ## Configuration
 
-`smriti-config get|set|unset|list` writes to `~/.smriti/config`.
+`smriti config get|set|unset|list` writes to `~/.smriti/config`.
 
 | Key | Values | Default | Effect |
 |-----|--------|---------|--------|
 | `lean` | `senior` / `prototype` | `senior` | review depth — `senior` insists on failure-mode coverage; `prototype` ships rough |
 | `codex_default` | `on` / `ask` / `off` | `ask` | whether `/brainstorm` and `/plan-eng-review` auto-prompt for a Codex second opinion |
-| `browse_enabled` | `true` / `false` | (asked at `./setup`) | enables `/design-review` v2 rendered-audit step via `smriti-browse` (Playwright) |
+| `browse_enabled` | `true` / `false` | (asked at `./setup`) | enables `/design-review` v2 rendered-audit step via `smriti browse` (Playwright) |
 | `proactive` | `true` / `false` | `true` | reserved (proactive skill suggestions) |
 | `explain_level` | `default` / `terse` | `default` | reserved (output verbosity) |
 
 ## Managing tracked projects
 
-`smriti-project` owns the *set* of projects under `~/.smriti/projects/` — per-project content (learnings, approvals, designs) is managed by the skills themselves.
+`smriti project` owns the *set* of projects under `~/.smriti/projects/` — per-project content (learnings, approvals, designs) is managed by the skills themselves.
 
 | Command | Purpose |
 |---------|---------|
-| `smriti-project list` | every tracked project: slug, last-used, learnings count, designs count |
-| `smriti-project current` | slug for `$PWD` (same value the preamble exposes as `SLUG`) |
-| `smriti-project forget <slug> [--yes]` | delete the project dir AND every slug-cache file pointing at it — interactive confirm unless `--yes`. In-repo `PROJECT.md` / `DESIGN.md` are git-tracked and not touched. |
+| `smriti project new <name>` | scaffold a new project directory with `git init`; print next-step guidance |
+| `smriti project list` | every tracked project: slug, last-used, learnings count, designs count |
+| `smriti project current` | slug for `$PWD` (same value the preamble exposes as `SLUG`) |
+| `smriti project forget <slug> [--yes]` | delete the project dir AND every slug-cache file pointing at it — interactive confirm unless `--yes`. In-repo `PROJECT.md` / `DESIGN.md` are git-tracked and not touched. |
 
 `forget` deletes both the project dir and the slug-cache entry; without the second step the next `cd` into the repo resurrects the same slug.
 
@@ -197,7 +198,7 @@ When you edit `lib/resolvers/principles.md`, every project that imports it picks
 ### Install in a project
 
 ```bash
-smriti-principles-install
+smriti principles-install
 ```
 
 Idempotent. Adds (or updates) a sentinel-marker block in the project's `CLAUDE.md`:
@@ -214,7 +215,7 @@ Run it once per repo. `/bootstrap` calls it automatically for new repos; existin
 Every smriti skill checks for the sentinel marker on entry. If it's missing, the preamble prints:
 
 ```
-NOTE: principles not installed in this repo. Run 'smriti-principles-install' to enable cross-project coding principles.
+NOTE: principles not installed in this repo. Run 'smriti principles-install' to enable cross-project coding principles.
 ```
 
 That's the rollout signal — opt in when you see it. No interactive prompts; ignored skills get noticed eventually because the nudge is persistent.
@@ -227,7 +228,7 @@ That's the rollout signal — opt in when you see it. No interactive prompts; ig
 
 ## Browser audit (`/design-review` v2)
 
-`/design-review` v1 catches code-level drift (token misuse, AI-slop patterns, hierarchy mistakes) by reading the diff. v2 adds a **rendered audit** via `smriti-browse` — a thin Playwright wrapper that captures screenshots at multiple viewports, the ARIA snapshot, and console errors per URL.
+`/design-review` v1 catches code-level drift (token misuse, AI-slop patterns, hierarchy mistakes) by reading the diff. v2 adds a **rendered audit** via `smriti browse` — a thin Playwright wrapper that captures screenshots at multiple viewports, the ARIA snapshot, and console errors per URL.
 
 **Scope is deliberately narrow:**
 
@@ -238,22 +239,21 @@ That's the rollout signal — opt in when you see it. No interactive prompts; ig
 **Auth on localhost** is handled via Playwright's `storageState` pattern:
 
 ```bash
-smriti-browse login http://localhost:3000 --storage ~/.smriti/projects/<slug>/auth-state.json
+smriti browse login http://localhost:3000 --storage ~/.smriti/projects/<slug>/auth-state.json
 # Headed Chromium opens. Log in manually. Close the window.
 # State saved to auth-state.json (mode 0600).
 ```
 
-Subsequent audits reuse it: `smriti-browse audit ... --storage <path>`. If the session expires, smriti-browse exits with code 3 (auth_stale) and `/design-review` prompts to re-login.
+Subsequent audits reuse it: `smriti browse audit ... --storage <path>`. If the session expires, `smriti browse` exits with code 3 (auth_stale) and `/design-review` prompts to re-login.
 
 **Output:** the agent gets a structured `audit.json` per URL with all page-derived strings wrapped as `{untrusted: true, kind, value}` observations. **The wrapper is provenance, not enforcement** — `/design-review` never feeds the raw audit to an LLM; trusted findings reference observation IDs from `untrusted_observations[]` instead of embedding page text.
 
 **Exit codes:** `0` ok · `1` usage · `2` browser/runtime · `3` auth-stale · `4` URL gate violation.
 
-**Updating:** `smriti-browse update` bumps the npm package and refreshes the bundled Chromium binary in lockstep (avoids a binary/package version mismatch).
+**Updating:** `smriti browse update` bumps the npm package and refreshes the bundled Chromium binary in lockstep (avoids a binary/package version mismatch).
 
 ## What's deferred (v0.2 / later)
 
-- **`smriti-project` CLI** — `list` / `current` / `forget` / `archive` helpers for managing tracked projects ([ELI-19](https://linear.app/itselijah/issue/ELI-19)).
 - **`STALE` approval auto-detection** — currently manual; v0.2 hashes plan content and auto-invalidates approvals when the plan changes underneath them.
 - **Cross-machine memory sync** — runtime state in `~/.smriti/` is local-only; no sync layer.
 

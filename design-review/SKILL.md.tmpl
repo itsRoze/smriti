@@ -4,7 +4,7 @@ description: |
   Two-tier design audit. Static pass (v1): reads changed UI files in the diff, checks
   DESIGN.md token drift and AI-slop patterns in code; auto-fixes mechanical drift, asks
   judgment on hierarchy/layout calls; commits with "style(design):" prefix. Rendered
-  pass (v2, optional): if `browse_enabled=true`, runs `smriti-browse audit` against
+  pass (v2, optional): if `browse_enabled=true`, runs `smriti browse audit` against
   localhost URLs, captures screenshots + ARIA snapshot + console errors, and incorporates
   rendered findings into the audit report.
   Use after implementing a UI feature, alongside /eng-review, before /ship.
@@ -26,7 +26,7 @@ allowed-tools:
 Two passes:
 
 1. **Static (v1)** — read UI files in the diff, check DESIGN.md tokens, flag AI-slop, fix mechanical drift. Always runs.
-2. **Rendered (v2)** — only when `browse_enabled=true` and the user has at least one localhost URL to audit. `smriti-browse` captures screenshots, ARIA snapshot, console messages; this skill ingests the audit JSON and emits rendered findings alongside the static ones.
+2. **Rendered (v2)** — only when `browse_enabled=true` and the user has at least one localhost URL to audit. `smriti browse` captures screenshots, ARIA snapshot, console messages; this skill ingests the audit JSON and emits rendered findings alongside the static ones.
 
 State scope to the user up front so they're not surprised:
 
@@ -46,7 +46,7 @@ UI_FILES=$(git diff "origin/$BASE_BRANCH" --name-only \
 
 if [ -z "$UI_FILES" ]; then
   echo "/design-review: no UI files in diff. Skipping."
-  smriti-approvals set design-review SKIPPED --note "no UI files in diff"
+  smriti approvals set design-review SKIPPED --note "no UI files in diff"
   exit 0
 fi
 
@@ -123,10 +123,10 @@ Each pair is a finding. **AUTO-FIX** to the token form.
 ## Phase 2.5: Rendered audit (v2, gated on `browse_enabled=true`)
 
 ```bash
-BROWSE_ENABLED=$(smriti-config get browse_enabled 2>/dev/null || echo "")
+BROWSE_ENABLED=$(smriti config get browse_enabled 2>/dev/null || echo "")
 ```
 
-If `BROWSE_ENABLED != "true"`: skip this phase. Note in the report: *"Rendered audit skipped (browse_enabled=false). To enable: smriti-config set browse_enabled true && smriti-browse install."*
+If `BROWSE_ENABLED != "true"`: skip this phase. Note in the report: *"Rendered audit skipped (browse_enabled=false). To enable: smriti config set browse_enabled true && smriti browse install."*
 
 Otherwise:
 
@@ -153,7 +153,7 @@ STORAGE_ARGS=()
 [ -f "$AUTH_STATE" ] && STORAGE_ARGS=(--storage "$AUTH_STATE")
 ```
 
-If the user's URLs include a logged-in route and no `auth-state.json` exists, the audit may exit `3` (auth_stale). Surface that with a one-line remediation: *"Run: smriti-browse login <url> --storage $AUTH_STATE"*. Don't auto-launch login — it requires a user-driven flow.
+If the user's URLs include a logged-in route and no `auth-state.json` exists, the audit may exit `3` (auth_stale). Surface that with a one-line remediation: *"Run: smriti browse login <url> --storage $AUTH_STATE"*. Don't auto-launch login — it requires a user-driven flow.
 
 ### Step 3: Run audit
 
@@ -171,7 +171,7 @@ while IFS= read -r line; do
   URL_ARGS+=("$line")
 done < "$URLS_FILE"
 
-smriti-browse audit "${URL_ARGS[@]}" "${STORAGE_ARGS[@]}" --out "$AUDIT_DIR"
+smriti browse audit "${URL_ARGS[@]}" "${STORAGE_ARGS[@]}" --out "$AUDIT_DIR"
 BROWSE_EXIT=$?
 ```
 
@@ -179,8 +179,8 @@ BROWSE_EXIT=$?
 
 - `0` — all URLs ok; parse `index.json` + per-URL `audit.json` and emit rendered findings.
 - `2` — runtime/browser error (Chromium crash, navigation timeout). Note in report; mark rendered pass as `CONDITIONAL` (do not block on infrastructure failure unless every URL failed).
-- `3` — auth state stale on at least one URL. **Mark branch-level approval `NEEDS_CHANGES`.** Print: *"Re-login: smriti-browse login <url> --storage $AUTH_STATE"*. Do NOT proceed to merge.
-- `4` — URL gate violation. The user put a non-localhost URL in `audit-urls.txt`. Print which URL was rejected and prompt to either remove it or use `--allow-remote` (manual smriti-browse run, not auto-applied here).
+- `3` — auth state stale on at least one URL. **Mark branch-level approval `NEEDS_CHANGES`.** Print: *"Re-login: smriti browse login <url> --storage $AUTH_STATE"*. Do NOT proceed to merge.
+- `4` — URL gate violation. The user put a non-localhost URL in `audit-urls.txt`. Print which URL was rejected and prompt to either remove it or use `--allow-remote` (manual smriti browse run, not auto-applied here).
 
 ### Step 5: Parse audit.json + emit findings
 
@@ -323,7 +323,7 @@ jq -n -c \
 # APPROVED      — zero high-impact findings outstanding AND rendered pass clean (or skipped)
 # CONDITIONAL   — high-impact findings deferred to TODOS.md OR rendered pass had console-warns / isolated infra failures
 # NEEDS_CHANGES — hard-rule (AI-slop) violations OR rendered pass had page-error / console-error / stale-auth (exit 3)
-smriti-approvals set design-review <STATUS> \
+smriti approvals set design-review <STATUS> \
   --note "<high>h/<medium>m/<polish>p; <auto>auto-fixed; rendered=<ran|skipped|exitN>"
 ```
 
@@ -348,7 +348,7 @@ Next: /ship will commit + open the PR (your atomic style(design): commits are al
 If the rendered pass exited `3` (auth_stale), include in the handoff:
 ```
 Auth state expired — to refresh:
-  smriti-browse login <url> --storage ~/.smriti/projects/$SLUG/auth-state.json
+  smriti browse login <url> --storage ~/.smriti/projects/$SLUG/auth-state.json
 Then re-run /design-review.
 ```
 

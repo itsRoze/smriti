@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# smriti-codex-probe — sourceable env about Codex CLI availability.
+# smriti codex-probe — sourceable env about Codex CLI availability.
 #
 # Output:
 #   CODEX_AVAILABLE=0|1

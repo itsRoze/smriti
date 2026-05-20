@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# smriti-learnings-log — append a learning entry to per-project JSONL.
+# smriti learnings-log — append a learning entry to per-project JSONL.
 # Storage: $SMRITI_HOME/projects/<slug>/learnings.jsonl (append-only).
 #
 # Schema: {skill, type, key, insight, confidence, source, trusted, ts, files?}

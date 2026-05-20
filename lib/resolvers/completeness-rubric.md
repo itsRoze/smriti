@@ -11,4 +11,4 @@ When presenting options that differ in **coverage** (e.g., "test happy path only
 
 For options that differ in **kind** (architecture A vs B vs C), do NOT score — note "options differ in kind."
 
-Recommend the highest-completeness option unless the user's `lean=prototype` (from `smriti-config get lean`) or stated time pressure justifies a lower score. Always state the recommendation explicitly: *"Recommendation: option N because…"*
+Recommend the highest-completeness option unless the user's `lean=prototype` (from `smriti config get lean`) or stated time pressure justifies a lower score. Always state the recommendation explicitly: *"Recommendation: option N because…"*

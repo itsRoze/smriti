@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# smriti-slug — derive the per-project slug; cache for fast subsequent reads.
+# smriti slug — derive the per-project slug; cache for fast subsequent reads.
 # Output (default): sourceable env (`SLUG=…`, `IS_FIRST_TIME=…`, `SLUG_CACHE_FILE=…`).
 # Output (--print): just the slug, one line.
 #

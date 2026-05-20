@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# smriti-learnings-search — query the project learnings store.
+# smriti learnings-search — query the project learnings store.
 # Reads $SMRITI_HOME/projects/<slug>/learnings.jsonl (and optionally
 # trusted entries from sibling projects with --cross-project).
 #

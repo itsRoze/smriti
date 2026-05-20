@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# smriti — umbrella dispatcher. Routes `smriti <command> [args...]` to
+# bin/smriti-<command> in the same install directory.
+set -e
+
+# Fully resolve symlink chains so $SMRITI_BIN always points to the real bin/.
+_self="$0"
+while [ -L "$_self" ]; do
+  _target=$(readlink "$_self")
+  case "$_target" in
+    /*) _self="$_target" ;;
+    *)  _self="$(cd "$(dirname "$_self")" && pwd -P)/$_target" ;;
+  esac
+done
+SMRITI_BIN="$(cd "$(dirname "$_self")" && pwd -P)"
+
+USER_COMMANDS=(browse config principles-install project)
+
+show_help() {
+  cat <<EOF
+smriti — personal Claude Code skill stack
+
+Usage: smriti <command> [args...]
+
+Commands:
+  browse              Browser audit CLI (install, login, audit, update)
+  config              Global config get/set/unset/list
+  principles-install  Install coding principles into a project's CLAUDE.md
+  project             Manage tracked projects (list, current, forget, new)
+
+Run 'smriti <command> --help' for details on a specific command.
+EOF
+}
+
+show_version() {
+  local version_file="$SMRITI_BIN/../VERSION"
+  if [ -f "$version_file" ]; then
+    printf 'smriti %s\n' "$(cat "$version_file")"
+  else
+    echo "smriti (version unknown)"
+  fi
+}
+
+CMD="${1:-}"
+
+case "$CMD" in
+  ""|help|--help|-h)
+    show_help
+    exit 0
+    ;;
+  --version|-V)
+    show_version
+    exit 0
+    ;;
+esac
+
+shift
+HELPER="$SMRITI_BIN/smriti-$CMD"
+
+if [ ! -f "$HELPER" ] || [ ! -x "$HELPER" ]; then
+  echo "smriti: unknown command '$CMD'" >&2
+  echo "" >&2
+  echo "Available commands:" >&2
+  for cmd in "${USER_COMMANDS[@]}"; do
+    echo "  $cmd" >&2
+  done
+  echo "" >&2
+  echo "Run 'smriti help' for usage." >&2
+  exit 127
+fi
+
+exec "$HELPER" "$@"

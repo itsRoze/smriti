@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# smriti-version-bump — VERSION ↔ package.json drift detector + repair tool.
+# smriti version-bump — VERSION ↔ package.json drift detector + repair tool.
 #
 # Subcommands:
 #   classify [base]     Print state: FRESH | ALREADY_BUMPED | DRIFT_STALE_PKG | DRIFT_UNEXPECTED
@@ -178,10 +178,10 @@ case "$CMD" in
   *)
     cat <<USAGE >&2
 usage:
-  smriti-version-bump classify [base]      # state: FRESH | ALREADY_BUMPED | DRIFT_STALE_PKG | DRIFT_UNEXPECTED
-  smriti-version-bump apply <version>      # validate + write VERSION + sync package.json
-  smriti-version-bump repair               # sync package.json to VERSION (no bump)
-  smriti-version-bump read-version         # print VERSION stripped of CR/whitespace
+  smriti version-bump classify [base]      # state: FRESH | ALREADY_BUMPED | DRIFT_STALE_PKG | DRIFT_UNEXPECTED
+  smriti version-bump apply <version>      # validate + write VERSION + sync package.json
+  smriti version-bump repair               # sync package.json to VERSION (no bump)
+  smriti version-bump read-version         # print VERSION stripped of CR/whitespace
 USAGE
     exit 2
     ;;
