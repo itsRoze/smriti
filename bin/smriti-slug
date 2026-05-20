@@ -1,12 +1,18 @@
 #!/usr/bin/env bash
 # smriti slug — derive the per-project slug; cache for fast subsequent reads.
-# Output (default): sourceable env (`SLUG=…`, `IS_FIRST_TIME=…`, `SLUG_CACHE_FILE=…`).
+# Output (default): sourceable env (`SLUG=…`, `IS_FIRST_TIME=…`, `SLUG_CACHE_FILE=…`,
+#   `SOURCE_PATH=…`).
 # Output (--print): just the slug, one line.
 #
 # IS_FIRST_TIME is yes if no slug-cache existed before this invocation.
 # Slug derivation:
 #   1. `git remote get-url origin` → strip protocol/host → kebab-case
 #   2. Fallback: `path-<sha-of-repo-root>` if no remote
+#
+# Cache format (KV, parsed with grep/cut — never sourced):
+#   SLUG=ray-portfolio
+#   SOURCE_PATH=/Users/roze/dev/ray-portfolio
+# Old single-line format (just the slug) is read transparently.
 #
 # Cache: $SMRITI_HOME/slug-cache/<sha-of-path>
 set -e
@@ -22,9 +28,45 @@ REPO_PATH=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 PATH_HASH=$(printf '%s' "$REPO_PATH" | shasum -a 256 | cut -c1-16)
 CACHE_FILE="$SLUG_CACHE_DIR/$PATH_HASH"
 
+write_cache() {
+  local tmp="$CACHE_FILE.tmp.$$"
+  printf 'SLUG=%s\nSOURCE_PATH=%s\n' "$SLUG" "$REPO_PATH" > "$tmp"
+  mv "$tmp" "$CACHE_FILE"
+}
+
 if [ -f "$CACHE_FILE" ]; then
   IS_FIRST_TIME=no
-  SLUG=$(cat "$CACHE_FILE")
+  FIRST_LINE=$(head -1 "$CACHE_FILE")
+  if printf '%s' "$FIRST_LINE" | grep -q '='; then
+    SLUG=$(grep '^SLUG=' "$CACHE_FILE" | cut -d= -f2-)
+    CACHED_SOURCE=$(grep '^SOURCE_PATH=' "$CACHE_FILE" | cut -d= -f2- || true)
+    if [ -z "$CACHED_SOURCE" ]; then
+      write_cache
+    fi
+  else
+    SLUG="$FIRST_LINE"
+    write_cache
+  fi
+
+  # Migration detection: path-* slug with a remote now available.
+  case "$SLUG" in
+    path-*)
+      REMOTE=$(git remote get-url origin 2>/dev/null || true)
+      if [ -n "$REMOTE" ]; then
+        OWNER_REPO=$(printf '%s' "$REMOTE" | sed -E 's#^(git@[^:]+:|https?://[^/]+/)##; s#\.git$##')
+        DERIVED=$(printf '%s' "$OWNER_REPO" \
+          | tr 'A-Z' 'a-z' \
+          | tr '/' '-' \
+          | tr -cs 'a-z0-9-' '-' \
+          | sed -E 's/^-+//; s/-+$//')
+        if [ -n "$DERIVED" ] && [ "$DERIVED" != "$SLUG" ]; then
+          printf 'NOTE: this repo had no remote when smriti first saw it (slug: %s).\n' "$SLUG" >&2
+          printf '      It now has a remote — the derived slug would be '\''%s'\''.\n' "$DERIVED" >&2
+          printf '      Run '\''smriti project rename %s %s'\'' to migrate state.\n' "$SLUG" "$DERIVED" >&2
+        fi
+      fi
+      ;;
+  esac
 else
   IS_FIRST_TIME=yes
   REMOTE=$(git remote get-url origin 2>/dev/null || true)
@@ -38,7 +80,7 @@ else
   else
     SLUG="path-$PATH_HASH"
   fi
-  printf '%s' "$SLUG" > "$CACHE_FILE"
+  write_cache
 fi
 
 if [ "$PRINT_ONLY" -eq 1 ]; then
@@ -47,4 +89,5 @@ else
   printf 'SLUG=%s\n' "$SLUG"
   printf 'IS_FIRST_TIME=%s\n' "$IS_FIRST_TIME"
   printf 'SLUG_CACHE_FILE=%s\n' "$CACHE_FILE"
+  printf 'SOURCE_PATH=%q\n' "$REPO_PATH"
 fi

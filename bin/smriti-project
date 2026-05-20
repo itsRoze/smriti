@@ -4,9 +4,10 @@
 #
 # Subcommands:
 #   smriti project new <name>                 scaffold a new project dir + git init
-#   smriti project list                       columns: slug, last-used, learnings, designs
+#   smriti project list                       columns: slug, last-used, learnings, designs, path
 #   smriti project current                    slug for the current repo (wraps smriti-slug --print)
 #   smriti project forget <slug> [--yes]      rm -rf project dir + slug-cache entries (destructive)
+#   smriti project rename <old> <new>         rename a project slug (moves state + updates cache)
 #
 # Per-project state — `/learn`, `/eng-review`, `/design-review`, approvals — already has
 # its own helpers. This one owns the *set*: stop tracking, list what's tracked, resolve
@@ -24,6 +25,7 @@ usage:
   smriti project list                       # list all tracked projects
   smriti project current                    # print slug for the current repo
   smriti project forget <slug> [--yes]      # delete project state + slug-cache (destructive)
+  smriti project rename <old> <new>         # rename a project slug (moves state + updates cache)
 USAGE
   exit 2
 }
@@ -41,23 +43,68 @@ count_designs() {
 }
 
 last_used() {
-  # Directory mtime as a stand-in for last activity. `date -r <file>` is portable
-  # across macOS (BSD) and Linux (GNU coreutils); `stat`'s flags are not.
   date -r "$1" +%Y-%m-%d 2>/dev/null || echo "-"
 }
 
-# Slug-cache files are keyed by path-hash; their *contents* are the slug.
-# Reverse-lookup: every cache file whose content == <slug>. A single slug can map
-# to multiple cache files (same repo cloned to two paths), so emit all matches.
+# Read the SLUG value from a cache file. Handles both new KV format
+# (SLUG=value on its own line) and old single-line format (entire file is the slug).
+read_slug_from_cache() {
+  local file="$1"
+  local first_line
+  first_line=$(head -1 "$file")
+  if printf '%s' "$first_line" | grep -q '='; then
+    grep '^SLUG=' "$file" | cut -d= -f2-
+  else
+    printf '%s' "$first_line"
+  fi
+}
+
+# Read SOURCE_PATH from a KV-format cache file. Returns empty for old single-line files.
+read_source_path_from_cache() {
+  local file="$1"
+  grep '^SOURCE_PATH=' "$file" 2>/dev/null | cut -d= -f2- || true
+}
+
+# Reverse-lookup: every cache file whose SLUG matches <target>.
 cache_files_for_slug() {
   local target="$1"
   [ -d "$SLUG_CACHE_DIR" ] || return 0
   for f in "$SLUG_CACHE_DIR"/*; do
     [ -f "$f" ] || continue
-    if [ "$(cat "$f")" = "$target" ]; then
+    local slug
+    slug=$(read_slug_from_cache "$f" 2>/dev/null) || continue
+    if [ "$slug" = "$target" ]; then
       printf '%s\n' "$f"
     fi
   done
+}
+
+# Build an associative-style lookup: for each slug, collect all source paths
+# from cache files. Outputs lines of "slug<TAB>path" for consumption by list.
+build_slug_path_map() {
+  [ -d "$SLUG_CACHE_DIR" ] || return 0
+  for f in "$SLUG_CACHE_DIR"/*; do
+    [ -f "$f" ] || continue
+    local slug source_path
+    slug=$(read_slug_from_cache "$f" 2>/dev/null) || continue
+    source_path=$(read_source_path_from_cache "$f")
+    [ -n "$slug" ] && printf '%s\t%s\n' "$slug" "$source_path"
+  done
+}
+
+validate_slug() {
+  # Guard against path traversal: '../slug-cache' would resolve to ~/.smriti/slug-cache.
+  local slug="$1" label="$2"
+  case "$slug" in
+    */*|.*)
+      echo "smriti-project: invalid $label '$slug' (must not contain '/' or start with '.')" >&2
+      exit 2
+      ;;
+    _archive)
+      echo "smriti-project: '$slug' is a reserved name" >&2
+      exit 2
+      ;;
+  esac
 }
 
 cmd_list() {
@@ -65,20 +112,48 @@ cmd_list() {
     echo "no projects tracked yet ($PROJECTS_DIR missing)"
     return 0
   fi
-  printf '%-40s  %-10s  %9s  %7s\n' "SLUG" "LAST-USED" "LEARNINGS" "DESIGNS"
+
+  local slug_paths
+  slug_paths=$(build_slug_path_map)
+
+  printf '%-40s  %-10s  %9s  %7s  %s\n' "SLUG" "LAST-USED" "LEARNINGS" "DESIGNS" "PATH"
   local any=0
   for dir in "$PROJECTS_DIR"/*/; do
     [ -d "$dir" ] || continue
     local slug
     slug=$(basename "$dir")
-    # _archive holds archived projects (future subcommand); skip from `list`.
     [ "$slug" = "_archive" ] && continue
     any=1
-    printf '%-40s  %-10s  %9s  %7s\n' \
+
+    local paths path_display
+    paths=$(printf '%s' "$slug_paths" | grep "^${slug}	" | cut -f2- || true)
+    local path_count
+    path_count=$(printf '%s' "$paths" | grep -c . || true)
+
+    if [ "$path_count" -eq 0 ] || { [ "$path_count" -eq 1 ] && [ -z "$paths" ]; }; then
+      path_display="(unknown)"
+    elif [ "$path_count" -eq 1 ]; then
+      if [ -d "$paths" ]; then
+        path_display="$paths"
+      else
+        path_display="(stale: $paths)"
+      fi
+    else
+      local first_path
+      first_path=$(printf '%s' "$paths" | head -1)
+      if [ -d "$first_path" ]; then
+        path_display="$first_path ($path_count paths)"
+      else
+        path_display="(stale: $first_path) ($path_count paths)"
+      fi
+    fi
+
+    printf '%-40s  %-10s  %9s  %7s  %s\n' \
       "$slug" \
       "$(last_used "$dir")" \
       "$(count_lines "$dir/learnings.jsonl")" \
-      "$(count_designs "$dir")"
+      "$(count_designs "$dir")" \
+      "$path_display"
   done
   if [ "$any" -eq 0 ]; then
     echo "  (none — run /bootstrap in a project to start tracking)"
@@ -86,9 +161,6 @@ cmd_list() {
 }
 
 cmd_current() {
-  # Resolve sibling helper via $0's dir. PATH-install puts both helpers in the same
-  # ~/.local/bin/ (siblings, so `dirname $0` finds smriti-slug); repo-clone runs do
-  # the same since bin/ is the source dir. PATH fallback covers exotic invocations.
   local self_dir
   self_dir="$(cd "$(dirname "$0")" && pwd -P)"
   if [ -x "$self_dir/smriti-slug" ]; then
@@ -134,16 +206,7 @@ cmd_forget() {
     esac
   done
 
-  # Slug allowlist before rm -rf: a slug like '../slug-cache' would resolve to
-  # ~/.smriti/slug-cache and nuke every repo's path→slug mapping. The shape we
-  # accept matches what smriti-slug produces (kebab + path-<hash>) — bare names,
-  # no separators, no leading dot.
-  case "$slug" in
-    */*|.*)
-      echo "smriti-project: invalid slug '$slug' (must not contain '/' or start with '.')" >&2
-      exit 2
-      ;;
-  esac
+  validate_slug "$slug" "slug"
 
   local dir="$PROJECTS_DIR/$slug"
   if [ ! -d "$dir" ]; then
@@ -192,6 +255,56 @@ cmd_forget() {
   echo "Run 'git rm PROJECT.md DESIGN.md' if you want them gone too."
 }
 
+cmd_rename() {
+  local old="${1:-}"
+  local new="${2:-}"
+  [ -z "$old" ] || [ -z "$new" ] && { echo "usage: smriti project rename <old-slug> <new-slug>" >&2; exit 2; }
+
+  validate_slug "$old" "old slug"
+  validate_slug "$new" "new slug"
+
+  if [ "$old" = "$new" ]; then
+    echo "smriti-project: old and new slugs are the same ('$old')" >&2
+    exit 1
+  fi
+
+  local old_dir="$PROJECTS_DIR/$old"
+  local new_dir="$PROJECTS_DIR/$new"
+
+  if [ ! -d "$old_dir" ]; then
+    echo "smriti-project: no project named '$old' under $PROJECTS_DIR" >&2
+    exit 1
+  fi
+
+  if [ -d "$new_dir" ]; then
+    echo "smriti-project: target '$new' already exists. Run 'smriti project forget $new --yes' first if you want to overwrite." >&2
+    exit 1
+  fi
+
+  mv "$old_dir" "$new_dir"
+
+  local cache_updated=0
+  if [ -d "$SLUG_CACHE_DIR" ]; then
+    for f in "$SLUG_CACHE_DIR"/*; do
+      [ -f "$f" ] || continue
+      local slug
+      slug=$(read_slug_from_cache "$f" 2>/dev/null) || continue
+      if [ "$slug" = "$old" ]; then
+        local source_path
+        source_path=$(read_source_path_from_cache "$f")
+        local tmp="$f.tmp.$$"
+        printf 'SLUG=%s\nSOURCE_PATH=%s\n' "$new" "$source_path" > "$tmp"
+        mv "$tmp" "$f"
+        cache_updated=$((cache_updated + 1))
+      fi
+    done
+  fi
+
+  echo "renamed: $old -> $new"
+  echo "  moved $old_dir -> $new_dir"
+  echo "  updated $cache_updated slug-cache file(s)"
+}
+
 CMD="${1:-}"
 shift || true
 case "$CMD" in
@@ -199,6 +312,7 @@ case "$CMD" in
   list)         cmd_list "$@" ;;
   current)      cmd_current "$@" ;;
   forget)       cmd_forget "$@" ;;
+  rename)       cmd_rename "$@" ;;
   ""|-h|--help) usage ;;
   *) echo "smriti-project: unknown command '$CMD'" >&2; usage ;;
 esac
