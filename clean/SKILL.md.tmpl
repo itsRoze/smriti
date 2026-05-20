@@ -1,0 +1,166 @@
+---
+name: clean
+description: |
+  Post-merge tidy: checkout default branch, pull, delete the merged feature branch,
+  prune stale remote refs. One shot via the smriti pipeline. Single-branch on a
+  feature branch that's been merged; interactive batch-delete on the default branch.
+  Decision-brief AskUserQuestion before any deletion. Refuses on dirty tree, detached
+  HEAD, denylisted branches, and branches with unpushed commits or no upstream (unless
+  --force). Composes with /ship: ship → GitHub merge → /clean → next ticket.
+  Use after a PR has merged on GitHub. Proactively invoke when the user has just
+  shipped and asks "what's next" or wants to start a new ticket.
+allowed-tools:
+  - Bash
+  - AskUserQuestion
+---
+
+{{PREAMBLE}}
+
+{{ASK_USER_FORMAT}}
+
+# /clean — post-merge tidy
+
+One-shot post-merge cleanup. The git work happens in `bin/smriti-clean` (non-interactive); the skill body's only AI job is to issue the decision-brief AskUserQuestion before any branch is deleted.
+
+## Step 1: Plan
+
+Run the script's `--plan` mode. It inspects the current git state, queries GitHub for merged PRs (falls back to `git branch --merged` when `gh` is unavailable), and returns one of four actions: `single`, `batch`, `noop`, `refuse`. Capture the JSON.
+
+```bash
+PLAN=$(smriti-clean --plan 2>/dev/null) || { echo "/clean: smriti-clean --plan failed"; exit 0; }
+ACTION=$(printf '%s' "$PLAN" | jq -r .action)
+DETECTION=$(printf '%s' "$PLAN" | jq -r .detection)
+REFUSAL_REASON=$(printf '%s' "$PLAN" | jq -r '.refusal_reason // empty')
+CURRENT_BRANCH=$(printf '%s' "$PLAN" | jq -r .current_branch)
+```
+
+**If `DETECTION = "git-fallback"`**, prefix any subsequent output with this one-line note:
+
+> `(detection degraded: gh unavailable; using git-only — squash-merged branches may not appear)`
+
+`gh` is the only way to reliably detect merged branches in a squash-merge workflow. If you're seeing `git-fallback`, install/auth `gh` for accurate detection — otherwise `/clean` may report nothing to clean when there actually are merged branches.
+
+## Step 2: Dispatch on `ACTION`
+
+### `ACTION = "refuse"`
+
+The script already decided this won't work. Print the refusal reason verbatim and exit — no AskUserQuestion (fake interactivity).
+
+```bash
+echo "/clean refuses: $REFUSAL_REASON"
+exit 0
+```
+
+Examples of refusal: dirty working tree, detached HEAD, unborn repo. The user fixes the precondition and re-runs.
+
+### `ACTION = "noop"`
+
+Nothing to do — either you're on the default branch with no merged candidates, or you're on a feature branch that isn't recognized as merged. Print the reason and exit.
+
+```bash
+echo "/clean: $REFUSAL_REASON"
+exit 0
+```
+
+### `ACTION = "single"`
+
+You're on a feature branch that's been merged. Issue a decision-brief AskUserQuestion before deletion. The question shape (decision-brief, see top of skill):
+
+```
+D1 — Delete merged branch and switch to <default>?
+
+ELI10: <current branch> was merged (PR #<merged_pr or "detected via git">).
+       Clean-up moves you to <default>, pulls latest, deletes the local
+       branch, and prunes stale remote refs.
+
+Stakes if we pick wrong: deleting before the squash actually lands on
+       <default> throws away the only local copy of your changes — though
+       gh's merged-state check makes that very unlikely.
+
+Recommendation: Delete + switch — gh confirms PR #<n> merged.
+
+(recommended) Delete + switch to <default>
+  ✅ Standard post-merge tidy — checkout, pull, delete, prune in one step
+  ✅ Surfaces a no-op when the script's revalidation disagrees with --plan
+  ❌ Local branch is gone; any uncommitted history goes with it
+
+Switch only (keep branch)
+  ✅ Conservative — keeps a local copy in case something downstream surprises
+  ✅ Useful when you want to compare or cherry-pick before deleting
+  ❌ Branch lingers; next /clean run will offer it again
+
+Abort
+  ✅ No cons — escape hatch
+```
+
+Issue the AskUserQuestion. On `Delete + switch`, run `smriti-clean --branch "$CURRENT_BRANCH"` and surface its output. On `Switch only`, run `git checkout <default> && git pull --ff-only` (don't call the script; skip the deletion). On `Abort`, exit cleanly.
+
+If `smriti-clean --branch` exits non-zero, surface stderr verbatim. Common non-zero outcomes after a `single` plan:
+
+| Code | Meaning | What to surface |
+|---|---|---|
+| 4 | revalidation disagrees — script no longer thinks it's merged | "branch state changed between plan and execute; re-run /clean" |
+| 5 | branch-local soft refusal (unpushed commits, no upstream) | the stderr message lists the unpushed commits |
+| 8 | state changed (branch deleted or renamed under us) | "branch is gone; re-run /clean" |
+
+For exit 5, offer a follow-up AskUserQuestion: "retry with `--force` (deletes despite unpushed work)?" Decision-brief shape; **do** ask, because `--force` is a deliberate user choice.
+
+### `ACTION = "batch"`
+
+You're on the default branch with one or more merged candidates. Decision-brief with the **explicit candidate list inline** — no blind approval.
+
+```
+D1 — Delete <N> merged branches?
+
+ELI10: <N> local branches were merged into <default>. Cleanup deletes
+       each, then prunes stale remote refs.
+
+Candidates:
+  • <branch-1>  (PR #<n> | merged via git-fallback)
+  • <branch-2>  (PR #<n> | merged via git-fallback)
+  • ...
+
+Stakes if we pick wrong: any branch that's actually still in use disappears
+       locally; safe candidates have safe_to_delete=true in --plan output.
+       Branches flagged unsafe will be skipped-with-note unless --force.
+
+Recommendation: Delete all — every candidate has a merged-state signal.
+
+(recommended) Delete all
+  ✅ One-shot cleanup; matches the standard post-merge tidy
+  ✅ Skips branches with unpushed work (per safety matrix) unless --force
+  ❌ N branches gone in one keystroke; the JSON candidate list is your one
+     chance to spot a false positive
+
+Pick branches one at a time
+  ✅ Maximum control — review each candidate individually
+  ✅ Right when you've been doing exploratory branch work
+  ❌ Slower; one AskUserQuestion per candidate
+
+Abort
+  ✅ No cons — escape hatch
+```
+
+On `Delete all`, run `smriti-clean --all` and surface its output (the script prints `(skipped: X — <reason>)` for branch-local soft refusals and a final `N deleted, K skipped` summary). On `Pick one at a time`, iterate over `candidates[]` and re-enter the single-branch flow for each. On `Abort`, exit cleanly.
+
+If `smriti-clean --all` exits 2 (dirty) or 6 (detached/unborn), surface stderr — these are global preconditions that hard-stop the batch.
+
+## Step 3: Handoff
+
+After a successful run print one line of next-step guidance:
+
+- **Single deleted, on default branch** → *"Branch cleaned. Ready for the next ticket."*
+- **Batch deleted** → *"N branch(es) cleaned. Ready for the next ticket."*
+- **Noop / refuse** → no handoff line (the reason was already surfaced).
+
+Don't auto-invoke anything; the user drives.
+
+---
+
+{{LEARNINGS_LOG}}
+
+When logging learnings from this skill, prefer keys like:
+
+- `pitfall-clean-<topic>` — e.g., `pitfall-clean-squash-merge-no-gh` for the squash-detection gap
+- `pattern-clean-<area>` — recurring shape of post-merge cleanup decisions
+- `operational-clean-<topic>` — workflow facts (e.g., "user's repo has delete_branch_on_merge=true, so remote-side deletion is automatic")
