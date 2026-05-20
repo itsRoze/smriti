@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.9.1 — 2026-05-20
+
+- fix(approvals): fail loud on malformed state file and broken smriti-slug (ELI-41)
+
+
 ## 0.9.0 — 2026-05-20
 
 - feat(cli): umbrella dispatcher replaces per-helper PATH symlinks (ELI-45)
