@@ -32,7 +32,14 @@ if ! command -v jq >/dev/null 2>&1; then
 fi
 
 SMRITI_BIN="$(cd "$(dirname "$0")" && pwd -P)"
-eval "$("$SMRITI_BIN/smriti-slug" 2>/dev/null)" 2>/dev/null
+if [ -x "$SMRITI_BIN/smriti-slug" ]; then
+  if _slug_out=$("$SMRITI_BIN/smriti-slug"); then
+    eval "$_slug_out"
+  else
+    echo "smriti-approvals: smriti-slug failed — falling back to SLUG=unknown" >&2
+  fi
+  unset _slug_out
+fi
 SLUG="${SLUG:-unknown}"
 BRANCH="${BRANCH:-$(git branch --show-current 2>/dev/null || echo unknown)}"
 # Filename-safe form of the branch (slashes break path globbing + create
@@ -54,13 +61,20 @@ if [ "$BRANCH" != "$BRANCH_SLUG" ]; then
   fi
 fi
 
+# Validate state file early — a malformed file silently survives init_state
+# (which only writes when absent) and causes cryptic jq failures downstream.
+if [ -f "$STATE_FILE" ] && ! jq empty "$STATE_FILE" 2>/dev/null; then
+  echo "smriti-approvals: state file is malformed JSON — fix or delete it: $STATE_FILE" >&2
+  exit 1
+fi
+
 # Migrate legacy "office-hours" key to "brainstorm" (skill rename in v0.6.0).
 # Idempotent: no-op if the key isn't present.
 # Conflict policy: if both keys exist, the newer "brainstorm" wins unless it's
 # still at the default (NOT_YET_RUN), in which case the legacy value is
 # promoted. Prevents the migration from silently overwriting fresh approvals.
 # Uses mktemp to avoid races between concurrent invocations on the same branch.
-if [ -f "$STATE_FILE" ] && jq -e 'has("office-hours")' "$STATE_FILE" >/dev/null 2>&1; then
+if [ -f "$STATE_FILE" ] && jq -e 'has("office-hours")' "$STATE_FILE" >/dev/null; then
   _tmp=$(mktemp)
   jq '
     if (.brainstorm == null or .brainstorm.status == "NOT_YET_RUN")
