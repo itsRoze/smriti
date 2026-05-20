@@ -1,0 +1,562 @@
+#!/usr/bin/env bash
+# smriti-clean — post-merge tidy: checkout default, pull, delete merged branch(es), prune.
+#
+# Non-interactive. The /clean skill body is the only intended interactive caller —
+# it runs `--plan` first, issues an AskUserQuestion, then runs `--branch X` or
+# `--all`. Shell-direct callers use the flags themselves.
+#
+# Modes (mutually exclusive — one per invocation):
+#   --plan                       Inspect repo state; emit a single JSON action object on stdout.
+#   --list-merged                Emit one JSONL row per merged candidate. Projection of the
+#                                same internal candidate model as --plan.
+#   --branch <name>              Execute single-branch tidy: checkout default, pull, delete <name>, prune.
+#   --all                        Execute batch tidy: delete every merged candidate, then pull + prune.
+#                                Branch-local soft refusals are skipped-with-note unless --force.
+#
+# Modifiers:
+#   --force                      Override branch-local safety guards (unmerged, no-upstream,
+#                                ahead-of-upstream). Does NOT override global preconditions
+#                                (dirty tree, detached HEAD, unborn repo).
+#   --default-branch <name>      Internal/test-only. Overrides the detected default branch
+#                                for denylist + merge-base purposes. Used by the bats suite
+#                                to exercise the denylist guard against a non-`main` default
+#                                without having to set up a custom-default fixture per test.
+#
+# Exit codes:
+#    0 success (incl. no-op success: "nothing to clean")
+#    2 dirty working tree (global precondition; batch hard-stop)
+#    3 denylist refusal (tried to delete the default branch)
+#    4 unmerged refusal without --force
+#    5 branch-local soft refusal without --force (no-upstream OR ahead-of-upstream)
+#    6 detached HEAD or unborn repo (global precondition; batch hard-stop)
+#    8 state changed between --plan and execute (revalidation mismatch)
+#   64 usage error
+#
+# Detection: tries `gh pr list --state merged --head <branch> --base <DEFAULT>` first; falls
+# back to `git branch --merged <DEFAULT>` if gh is missing, unauthenticated, offline, or rate-
+# limited. The fallback is noisy on squash-merge repos (every merged branch's tip is orphaned),
+# so the JSON output carries detection="gh"|"git-fallback" — the skill body surfaces a one-line
+# note when degraded.
+
+set -e
+
+# Resolve our own bin/ dir and prepend to PATH so sibling helpers
+# (smriti-default-branch) are found whether we were invoked by absolute path
+# or via the ~/.local/bin/ symlink that `setup` installs. Same dereference
+# pattern as smriti-principles-install (ELI-36): readlink the symlink first,
+# THEN dirname, otherwise `$(dirname "$0")` resolves to the symlink's own dir.
+_self="$0"
+[ -L "$_self" ] && _self=$(readlink "$_self")
+case "$_self" in
+  /*) ;;
+  *)  _self="$(cd "$(dirname "$0")" && pwd -P)/$(basename "$_self")" ;;
+esac
+PATH="$(dirname "$_self"):$PATH"
+unset _self
+
+# ─── argv parse ─────────────────────────────────────────────────────────
+
+MODE=""
+TARGET_BRANCH=""
+FORCE=0
+OVERRIDE_DEFAULT=""
+
+usage() {
+  sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'
+  exit "${1:-0}"
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --plan)            MODE="plan"; shift ;;
+    --list-merged)     MODE="list-merged"; shift ;;
+    --all)             MODE="all"; shift ;;
+    --force)           FORCE=1; shift ;;
+    --branch)
+      MODE="branch"
+      if [ $# -lt 2 ]; then
+        echo "smriti-clean: --branch requires a name" >&2
+        exit 64
+      fi
+      TARGET_BRANCH="$2"
+      shift 2
+      ;;
+    --default-branch)
+      if [ $# -lt 2 ]; then
+        echo "smriti-clean: --default-branch requires a name" >&2
+        exit 64
+      fi
+      OVERRIDE_DEFAULT="$2"
+      shift 2
+      ;;
+    -h|--help)         usage 0 ;;
+    *)                 echo "smriti-clean: unknown argument '$1'" >&2; usage 64 ;;
+  esac
+done
+
+[ -z "$MODE" ] && { echo "smriti-clean: pick one of --plan, --list-merged, --branch <name>, --all" >&2; usage 64; }
+
+# ─── shared state ───────────────────────────────────────────────────────
+
+DEFAULT_BRANCH=""
+CURRENT_BRANCH=""
+DETECTION=""        # "gh" or "git-fallback"
+MERGED_PRS_JSON=""  # jq array of {branch, pr} pairs from the gh path (empty for git-fallback)
+
+# ─── global preconditions ───────────────────────────────────────────────
+#
+# Each check_* function echos a human-readable reason on failure and returns
+# the matching exit code. Returns 0 + no output on success.
+
+check_inside_git_repo() {
+  if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    echo "not inside a git repository"
+    return 6
+  fi
+}
+
+check_has_any_commit() {
+  if ! git rev-parse --verify --quiet HEAD >/dev/null 2>&1; then
+    echo "unborn repository (no commits yet)"
+    return 6
+  fi
+}
+
+check_not_detached_head() {
+  if [ "$(git symbolic-ref --short -q HEAD 2>/dev/null)" = "" ]; then
+    echo "detached HEAD"
+    return 6
+  fi
+}
+
+check_dirty_tree() {
+  if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
+    echo "working tree is dirty — commit or stash, then re-run"
+    return 2
+  fi
+}
+
+# Run the global preconditions in order. On the first failure echo the reason
+# to stderr (caller's choice — we just echo) and return the matching exit code.
+global_preconditions() {
+  local reason
+  if reason=$(check_inside_git_repo); then :; else return $?; fi
+  if reason=$(check_has_any_commit); then :; else return $?; fi
+  if reason=$(check_not_detached_head); then :; else return $?; fi
+  if reason=$(check_dirty_tree); then :; else return $?; fi
+  return 0
+}
+
+# Same checks but returning (code, reason) so --plan can put the reason in the
+# refusal JSON instead of echoing to stderr. Caller is responsible for `set +e`
+# around the call — this function never touches -e state itself, since flipping
+# it inside the function trips the caller's set -e on return.
+global_preconditions_with_reason() {
+  local reason rc
+  for check in check_inside_git_repo check_has_any_commit check_not_detached_head check_dirty_tree; do
+    reason=$("$check") && rc=0 || rc=$?
+    if [ "$rc" -ne 0 ]; then
+      GLOBAL_REASON="$reason"
+      return "$rc"
+    fi
+  done
+  GLOBAL_REASON=""
+  return 0
+}
+
+# ─── default branch + denylist ──────────────────────────────────────────
+
+resolve_default_branch() {
+  if [ -n "$OVERRIDE_DEFAULT" ]; then
+    DEFAULT_BRANCH="$OVERRIDE_DEFAULT"
+  else
+    DEFAULT_BRANCH=$(smriti-default-branch)
+  fi
+}
+
+# Denylist: default + literal main/master + init.defaultBranch (covers the case
+# where the user has a custom default configured for new repos but origin/HEAD
+# isn't set yet, so we'd otherwise fall through to "main" detection while their
+# actual default is "trunk").
+is_denylisted() {
+  local name="$1"
+  local init_default
+  init_default=$(git config --get init.defaultBranch 2>/dev/null || true)
+  case "$name" in
+    main|master|"$DEFAULT_BRANCH"|"$init_default") return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# ─── detection: gh primary, git fallback ────────────────────────────────
+#
+# gh path: ONE `gh pr list --state merged --base <DEFAULT>` call returns every
+# merged PR's head ref. We intersect that with local branches in-memory. This
+# is O(1) API calls regardless of how many local branches you have.
+#
+# Sets MERGED_PRS_JSON to a jq-array of {branch, pr} for branches that exist
+# locally AND have a merged PR into DEFAULT_BRANCH. Sets DETECTION to "gh" or
+# "git-fallback".
+
+detect_merged_via_gh() {
+  command -v gh >/dev/null 2>&1 || return 1
+  gh auth status >/dev/null 2>&1 || return 1
+  local raw
+  raw=$(gh pr list --state merged --base "$DEFAULT_BRANCH" \
+                   --json number,headRefName --limit 200 2>/dev/null) || return 1
+  MERGED_PRS_JSON="$raw"
+  DETECTION="gh"
+  return 0
+}
+
+# git fallback enumerates branches reachable from DEFAULT_BRANCH. Misses squash-
+# merged branches (their tip is orphaned post-squash). The skill body warns when
+# this path is in use.
+detect_merged_via_git() {
+  DETECTION="git-fallback"
+  local rows="[]"
+  local branches
+  branches=$(git branch --merged "$DEFAULT_BRANCH" --format='%(refname:short)' 2>/dev/null \
+             | grep -v "^${DEFAULT_BRANCH}$" || true)
+  while IFS= read -r b; do
+    [ -z "$b" ] && continue
+    rows=$(printf '%s' "$rows" | jq -c --arg b "$b" '. + [{headRefName: $b, number: null}]')
+  done <<EOF
+$branches
+EOF
+  MERGED_PRS_JSON="$rows"
+}
+
+run_detection() {
+  detect_merged_via_gh || detect_merged_via_git
+}
+
+# ─── candidate enumeration + per-branch safety ──────────────────────────
+#
+# A candidate is a local branch that the detection step said is "merged"
+# (modulo denylist). Safety is computed per branch:
+#   - safe_to_delete=true  → no soft-refusal reason
+#   - safe_to_delete=false → soft-refusal reason set (no-upstream, ahead-of-upstream)
+#
+# Note: detection failure (branch not in merged list at all) is exit 4 (unmerged)
+# and is handled separately at execute time — not encoded as safe_to_delete=false
+# here, since --plan only ever surfaces *merged* candidates.
+
+# Echoes "ok" or a soft-refusal reason. Soft refusals are exit-5 conditions:
+# no upstream, or commits ahead of upstream.
+branch_soft_safety() {
+  local branch="$1"
+  local upstream ahead
+  upstream=$(git rev-parse --abbrev-ref "${branch}@{u}" 2>/dev/null || true)
+  if [ -z "$upstream" ]; then
+    echo "no upstream — local-only branch may have unpushed work"
+    return 0
+  fi
+  ahead=$(git rev-list --count "${upstream}..${branch}" 2>/dev/null || echo 0)
+  if [ "$ahead" -gt 0 ]; then
+    echo "${ahead} commit(s) ahead of upstream ${upstream} — may have unpushed work"
+    return 0
+  fi
+  echo "ok"
+}
+
+# Build the candidates JSON array {branch, merged_pr, safe_to_delete}.
+# Reads from MERGED_PRS_JSON; filters out denylist + local-nonexistent.
+build_candidates_json() {
+  local out="[]"
+  local row branch pr safety safe reason
+  local rows_compact
+  rows_compact=$(printf '%s' "$MERGED_PRS_JSON" | jq -c '.[]?')
+  while IFS= read -r row; do
+    [ -z "$row" ] && continue
+    branch=$(printf '%s' "$row" | jq -r '.headRefName')
+    pr=$(printf '%s' "$row" | jq -r '.number // empty')
+    [ -z "$branch" ] && continue
+    is_denylisted "$branch" && continue
+    git show-ref --verify --quiet "refs/heads/$branch" 2>/dev/null || continue
+    safety=$(branch_soft_safety "$branch")
+    if [ "$safety" = "ok" ]; then
+      safe="true"; reason="null"
+    else
+      safe="false"; reason=$(printf '%s' "$safety" | jq -Rs .)
+    fi
+    if [ -z "$pr" ]; then
+      out=$(printf '%s' "$out" | jq -c --arg b "$branch" --argjson safe "$safe" --argjson reason "$reason" \
+            '. + [{branch:$b, merged_pr:null, safe_to_delete:$safe, refusal_reason:$reason}]')
+    else
+      out=$(printf '%s' "$out" | jq -c --arg b "$branch" --argjson pr "$pr" --argjson safe "$safe" --argjson reason "$reason" \
+            '. + [{branch:$b, merged_pr:$pr, safe_to_delete:$safe, refusal_reason:$reason}]')
+    fi
+  done <<EOF
+$rows_compact
+EOF
+  printf '%s' "$out"
+}
+
+# ─── execution helpers ──────────────────────────────────────────────────
+
+# Tidy the default branch: checkout, pull, prune. Used after deletions complete.
+sync_default_branch() {
+  git checkout -q "$DEFAULT_BRANCH"
+  git pull --quiet --ff-only 2>/dev/null || git pull --quiet || true
+  git fetch --prune --quiet 2>/dev/null || true
+}
+
+# Delete one local branch. Honors --force (uses -D, which also bypasses git's
+# "fully merged" check). Output (success message or git's refusal reason) is
+# emitted to stdout so callers can capture it; return code propagates so
+# callers can decide whether a refusal is fatal (--branch) or skip-with-note
+# (--all per Q1's safety matrix). The `--` separator guards against branch
+# names that happen to start with `-` being parsed as git flags — practically
+# unreachable because our enumeration filters such names, but cheap defense.
+delete_branch() {
+  local branch="$1"
+  if [ "$FORCE" = "1" ]; then
+    git branch -D -- "$branch" 2>&1
+  else
+    git branch -d -- "$branch" 2>&1
+  fi
+}
+
+# ─── plan emit ──────────────────────────────────────────────────────────
+
+emit_plan_json() {
+  local action="$1"
+  local current="$2"
+  local detection="$3"
+  local candidates="$4"
+  local refusal_reason="$5"
+
+  local reason_json
+  if [ -z "$refusal_reason" ] || [ "$refusal_reason" = "null" ]; then
+    reason_json="null"
+  else
+    reason_json=$(printf '%s' "$refusal_reason" | jq -Rs .)
+  fi
+
+  jq -n -c \
+    --arg action "$action" \
+    --arg detection "$detection" \
+    --arg current "$current" \
+    --argjson candidates "$candidates" \
+    --argjson refusal_reason "$reason_json" \
+    '{action:$action, detection:$detection, current_branch:$current, candidates:$candidates, refusal_reason:$refusal_reason}'
+}
+
+# ─── mode: --plan ───────────────────────────────────────────────────────
+
+mode_plan() {
+  resolve_default_branch
+  CURRENT_BRANCH=$(git symbolic-ref --short -q HEAD 2>/dev/null || echo "")
+
+  set +e
+  global_preconditions_with_reason
+  local rc=$?
+  set -e
+  if [ $rc -ne 0 ]; then
+    emit_plan_json "refuse" "$CURRENT_BRANCH" "" "[]" "$GLOBAL_REASON"
+    exit 0
+  fi
+
+  run_detection
+  local candidates_json
+  candidates_json=$(build_candidates_json)
+
+  local on_default=0
+  [ "$CURRENT_BRANCH" = "$DEFAULT_BRANCH" ] && on_default=1
+
+  local current_in_list
+  current_in_list=$(printf '%s' "$candidates_json" \
+                    | jq --arg b "$CURRENT_BRANCH" '[.[] | select(.branch == $b)] | length')
+
+  if [ "$on_default" = "1" ]; then
+    local count
+    count=$(printf '%s' "$candidates_json" | jq 'length')
+    if [ "$count" = "0" ]; then
+      emit_plan_json "noop" "$CURRENT_BRANCH" "$DETECTION" "[]" "no merged branches to remove"
+    else
+      emit_plan_json "batch" "$CURRENT_BRANCH" "$DETECTION" "$candidates_json" ""
+    fi
+  elif [ "$current_in_list" -gt 0 ]; then
+    local single_json
+    single_json=$(printf '%s' "$candidates_json" \
+                  | jq -c --arg b "$CURRENT_BRANCH" '[.[] | select(.branch == $b)]')
+    emit_plan_json "single" "$CURRENT_BRANCH" "$DETECTION" "$single_json" ""
+  else
+    emit_plan_json "noop" "$CURRENT_BRANCH" "$DETECTION" "[]" \
+      "current branch '$CURRENT_BRANCH' isn't a merged branch; switch to '$DEFAULT_BRANCH' for batch cleanup"
+  fi
+}
+
+# ─── mode: --list-merged ────────────────────────────────────────────────
+
+mode_list_merged() {
+  resolve_default_branch
+  set +e
+  global_preconditions
+  set -e
+  run_detection
+  local candidates_json
+  candidates_json=$(build_candidates_json)
+  printf '%s' "$candidates_json" \
+    | jq -c '.[] | {branch, merged_pr, safe_to_delete}'
+}
+
+# ─── mode: --branch <name> ──────────────────────────────────────────────
+
+mode_branch() {
+  resolve_default_branch
+
+  set +e
+  global_preconditions_with_reason
+  local rc=$?
+  set -e
+  if [ $rc -ne 0 ]; then
+    echo "smriti-clean: $GLOBAL_REASON" >&2
+    exit $rc
+  fi
+
+  if is_denylisted "$TARGET_BRANCH"; then
+    echo "smriti-clean: refusing to delete '$TARGET_BRANCH' (denylisted as default branch)" >&2
+    exit 3
+  fi
+
+  # Revalidate: the target branch must still be in the merged candidate list
+  # (A4 — guard against branch state changing between --plan and execute).
+  run_detection
+  local candidates_json
+  candidates_json=$(build_candidates_json)
+  local hit
+  hit=$(printf '%s' "$candidates_json" \
+        | jq --arg b "$TARGET_BRANCH" '[.[] | select(.branch == $b)] | length')
+  if [ "$hit" = "0" ]; then
+    # Either not merged any more, or doesn't exist locally. Distinguish for a
+    # better error message.
+    if ! git show-ref --verify --quiet "refs/heads/$TARGET_BRANCH" 2>/dev/null; then
+      echo "smriti-clean: branch '$TARGET_BRANCH' no longer exists locally (state changed)" >&2
+      exit 8
+    fi
+    if [ "$FORCE" = "1" ]; then
+      :  # explicit override — proceed past the mergedness check
+    else
+      echo "smriti-clean: branch '$TARGET_BRANCH' is not detected as merged into '$DEFAULT_BRANCH' (detection: $DETECTION). Pass --force to override." >&2
+      exit 4
+    fi
+  fi
+
+  # Branch-local soft safety check
+  local safety
+  safety=$(branch_soft_safety "$TARGET_BRANCH")
+  if [ "$safety" != "ok" ] && [ "$FORCE" != "1" ]; then
+    echo "smriti-clean: refusing to delete '$TARGET_BRANCH' — $safety. Pass --force to override." >&2
+    if [ -n "$(git rev-parse --abbrev-ref "${TARGET_BRANCH}@{u}" 2>/dev/null)" ]; then
+      echo "  Unpushed commits:" >&2
+      git log --oneline "$(git rev-parse --abbrev-ref "${TARGET_BRANCH}@{u}")..${TARGET_BRANCH}" >&2 || true
+    fi
+    exit 5
+  fi
+
+  # If we're standing on the target branch, switch to default first.
+  local current_branch
+  current_branch=$(git symbolic-ref --short -q HEAD 2>/dev/null || echo "")
+  if [ "$current_branch" = "$TARGET_BRANCH" ]; then
+    git checkout -q "$DEFAULT_BRANCH"
+  fi
+
+  git pull --quiet --ff-only 2>/dev/null || git pull --quiet || true
+  # A delete failure here means our safety checks all passed but git refused
+  # anyway — almost certainly a state-changed condition (upstream was modified
+  # between --plan and execute, or the branch was just rewritten elsewhere).
+  # Surface it as exit 8 with git's own reason, not the generic set -e crash.
+  local delete_output
+  if ! delete_output=$(delete_branch "$TARGET_BRANCH"); then
+    echo "smriti-clean: git refused to delete '$TARGET_BRANCH': $delete_output" >&2
+    exit 8
+  fi
+  git fetch --prune --quiet 2>/dev/null || true
+
+  echo "smriti-clean: deleted '$TARGET_BRANCH' (detection: $DETECTION)"
+}
+
+# ─── mode: --all ────────────────────────────────────────────────────────
+
+mode_all() {
+  resolve_default_branch
+
+  set +e
+  global_preconditions_with_reason
+  local rc=$?
+  set -e
+  if [ $rc -ne 0 ]; then
+    echo "smriti-clean: $GLOBAL_REASON" >&2
+    exit $rc
+  fi
+
+  run_detection
+  local candidates_json
+  candidates_json=$(build_candidates_json)
+  local count
+  count=$(printf '%s' "$candidates_json" | jq 'length')
+
+  if [ "$count" = "0" ]; then
+    echo "smriti-clean: no merged branches to remove (detection: $DETECTION)"
+    sync_default_branch
+    exit 0
+  fi
+
+  # If we're on a candidate, switch to default first so we can delete it.
+  local current_branch
+  current_branch=$(git symbolic-ref --short -q HEAD 2>/dev/null || echo "")
+  local current_is_candidate
+  current_is_candidate=$(printf '%s' "$candidates_json" \
+                         | jq --arg b "$current_branch" '[.[] | select(.branch == $b)] | length')
+  if [ "$current_is_candidate" != "0" ]; then
+    git checkout -q "$DEFAULT_BRANCH"
+  fi
+  git pull --quiet --ff-only 2>/dev/null || git pull --quiet || true
+
+  local deleted=0 skipped=0
+  local rows
+  rows=$(printf '%s' "$candidates_json" | jq -c '.[]')
+  while IFS= read -r row; do
+    [ -z "$row" ] && continue
+    local b safe reason
+    b=$(printf '%s' "$row" | jq -r '.branch')
+    safe=$(printf '%s' "$row" | jq -r '.safe_to_delete')
+    reason=$(printf '%s' "$row" | jq -r '.refusal_reason // empty')
+
+    if [ "$safe" != "true" ] && [ "$FORCE" != "1" ]; then
+      echo "smriti-clean: skipped '$b' — $reason"
+      skipped=$((skipped + 1))
+      continue
+    fi
+    # Per Q1's locked safety matrix, a git-side delete refusal is a
+    # branch-local soft refusal: skip-with-note and continue, don't crash the
+    # whole batch under set -e. delete_branch returns nonzero on git refusal
+    # (e.g., upstream changed between --plan and now); `if` captures the rc
+    # without tripping errexit.
+    local delete_output
+    if delete_output=$(delete_branch "$b"); then
+      echo "smriti-clean: deleted '$b'"
+      deleted=$((deleted + 1))
+    else
+      echo "smriti-clean: skipped '$b' — git refused: $delete_output"
+      skipped=$((skipped + 1))
+    fi
+  done <<EOF
+$rows
+EOF
+
+  git fetch --prune --quiet 2>/dev/null || true
+  echo "smriti-clean: $deleted deleted, $skipped skipped (detection: $DETECTION)"
+}
+
+# ─── dispatch ───────────────────────────────────────────────────────────
+
+case "$MODE" in
+  plan)         mode_plan ;;
+  list-merged)  mode_list_merged ;;
+  branch)       mode_branch ;;
+  all)          mode_all ;;
+  *)            usage 64 ;;
+esac

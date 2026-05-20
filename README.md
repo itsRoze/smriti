@@ -29,7 +29,7 @@ Each skill produces an artifact the next one reads. Run them in order; downstrea
    THINK              PLAN                       BUILD              REVIEW                   SHIP
    ─────              ─────                      ─────              ─────                    ────
                   ┌─ /plan-eng-review     ─┐                  ┌─ /eng-review     ─┐
-/bootstrap → /brainstorm →                   →  (you write) →                       → /ship
+/bootstrap → /brainstorm →                   →  (you write) →                       → /ship → (merge) → /clean
                   └─ /plan-design-review  ─┘                  └─ /design-review  ─┘
 
   /design-consultation                                              /debug   /learn  (anytime)
@@ -45,6 +45,7 @@ Each skill produces an artifact the next one reads. Run them in order; downstrea
 | Review | `/eng-review` | Auto-fixes + entries in `reviews.jsonl` |
 | Review | `/design-review` | Atomic `style(design):` commits + audit report (+ optional rendered audit via `smriti-browse`) |
 | Ship | `/ship` | Tests, version, CHANGELOG, bisectable commits, PR |
+| Tidy | `/clean` | Post-merge: checkout default, pull, delete merged branch(es), prune |
 | Debug | `/debug` | `~/.smriti/projects/<slug>/<branch>-debug-<ts>.md` |
 | Memory | `/learn` | `~/.smriti/projects/<slug>/learnings.jsonl` |
 

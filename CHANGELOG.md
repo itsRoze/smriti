@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.8.0 — 2026-05-19
+
+### Added
+- `/clean` skill — post-merge tidy: checkout default branch, pull, delete the merged feature branch, prune. Composes with the smriti pipeline (`/ship` → GitHub merge → `/clean` → next ticket). Issues a decision-brief AskUserQuestion before any deletion; lists candidate branches inline (no blind approval). ([ELI-30](https://linear.app/itselijah/issue/ELI-30))
+- `bin/smriti-clean` — non-interactive script the skill wraps. Modes: `--plan` (emits one JSON action object: `{action: single|batch|noop|refuse, detection: gh|git-fallback, current_branch, candidates, refusal_reason}`), `--list-merged` (JSONL projection of the same internal candidate model), `--branch <name>` (single-branch tidy), `--all` (batch tidy). Modifiers: `--force` (override branch-local safety guards — unmerged, no-upstream, ahead-of-upstream; does NOT override global preconditions), `--default-branch <name>` (internal/test-only). Stable exit-code contract: `0` success, `2` dirty tree, `3` denylist, `4` unmerged, `5` branch-local soft refusal, `6` detached HEAD / unborn, `8` state-changed mismatch between `--plan` and execute, `64` usage. Revalidates on execute so a branch switch / new commit between `--plan` and `--branch` fails closed instead of deleting the wrong thing.
+- `bin/smriti-default-branch` — single source of truth for default-branch detection. Detection order: `origin/HEAD` → existence of `main` / `master` / `develop` → `init.defaultBranch` → literal `main`. Replaces the inline bash that previously lived only in `lib/resolvers/base-branch-detect.md`; both skill templates (via the resolver) and `bin/` scripts now share one path. Tier 1d — one obvious pattern per task.
+- `scripts/test/smriti-clean.bats` — 34 bats cases. Every `--plan` action dispatch, every exit-code path (including state-changed exit 8 and the squash-merge production happy-path that `git branch -d` reaches via "merged into upstream tip" rather than "merged into HEAD"), `gh` detection (mocked) + `git-fallback`, `--all` skip-with-note for branch-local refusals + hard-stop for global preconditions. Plus a regression assertion for the `Next: /clean` line in the rendered `ship/SKILL.md`.
+- `scripts/test/base-branch.bats` — 6 cases covering the four detection paths plus the outside-a-git-repo fallback.
+
+### Changed
+- `/ship` success path ends with `Next: /clean (after the PR merges — checkout default, pull, delete this branch, prune)`, replacing the prior "After merge: pull main, delete the local branch" prose. Locked under the `Next: /clean` grep assertion in `scripts/test/smriti-clean.bats` so the next refactor of `/ship`'s tail end can't silently drop the discovery hint.
+- `lib/resolvers/base-branch-detect.md` — fenced bash block shrunk from 12 lines to one line (`BASE_BRANCH=$(smriti-default-branch)`). Detection logic now lives in the new `bin/` helper. Regenerated `ship/SKILL.md`, `eng-review/SKILL.md`, `debug/SKILL.md`, `design-review/SKILL.md` consume the shorter form via `bun run gen:skill-docs`.
+- `README.md` — adds `/clean` to the skill table (under a new `Tidy` stage) and extends the pipeline diagram to `... /ship → (merge) → /clean`.
+
+### Why
+
+Today the post-merge tidy is four lines of git the user types after every merged PR (`git checkout main && git pull && git branch -d <branch> && git fetch --prune`). It composes with the smriti pipeline but had no first-class shape, so it relied on muscle memory and silently failed in non-obvious cases: squash-merged branches don't appear in `git branch --merged` at all (branch tip is orphaned post-squash), `git branch -d` refuses on unmerged tips, and `--force` can delete unpushed local work without warning. `/clean` makes each of those refusals explicit, asks once with the candidate list inline before any destructive action, and revalidates state at execute time so the prompt and the action see the same repo.
+
+
 ## 0.7.1 — 2026-05-19
 
 ### Fixed
