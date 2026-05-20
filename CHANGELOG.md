@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.10.0 — 2026-05-20
+
+- feat(slug-cache): store SOURCE_PATH alongside SLUG in cache files; lazy-upgrade legacy single-line format (ELI-46)
+- feat(project): add PATH column to 'smriti project list' showing source repo location
+- feat(project): add 'smriti project rename <old> <new>' subcommand for renaming tracked projects
+- feat(slug): detect when path-* slug has a remote available; print migration notice to stderr
+
+
 ## 0.9.1 — 2026-05-20
 
 - fix(approvals): fail loud on malformed state file and broken smriti-slug (ELI-41)

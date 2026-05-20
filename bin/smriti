@@ -26,7 +26,7 @@ Commands:
   browse              Browser audit CLI (install, login, audit, update)
   config              Global config get/set/unset/list
   principles-install  Install coding principles into a project's CLAUDE.md
-  project             Manage tracked projects (list, current, forget, new)
+  project             Manage tracked projects (list, current, forget, new, rename)
 
 Run 'smriti <command> --help' for details on a specific command.
 EOF

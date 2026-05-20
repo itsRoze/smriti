@@ -178,9 +178,10 @@ Claude: Phase 3 (4 of 4 forcing questions, one at a time):
 | Command | Purpose |
 |---------|---------|
 | `smriti project new <name>` | scaffold a new project directory with `git init`; print next-step guidance |
-| `smriti project list` | every tracked project: slug, last-used, learnings count, designs count |
+| `smriti project list` | every tracked project: slug, last-used, learnings count, designs count, source path |
 | `smriti project current` | slug for `$PWD` (same value the preamble exposes as `SLUG`) |
 | `smriti project forget <slug> [--yes]` | delete the project dir AND every slug-cache file pointing at it — interactive confirm unless `--yes`. In-repo `PROJECT.md` / `DESIGN.md` are git-tracked and not touched. |
+| `smriti project rename <old> <new>` | rename a project slug — moves state dir + updates all slug-cache entries pointing at the old slug |
 
 `forget` deletes both the project dir and the slug-cache entry; without the second step the next `cd` into the repo resurrects the same slug.
 

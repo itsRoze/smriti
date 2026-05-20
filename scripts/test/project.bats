@@ -49,8 +49,8 @@ teardown() {
   run "$CLI" list
   [ "$status" -eq 0 ]
   [[ "$output" == *"alpha"* ]]
-  # 3 learnings, 2 designs in the alpha row.
-  echo "$output" | grep -E '^alpha[[:space:]].+[[:space:]]3[[:space:]]+2[[:space:]]*$'
+  # 3 learnings, 2 designs in the alpha row (PATH column follows).
+  echo "$output" | grep -E '^alpha[[:space:]].+[[:space:]]3[[:space:]]+2'
   # _archive is excluded from the listing.
   ! [[ "$output" == *"_archive"* ]]
 }
@@ -166,6 +166,127 @@ teardown() {
   run "$CLI" --help
   [ "$status" -eq 2 ]
   [[ "$output" == *"usage:"* ]]
+}
+
+@test "list: shows PATH from new-format cache files, (unknown) for old-format" {
+  mkdir -p "$SMRITI_HOME/projects/with-path" "$SMRITI_HOME/projects/no-path"
+  # New-format cache file with SOURCE_PATH.
+  printf 'SLUG=with-path\nSOURCE_PATH=/tmp/my-repo\n' > "$SMRITI_HOME/slug-cache/aaaaaaaaaaaaaaaa"
+  mkdir -p /tmp/my-repo
+  # Old-format cache file (just the slug, no KV).
+  printf 'no-path' > "$SMRITI_HOME/slug-cache/bbbbbbbbbbbbbbbb"
+
+  run "$CLI" list
+  [ "$status" -eq 0 ]
+  echo "$output" | grep 'with-path' | grep '/tmp/my-repo'
+  echo "$output" | grep 'no-path' | grep '(unknown)'
+  rmdir /tmp/my-repo 2>/dev/null || true
+}
+
+@test "list: shows (stale: ...) for nonexistent SOURCE_PATH" {
+  mkdir -p "$SMRITI_HOME/projects/stale-proj"
+  printf 'SLUG=stale-proj\nSOURCE_PATH=/nonexistent/path/that/does/not/exist\n' > "$SMRITI_HOME/slug-cache/dddddddddddddddd"
+
+  run "$CLI" list
+  [ "$status" -eq 0 ]
+  echo "$output" | grep 'stale-proj' | grep '(stale:'
+}
+
+@test "forget: works with new-format (KV) cache files" {
+  mkdir -p "$SMRITI_HOME/projects/kv-doomed"
+  printf 'SLUG=kv-doomed\nSOURCE_PATH=/tmp/kv-repo\n' > "$SMRITI_HOME/slug-cache/eeeeeeeeeeeeeeee"
+  printf 'SLUG=kv-doomed\nSOURCE_PATH=/tmp/kv-repo-clone\n' > "$SMRITI_HOME/slug-cache/ffffffffffffffff"
+  # Unrelated new-format entry must survive.
+  printf 'SLUG=kv-survivor\nSOURCE_PATH=/tmp/survivor\n' > "$SMRITI_HOME/slug-cache/1111111111111111"
+
+  run "$CLI" forget kv-doomed --yes
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"forgot: kv-doomed"* ]]
+  [ ! -d "$SMRITI_HOME/projects/kv-doomed" ]
+  [ ! -f "$SMRITI_HOME/slug-cache/eeeeeeeeeeeeeeee" ]
+  [ ! -f "$SMRITI_HOME/slug-cache/ffffffffffffffff" ]
+  [ -f "$SMRITI_HOME/slug-cache/1111111111111111" ]
+}
+
+@test "rename: moves project dir and updates cache files" {
+  mkdir -p "$SMRITI_HOME/projects/old-name"
+  printf '{}\n' > "$SMRITI_HOME/projects/old-name/learnings.jsonl"
+  printf 'SLUG=old-name\nSOURCE_PATH=/tmp/my-repo\n' > "$SMRITI_HOME/slug-cache/aaaaaaaaaaaaaaaa"
+  printf 'SLUG=old-name\nSOURCE_PATH=/tmp/my-repo-clone\n' > "$SMRITI_HOME/slug-cache/bbbbbbbbbbbbbbbb"
+  # Unrelated cache entry must not be touched.
+  printf 'SLUG=other\nSOURCE_PATH=/tmp/other\n' > "$SMRITI_HOME/slug-cache/cccccccccccccccc"
+
+  run "$CLI" rename old-name new-name
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"renamed: old-name -> new-name"* ]]
+  [[ "$output" == *"2 slug-cache"* ]]
+
+  [ ! -d "$SMRITI_HOME/projects/old-name" ]
+  [ -d "$SMRITI_HOME/projects/new-name" ]
+  [ -f "$SMRITI_HOME/projects/new-name/learnings.jsonl" ]
+
+  # Cache files rewritten with new slug.
+  grep -q '^SLUG=new-name$' "$SMRITI_HOME/slug-cache/aaaaaaaaaaaaaaaa"
+  grep -q 'SOURCE_PATH=/tmp/my-repo$' "$SMRITI_HOME/slug-cache/aaaaaaaaaaaaaaaa"
+  grep -q '^SLUG=new-name$' "$SMRITI_HOME/slug-cache/bbbbbbbbbbbbbbbb"
+  # Unrelated entry unchanged.
+  grep -q '^SLUG=other$' "$SMRITI_HOME/slug-cache/cccccccccccccccc"
+}
+
+@test "rename: refuses if old slug does not exist" {
+  run "$CLI" rename ghost new-name
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"no project named"* ]]
+}
+
+@test "rename: refuses if new slug already exists" {
+  mkdir -p "$SMRITI_HOME/projects/src" "$SMRITI_HOME/projects/dst"
+  run "$CLI" rename src dst
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"already exists"* ]]
+  # Both dirs untouched.
+  [ -d "$SMRITI_HOME/projects/src" ]
+  [ -d "$SMRITI_HOME/projects/dst" ]
+}
+
+@test "rename: refuses old == new" {
+  mkdir -p "$SMRITI_HOME/projects/same"
+  run "$CLI" rename same same
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"same"* ]]
+}
+
+@test "rename: rejects invalid slugs (path traversal, reserved names)" {
+  mkdir -p "$SMRITI_HOME/projects/legit"
+  run "$CLI" rename ../evil legit
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"invalid"* ]]
+
+  run "$CLI" rename legit ../evil
+  [ "$status" -eq 2 ]
+
+  run "$CLI" rename legit _archive
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"reserved"* ]]
+}
+
+@test "rename: missing args exits 2 with usage" {
+  run "$CLI" rename
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"usage:"* ]]
+
+  run "$CLI" rename only-one
+  [ "$status" -eq 2 ]
+}
+
+@test "rename: succeeds with zero cache files (project dir only)" {
+  mkdir -p "$SMRITI_HOME/projects/orphan"
+  run "$CLI" rename orphan rescued
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"renamed: orphan -> rescued"* ]]
+  [[ "$output" == *"0 slug-cache"* ]]
+  [ -d "$SMRITI_HOME/projects/rescued" ]
+  [ ! -d "$SMRITI_HOME/projects/orphan" ]
 }
 
 @test "unknown subcommand: exits 2" {
