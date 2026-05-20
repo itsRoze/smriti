@@ -125,6 +125,37 @@ EOF
   [ "$HASH_AFTER_FIRST" = "$HASH_AFTER_SECOND" ]
 }
 
+# ─── Error visibility — malformed state file ───────────────────────────────
+
+@test "malformed JSON state file: exits non-zero with actionable message" {
+  printf 'not valid json{{{' > "$STATE_FILE"
+
+  run "$CLI" get
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"malformed JSON"* ]]
+  [[ "$output" == *"fix or delete it"* ]]
+  [[ "$output" == *"$STATE_FILE"* ]]
+}
+
+@test "malformed JSON state file: blocks set subcommand too" {
+  printf '{"truncated":' > "$STATE_FILE"
+
+  run "$CLI" set eng-review APPROVED
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"malformed JSON"* ]]
+}
+
+@test "smriti-slug failure: warns to stderr and falls back to SLUG=unknown" {
+  # Create a smriti-slug stub that exits non-zero (simulates broken helper)
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$FAKE_BIN/smriti-slug"
+  chmod +x "$FAKE_BIN/smriti-slug"
+  unset SLUG
+
+  run "$CLI" get
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"smriti-slug failed"* ]]
+}
+
 # ─── Output sanity — migration is invisible to consumers ─────────────────
 
 @test "post-migration: render shows brainstorm row (not office-hours)" {
