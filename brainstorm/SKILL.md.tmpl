@@ -69,6 +69,17 @@ If any exist, list their titles + dates back to the user:
 >
 > *I'll supersede the most recent one if we ship a new design today, unless you want to start fresh."*
 
+**Check for prior debug investigations:**
+
+```bash
+ls -t "${SMRITI_HOME:-$HOME/.smriti}/projects/$SLUG/"*-debug-*.md 2>/dev/null | head -1
+```
+
+If a debug doc exists, read its title and date, then ask via AskUserQuestion:
+> *"I found a prior debug investigation: <title>, <date>. Is this related to what you want to brainstorm?"*
+
+If the user confirms relevance, read the full debug doc â€” especially `## Root cause`, `### Tier citation`, and `## Open follow-ups`. Hold this context for Phase 4 (premise challenge). If the user says it's unrelated, discard it and proceed normally.
+
 If `PROJECT.md` is missing, **stop** and recommend `/bootstrap` first. Don't proceed without it.
 
 ## Phase 2: Goal mode (single AskUserQuestion)
@@ -136,6 +147,8 @@ If the user is shipping a **new artifact** (CLI binary, library, app, service) â
 - What's the install / onboarding path?
 
 If no distribution plan, surface that as a premise to challenge.
+
+If a relevant debug doc was confirmed in Phase 1, use its root cause and tier citation to sharpen your premise challenge. A structural violation (e.g., Tier 1c) means pushing harder on architectural framing; a requirements gap means pushing on whether the original design assumptions were right.
 
 ## Phase 5: Alternatives with effort + completeness
 
