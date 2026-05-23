@@ -158,6 +158,23 @@ if [ -f "$DISPATCHER" ]; then
   esac
 fi
 
+# 5. Install zsh completions
+COMPLETIONS_SRC="$SMRITI_DIR/completions/_smriti"
+if [ -f "$COMPLETIONS_SRC" ]; then
+  COMPLETIONS_DIR="$HOME/.local/share/zsh/site-functions"
+  mkdir -p "$COMPLETIONS_DIR"
+  ln -sfn "$COMPLETIONS_SRC" "$COMPLETIONS_DIR/_smriti"
+  echo "✓ zsh completions → $COMPLETIONS_DIR/_smriti"
+
+  # Check if the completions dir is in fpath
+  if [[ ":${FPATH}:" != *":$COMPLETIONS_DIR:"* ]]; then
+    echo ""
+    echo "ℹ  Add to your .zshrc to enable tab completion:"
+    echo "    fpath=(\$HOME/.local/share/zsh/site-functions \$fpath)"
+    echo "    autoload -Uz compinit && compinit"
+  fi
+fi
+
 echo ""
 if [ "$REGISTERED" -eq 0 ]; then
   echo "Setup complete (no skills registered yet — run again after building skill SKILL.md.tmpl files)."

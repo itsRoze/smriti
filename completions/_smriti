@@ -1,0 +1,64 @@
+#compdef smriti
+# Zsh completion for the smriti CLI.
+# Source via: fpath=(/path/to/smriti/completions $fpath); compinit
+#
+# Discovers top-level subcommands dynamically from bin/smriti-* files.
+
+_smriti_resolve_bin() {
+  local self="$commands[smriti]"
+  while [[ -L "$self" ]]; do
+    local target=$(readlink "$self")
+    case "$target" in
+      /*) self="$target" ;;
+      *)  self="${self:h}/$target" ;;
+    esac
+  done
+  echo "${self:h}"
+}
+
+_smriti() {
+  local bin_dir
+  bin_dir=$(_smriti_resolve_bin)
+
+  if (( CURRENT == 2 )); then
+    local -a subcmds
+    subcmds=(${${(f)"$(ls "$bin_dir"/smriti-* 2>/dev/null)"}:t:s/smriti-//} help)
+    _describe 'smriti command' subcmds
+    return
+  fi
+
+  local subcmd="${words[2]}"
+  if (( CURRENT == 3 )); then
+    case "$subcmd" in
+      project)
+        local -a project_cmds=(new list current forget rename)
+        _describe 'project subcommand' project_cmds
+        ;;
+      config)
+        local -a config_cmds=(get set unset list)
+        _describe 'config subcommand' config_cmds
+        ;;
+      approvals)
+        local -a approvals_cmds=(get set required check sync)
+        _describe 'approvals subcommand' approvals_cmds
+        ;;
+      browse)
+        local -a browse_cmds=(audit login install update help)
+        _describe 'browse subcommand' browse_cmds
+        ;;
+      version-bump)
+        local -a vb_cmds=(classify apply repair read-version)
+        _describe 'version-bump subcommand' vb_cmds
+        ;;
+      clean)
+        local -a clean_cmds=(plan list-merged branch all)
+        _describe 'clean subcommand' clean_cmds
+        ;;
+      *)
+        _files
+        ;;
+    esac
+  fi
+}
+
+_smriti "$@"
