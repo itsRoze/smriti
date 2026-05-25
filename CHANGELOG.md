@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.11.0 — 2026-05-24
+
+- docs(README): add /begin to pipeline diagram and skill table
+- feat(begin): /begin skill — triage entry point for smriti pipeline (ELI-47)
+
+
 ## 0.10.1 — 2026-05-22
 
 - feat(brainstorm): read debug docs as cross-skill artifact bridge (ELI-42)
