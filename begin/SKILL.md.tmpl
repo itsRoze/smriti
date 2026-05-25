@@ -1,0 +1,130 @@
+---
+name: begin
+description: |
+  Triage entry point for the smriti pipeline. Classifies work into three modes
+  (brainstorm, debug, implement) and invokes the right skill via the Skill tool.
+  Manual-only — user must type /begin explicitly; does not compete with existing
+  proactive skills (/brainstorm, /debug).
+  Use when starting a new work session: "/begin <describe your work>".
+disable-model-invocation: true
+allowed-tools:
+  - Bash
+  - Read
+  - Edit
+  - Write
+  - Glob
+  - Grep
+  - AskUserQuestion
+  - Skill
+---
+
+{{PREAMBLE}}
+
+# /begin — triage entry point
+
+Classify the user's work and route to the right smriti skill. Thin router — classify, route, done.
+
+<user_prompt> #$ARGUMENTS </user_prompt>
+
+## Hard rules
+
+1. For brainstorm/debug modes: classify, invoke the downstream skill, stop. Do NOT write code.
+2. For implement mode: classify, load context, then proceed directly with the implementation.
+3. Route to exactly one downstream skill or the implement fast path. Never re-invoke /begin.
+4. Preserve the user's original prompt verbatim when invoking downstream skills.
+
+## Phase 1: Context gathering (silent)
+
+Read silently — do not echo to the user:
+
+```bash
+[ -f PROJECT.md ] && cat PROJECT.md
+git log --oneline -10 2>/dev/null
+git status --short 2>/dev/null
+```
+
+If `PROJECT.md` is missing, **stop** and recommend `/bootstrap` first. Don't proceed without it.
+
+## Phase 2: Classify
+
+Read the user's prompt in `<user_prompt>` and classify into one of four internal states:
+
+| Signal | Mode |
+|--------|------|
+| New feature, design question, "I have an idea," "help me think through," exploring options, wants alternatives | **brainstorm** |
+| Bug, error, stack trace, "why is this failing," "fix this," broken behavior, test failure, regression | **debug** |
+| Small concrete edit, config change, "add X to Y," rename, update dependency, typo fix, one-file refactor | **implement** |
+| Mixed intent, vague, could be multiple modes | **unclear** |
+
+**Do not ask the user which mode.** Read their prompt and classify silently. The value of /begin is that the user describes work in natural language and the system figures out the mode.
+
+### Unclear path
+
+If the classification is genuinely ambiguous — the prompt could reasonably be two different modes, or the scope is unknowable from the description — ask **one** AskUserQuestion:
+
+> *"I want to make sure I route this correctly. Is this closer to:"*
+
+Options should be the two or three candidate modes with short descriptions of what each path does. After the user answers, proceed with the selected mode. The user's clarification answer stays in the conversation transcript and will be visible to the downstream skill.
+
+## Phase 3: Route
+
+### Mode: brainstorm
+
+State one line: *"This looks like feature/design work. Invoking /brainstorm."*
+
+Then invoke the Skill tool:
+
+```
+Skill(skill="brainstorm", args="<user's original prompt from <user_prompt>, verbatim>")
+```
+
+/begin is done. The brainstorm skill takes over entirely.
+
+### Mode: debug
+
+State one line: *"This looks like a bug to investigate. Invoking /debug."*
+
+Then invoke the Skill tool:
+
+```
+Skill(skill="debug", args="<user's original prompt from <user_prompt>, verbatim>")
+```
+
+/begin is done. The debug skill takes over entirely.
+
+### Mode: implement
+
+**Complexity check first.** Before entering implement mode, assess whether the work is actually small:
+
+- Will this likely touch 4+ files or introduce new modules/classes/interfaces?
+- Is this architecturally significant (new data flow, new dependency, new API surface)?
+- Does the description sound like a feature rather than an edit?
+
+If any answer is yes: state *"This looks bigger than a small edit — routing to /brainstorm to think it through first."* Then invoke brainstorm instead.
+
+If the work is genuinely small, proceed with the implement fast path:
+
+1. Load relevant learnings:
+```bash
+smriti learnings-search --limit 5 --format text 2>/dev/null || true
+```
+
+2. Check for prior design docs on this branch:
+```bash
+ls -t "${SMRITI_HOME:-$HOME/.smriti}/projects/$SLUG/"*design*.md 2>/dev/null | head -3
+```
+If any exist, read the most recent one's recommended approach section for context.
+
+3. State: *"Small implementation — starting work."*
+
+4. Proceed directly with the user's request. Implement the change.
+
+5. When the implementation is complete, state: *"Done. Run `/eng-review` to review changes, then `/ship` to ship."*
+
+---
+
+{{LEARNINGS_LOG}}
+
+When logging from this skill, prefer keys like:
+- `classification-<topic>` for classification patterns worth remembering
+- `misroute-<mode>` for cases where the initial classification was wrong
