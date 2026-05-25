@@ -26,17 +26,18 @@ A personal Claude Code skill stack — opinionated, learns across sessions, gets
 Each skill produces an artifact the next one reads. Run them in order; downstream skills know what came before.
 
 ```
-   THINK              PLAN                       BUILD              REVIEW                   SHIP
-   ─────              ─────                      ─────              ─────                    ────
-                  ┌─ /plan-eng-review     ─┐                  ┌─ /eng-review     ─┐
-/bootstrap → /brainstorm →                   →  (you write) →                       → /ship → (merge) → /clean
-                  └─ /plan-design-review  ─┘                  └─ /design-review  ─┘
-
-  /design-consultation                                              /debug   /learn  (anytime)
+   ENTRY        THINK              PLAN                       BUILD              REVIEW                   SHIP
+   ─────        ─────              ─────                      ─────              ─────                    ────
+                              ┌─ /plan-eng-review     ─┐                  ┌─ /eng-review     ─┐
+/begin → /bootstrap → /brainstorm →                   →  (you write) →                       → /ship → (merge) → /clean
+           │                  └─ /plan-design-review  ─┘                  └─ /design-review  ─┘
+           ├─ /debug
+           └─ (implement)        /design-consultation                          /learn  (anytime)
 ```
 
 | Stage | Skill | Writes |
 |-------|-------|--------|
+| Entry | `/begin` | Routes to `/brainstorm`, `/debug`, or implement fast path |
 | Think | `/bootstrap` | `PROJECT.md` (one-time per repo) |
 | Think | `/design-consultation` | `DESIGN.md` + self-contained HTML preview |
 | Think | `/brainstorm` | `~/.smriti/projects/<slug>/<branch>-design-<ts>.md` |
