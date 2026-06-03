@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.12.0 — 2026-06-02
+
+- feat(eng-review): multi-persona enrichment — fan out parallel per-principle persona reviewers for diffs above persona_threshold; merge with dedup + cross-persona confidence-gating (ELI-40)
+- feat(config): add persona_threshold config key (default 400) — /eng-review single-agent vs parallel-persona dispatch cutoff, derived from this repo's PR-insertion distribution
+- feat(eng-review): new "Unsubstantiated thresholds / defaults" Pass-2 checklist category — flags judgment-encoding numbers (thresholds, limits, defaults) with no cited basis
+
+
 ## 0.11.0 — 2026-05-24
 
 - docs(README): add /begin to pipeline diagram and skill table
