@@ -183,6 +183,23 @@ When the diff adds a new enum value, status string, tier name, type discriminato
 **Skip when:**
 - The boundary has explicit Zod / Pydantic / Valibot parsing that coerces.
 
+## Unsubstantiated thresholds / defaults
+
+When the diff introduces a number that encodes a judgment — a threshold, limit, timeout, retry budget, default, batch size, or an implicit "this rarely happens" assumption:
+
+**Flag:**
+- A new threshold / limit / default whose value has no cited basis nearby — not in a comment, the PR description, or referenced data. The number reads as plucked from air.
+- A magnitude claim in prose or a comment ("most diffs are small", "this fires rarely") asserted without the cheap query (`git log`, `gh pr list`, counting occurrences, reading existing config) that would confirm it.
+- A carried-over constant reused in a new context without re-checking that its original basis still transfers.
+
+**The fix is cheap — do it, don't just flag:**
+- Pull the evidence (`git log`, `gh pr list --json additions`, read the existing values) and cite it where the number lives: `# 400: ~37th percentile of this repo's PR insertions; below it the single-agent pass suffices`.
+- If the data genuinely isn't cheap to get, label the number an explicit guess-to-revisit rather than implying it's grounded.
+
+**Skip when:**
+- The constant is conventional or genuinely arbitrary and nothing rides on the exact value (retry count of 3, UI padding, a buffer size with wide tolerance). Only judgment-encoding magnitudes need a basis.
+- The basis is already obvious from an adjacent named constant or a cited upstream source.
+
 ## CLI binary symlink coverage
 
 **Flag:**

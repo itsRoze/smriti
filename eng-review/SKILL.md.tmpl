@@ -39,7 +39,18 @@ fi
 DIFF_LINES=$(git diff "origin/$BASE_BRANCH" --shortstat 2>/dev/null | grep -oE '[0-9]+ insertion' | awk '{print $1}')
 DIFF_LINES="${DIFF_LINES:-0}"
 DIFF_FILES=$(git diff "origin/$BASE_BRANCH" --name-only | wc -l | tr -d ' ')
-echo "Diff: $DIFF_FILES files, ~$DIFF_LINES insertions"
+
+# Persona-dispatch threshold: above this many insertions, fan out parallel
+# persona reviewers (Phase 3). Default 400 ≈ top-third cutoff — ~37% of this
+# repo's 16 merged PRs exceed it (median insertions ~265); below it the
+# single-agent pass is cheaper than dispatch overhead. Configurable per-repo. A
+# malformed value falls back to the default loudly rather than silently breaking
+# the numeric comparison.
+PERSONA_THRESHOLD=$(smriti config get persona_threshold 2>/dev/null || echo 400)
+case "$PERSONA_THRESHOLD" in
+  ''|*[!0-9]*) echo "/eng-review: persona_threshold='$PERSONA_THRESHOLD' is not a non-negative integer; using 400." >&2; PERSONA_THRESHOLD=400 ;;
+esac
+echo "Diff: $DIFF_FILES files, ~$DIFF_LINES insertions (persona threshold: $PERSONA_THRESHOLD)"
 ```
 
 If the diff is empty, exit: *"No changes vs origin/$BASE_BRANCH. Nothing to review."*
@@ -73,35 +84,70 @@ For diffs > 1000 lines, also pull the file list and review file-by-file rather t
 git diff "origin/$BASE_BRANCH" --name-only
 ```
 
-## Phase 3: Apply the checklist
+## Phase 3: Review the diff
 
-Walk **Pass 1 (CRITICAL)** first: SQL safety, race conditions, LLM trust boundary, shell injection, enum completeness, secret leakage, unhandled errors.
+Two modes, chosen by diff size against `PERSONA_THRESHOLD` (from Phase 0 — the `persona_threshold` config key, default 400).
 
-Then **Pass 2 (INFORMATIONAL)**: validation at boundaries, N+1, indexes, async/sync, prompt issues, type coercion, completeness gaps, doc staleness.
+- **`DIFF_LINES ≤ PERSONA_THRESHOLD` → single-agent pass.** Walk all three passes yourself, sequentially. No subagents — dispatch overhead would dwarf the review.
+- **`DIFF_LINES > PERSONA_THRESHOLD` → parallel persona dispatch.** Fan out one persona per Tier 1 principle plus one for the critical checklist, then merge their findings and run the passes no persona owns (Pass 2 + Tier 2/Tier 3 principles) yourself.
 
-Then **Pass 3 (PRINCIPLES)**: walk the diff against the principles read in Phase 1b. For each violation, cite the tier and rule (e.g., `Tier 1b (locality)`, `Tier 2.7 (premature facade)`). Tier 1 violations are critical; Tier 2 informational; Tier 3 informational only.
+### The three passes
 
-For each finding, capture:
-- **File:line**
-- **Category** (e.g., "SQL safety", "Enum completeness")
-- **Severity** (`critical` | `informational`)
-- **Confidence** (`verified` | `likely` | `speculative`)
-- **Problem** — one line
-- **Fix** — one line (or a code patch if straightforward)
+- **Pass 1 (CRITICAL)** — categorical correctness: SQL safety, race conditions, LLM trust boundary, shell injection, enum completeness, secret leakage, unhandled errors.
+- **Pass 2 (INFORMATIONAL)** — validation at boundaries, N+1, indexes, async/sync, prompt issues, type coercion, unsubstantiated thresholds, completeness gaps, doc staleness.
+- **Pass 3 (PRINCIPLES)** — walk the diff against the principles from Phase 1b. Every finding cites a tier and rule (e.g. `Tier 1b (locality)`, `Tier 2.7 (premature facade)`). Tier 1 violations are critical; Tier 2 and Tier 3 informational.
 
-**Confidence calibration is mandatory.** If you haven't traced every caller, say so. Don't fabricate certainty.
+### Finding contract (shared by both modes)
 
-Apply the checklist's **"Skip when:"** suppressions before flagging. False positives erode trust faster than missed bugs.
+Every finding — yours or a persona's — is one JSON object. Keep the shape identical in both modes so the merge step and `/ship` see one format:
 
-### Specialist dispatch (optional, large diffs only)
+```json
+{
+  "file": "lib/foo.ts",
+  "line": 42,
+  "tier": "1b",
+  "rule": "locality",
+  "severity": "critical",
+  "confidence": "verified",
+  "problem": "one line — what's wrong",
+  "fix": "one line — the change"
+}
+```
 
-If `DIFF_LINES > 500`, dispatch up to three subagents **in parallel** (one tool call with multiple Agent invocations):
+- `tier` — the principle tier (`1a`/`1b`/`1c`/`1d`/`2.7`/…) for Pass 3 findings, or `checklist-pass1`/`checklist-pass2` for categorical findings.
+- `rule` — the principle's short name (`searchability`, `locality`, …) or the checklist category (`SQL safety`, `N+1`, …).
+- `severity` — `critical` | `informational`. `confidence` — `verified` | `likely` | `speculative`.
 
-- **Testing specialist** — coverage gaps, missing failure-mode tests, brittle tests
-- **Security specialist** — focused OWASP-style sweep beyond the checklist's secret/SQL/shell categories
-- **Architecture specialist** — module boundaries, coupling, abstractions that earn their keep
+This is the cite-able shape every finding must carry — the principles stance (each finding names a tier and rule) survives parallelization unchanged.
 
-Each subagent runs against the full diff and returns findings in the same format. Merge with your own findings; deduplicate.
+### Parallel persona dispatch (`DIFF_LINES > PERSONA_THRESHOLD`)
+
+Dispatch these personas **in parallel — one message, one Agent invocation each.** Each stays strictly in its lane; a persona straying outside its scope (e.g. the locality reviewer flagging a SQL bug) is a bug, not thoroughness.
+
+| Persona | Lane | Rules source |
+|---|---|---|
+| Tier 1a — searchability | one term per concept; grep-blend across sibling files | Tier 1a in the Phase 1b principles |
+| Tier 1b — locality | one-hop discoverability; cross-file fragmentation | Tier 1b |
+| Tier 1c — explicit | metaprogramming, string-dispatch, auto-registration magic | Tier 1c |
+| Tier 1d — consistency | second-pattern-for-an-existing-job detector | Tier 1d |
+| Pass-1 correctness | the seven CRITICAL checklist categories | `checklist.md` Pass 1 |
+
+Build each persona's prompt from sources **you already hold — never hardcode rule text**, so there is no second copy to drift from the principles:
+
+1. **Role + lane** — "You are the Tier 1b (locality) reviewer. Flag ONLY Tier 1b violations; another reviewer owns everything else."
+2. **The rules** — paste that persona's slice of the Phase 1b principles block (for the correctness persona, the Pass 1 section of `checklist.md`). Copying from the single inlined source at dispatch time keeps personas current.
+3. **Diff + contract** — tell the persona to run `git diff "origin/$BASE_BRANCH"` itself, apply the checklist's **"Skip when:"** suppressions, and return a JSON array of findings in the Finding contract shape above (empty array if clean).
+
+### Merge (persona mode only)
+
+Collect every persona's JSON array, then run the passes no persona owns — **Pass 2** (informational checklist) and **Pass 3's Tier 2 / Tier 3** principles (the personas cover Tier 1) — yourself against the diff, adding those findings to the pile. Then:
+
+1. **Dedup** by `{file, line, tier, rule}`. When findings collide, keep the highest `confidence` (`verified` > `likely` > `speculative`) and drop the rest.
+2. **Confidence-gate.** A lone `speculative` finding is collapsed — held back from the surfaced set — unless **two or more personas independently flagged the same `{file, line}`**. Cross-persona agreement promotes it; a solo speculation stays quiet. `verified` and `likely` findings always surface.
+
+The merged, gated set is your finding list — feed it to Phase 4 exactly as the single-agent pass would.
+
+**Confidence calibration is mandatory** in both modes. If you haven't traced every caller, say so — don't fabricate certainty. Apply the checklist's **"Skip when:"** suppressions before flagging; false positives erode trust faster than missed bugs.
 
 Skip Design — that's `/design-review`'s job.
 
@@ -151,7 +197,7 @@ Write a JSONL entry to `~/.smriti/projects/$SLUG/reviews.jsonl`:
 TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 mkdir -p "$HOME/.smriti/projects/$SLUG"
 cat <<EOF >> "$HOME/.smriti/projects/$SLUG/reviews.jsonl"
-{"skill":"eng-review","ts":"$TS","branch":"$BRANCH","diff_files":$DIFF_FILES,"diff_lines":$DIFF_LINES,"critical":<count>,"informational":<count>,"auto_fixed":<count>,"asked":<count>,"deferred":<count>}
+{"skill":"eng-review","ts":"$TS","branch":"$BRANCH","mode":"<persona|single>","diff_files":$DIFF_FILES,"diff_lines":$DIFF_LINES,"critical":<count>,"informational":<count>,"auto_fixed":<count>,"asked":<count>,"deferred":<count>}
 EOF
 ```
 
@@ -183,6 +229,7 @@ NEEDS INPUT (resolved this session):
 DEFERRED (added to TODOS.md):
 - [file:line] Problem
 
+Mode: <persona (5 reviewers) | single-agent>.
 Confidence: <X>% verified, <Y>% likely, <Z>% speculative.
 Codex: <ran|skipped>. Agreement: <pct or n/a>.
 

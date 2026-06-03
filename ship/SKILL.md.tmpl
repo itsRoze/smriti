@@ -187,7 +187,7 @@ If **DEFERRED** items exist, AskUserQuestion: **fine to defer / add to TODOS.md 
 
 ## Step 8: Run /eng-review internally
 
-Invoke the `/eng-review` skill flow inline. Read `eng-review/checklist.md`, run both passes against the diff, classify findings as AUTO-FIX or ASK, apply auto-fixes, batch-ask the rest.
+Invoke the `/eng-review` skill flow inline. Read `eng-review/checklist.md`, run the passes against the diff following eng-review's Phase 3 dispatch rule (single-agent for small diffs; parallel persona dispatch once insertions exceed the `persona_threshold` config, default 400), classify findings as AUTO-FIX or ASK, apply auto-fixes, batch-ask the rest.
 
 If frontend files changed (any of `*.tsx`, `*.jsx`, `*.svelte`, `*.vue`, `*.css`, `*.scss`), also run `/design-review` static audit inline.
 

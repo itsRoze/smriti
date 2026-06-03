@@ -171,6 +171,7 @@ Claude: Phase 3 (4 of 4 forcing questions, one at a time):
 | `browse_enabled` | `true` / `false` | (asked at `./setup`) | enables `/design-review` v2 rendered-audit step via `smriti browse` (Playwright) |
 | `proactive` | `true` / `false` | `true` | reserved (proactive skill suggestions) |
 | `explain_level` | `default` / `terse` | `default` | reserved (output verbosity) |
+| `persona_threshold` | `<int>` (insertions) | `400` | `/eng-review` fans out parallel persona reviewers when a diff's insertions exceed this; smaller diffs use the single-agent pass |
 
 ## Managing tracked projects
 
