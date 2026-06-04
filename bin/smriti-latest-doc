@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+# smriti latest-doc — find the most-recent <type> doc for a branch.
+#
+# Single source of truth for "find the latest design/plan/debug doc on this
+# branch." Skills and bin/ helpers MUST call this instead of hand-rolling the
+# glob: a silent drift between the writers' filename shape and the readers'
+# glob (readers expected a leading `*-` segment the writers never produced)
+# broke EVERY doc lookup on every branch once — approvals never spliced and
+# the review skills couldn't find their input (ELI-39). Centralizing the
+# contract here kills that bug class.
+#
+# Filename contract — writers (/brainstorm, /plan, /debug) all follow it:
+#   $SMRITI_HOME/projects/<slug>/<branch-slug>-<type>-<timestamp>.md
+#   <branch-slug> = branch name with every `/` replaced by `--`.
+#
+# Usage:
+#   smriti latest-doc --type design|plan|debug [--all] [--slug S] [--branch B]
+#
+# Output: newest matching doc path on stdout (or every match, newest-first,
+# with --all). Nothing at all if none exist. Always exits 0 on a valid query
+# so callers can test for empty:
+#   DOC=$(smriti latest-doc --type plan)
+#   [ -n "$DOC" ] || { echo "no plan — run /plan first"; exit 1; }
+# Exits 2 only on a usage error (missing/invalid --type, unknown flag).
+set -e
+
+SMRITI_BIN="$(cd "$(dirname "$0")" && pwd -P)"
+
+TYPE=""; SLUG=""; BRANCH=""; ALL=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    # Value-taking flags guard $# so a trailing flag-without-value is a clean
+    # usage error (exit 2), not a `shift 2` failure that set -e turns into exit 1.
+    --type)   [ $# -ge 2 ] || { echo "smriti-latest-doc: --type requires a value" >&2; exit 2; };   TYPE="$2";   shift 2 ;;
+    --slug)   [ $# -ge 2 ] || { echo "smriti-latest-doc: --slug requires a value" >&2; exit 2; };   SLUG="$2";   shift 2 ;;
+    --branch) [ $# -ge 2 ] || { echo "smriti-latest-doc: --branch requires a value" >&2; exit 2; }; BRANCH="$2"; shift 2 ;;
+    --all)    ALL=1; shift ;;
+    *) echo "smriti-latest-doc: unknown flag: $1" >&2; exit 2 ;;
+  esac
+done
+
+case "$TYPE" in
+  design|plan|debug) ;;
+  "") echo "smriti-latest-doc: --type is required (design|plan|debug)" >&2; exit 2 ;;
+  *)  echo "smriti-latest-doc: invalid --type '$TYPE' (expected design|plan|debug)" >&2; exit 2 ;;
+esac
+
+# Slug: explicit --slug wins; otherwise derive via smriti-slug.
+if [ -z "$SLUG" ] && [ -x "$SMRITI_BIN/smriti-slug" ]; then
+  eval "$("$SMRITI_BIN/smriti-slug" 2>/dev/null)" 2>/dev/null || true
+fi
+SLUG="${SLUG:-unknown}"
+
+# Branch: explicit --branch wins; otherwise the current git branch.
+[ -z "$BRANCH" ] && BRANCH=$(git branch --show-current 2>/dev/null || echo unknown)
+# Filename-safe form (slashes break path globbing + create stray subdirs).
+BRANCH_SLUG="${BRANCH//\//--}"
+
+PROJ_DIR="${SMRITI_HOME:-$HOME/.smriti}/projects/$SLUG"
+
+# nullglob so a no-match yields an empty array, never the literal pattern —
+# the literal-pattern-fed-to-ls behavior is exactly what masked the old bug.
+shopt -s nullglob
+matches=("$PROJ_DIR/$BRANCH_SLUG-$TYPE-"*.md)
+shopt -u nullglob
+[ ${#matches[@]} -eq 0 ] && exit 0
+
+# Newest first by mtime — matches the historical `ls -t … | head -1` semantics.
+if [ "$ALL" -eq 1 ]; then
+  ls -t "${matches[@]}"
+else
+  ls -t "${matches[@]}" | head -1
+fi

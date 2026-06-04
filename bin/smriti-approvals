@@ -87,7 +87,7 @@ if [ -f "$STATE_FILE" ] && jq -e 'has("office-hours")' "$STATE_FILE" >/dev/null;
 fi
 
 # Skill order in renderings (top-to-bottom pipeline order)
-SKILLS=(brainstorm plan-eng-review plan-design-review eng-review design-review ship)
+SKILLS=(brainstorm plan plan-eng-review plan-design-review eng-review design-review ship)
 
 init_state() {
   local entries=""
@@ -134,7 +134,8 @@ render_markdown() {
 }
 
 find_design_doc() {
-  ls -t "$PROJ_DIR/"*-"$BRANCH_SLUG"-design-*.md 2>/dev/null | head -1
+  # Single source of truth for doc lookup — see bin/smriti-latest-doc.
+  "$SMRITI_BIN/smriti-latest-doc" --type design --slug "$SLUG" --branch "$BRANCH" 2>/dev/null
 }
 
 # Splice "## Approvals" section into the design doc.
@@ -145,28 +146,41 @@ sync_to_design_doc() {
   doc=$(find_design_doc)
   [ -z "$doc" ] && return 0
 
-  local rendered
-  rendered=$(render_markdown)
-  local tmp
+  # Render to a temp file, NOT an `awk -v` var: BSD awk (macOS default) rejects
+  # newlines in `-v var=...`, so the multi-line Approvals section throws
+  # "awk: newline in string" and the splice silently drops. Reading the section
+  # with getline side-steps the limit portably — same fix as smriti-changelog-insert.
+  local new_file tmp
+  new_file=$(mktemp)
   tmp=$(mktemp)
+  render_markdown > "$new_file"
 
   if grep -q '^## Approvals' "$doc"; then
-    awk -v new="$rendered" '
+    awk -v new_file="$new_file" '
+      function emit_new(   line) {
+        while ((getline line < new_file) > 0) print line
+        close(new_file)
+      }
       BEGIN { skip = 0 }
-      /^## Approvals[[:space:]]*$/ { print new; skip = 1; next }
+      /^## Approvals[[:space:]]*$/ { emit_new(); skip = 1; next }
       skip && /^## / && !/^## Approvals/ { skip = 0 }
       !skip { print }
     ' "$doc" > "$tmp"
   else
-    awk -v new="$rendered" '
+    awk -v new_file="$new_file" '
+      function emit_new(   line) {
+        while ((getline line < new_file) > 0) print line
+        close(new_file)
+      }
       BEGIN { inserted = 0 }
-      !inserted && /^## / { print new; print ""; inserted = 1 }
+      !inserted && /^## / { emit_new(); print ""; inserted = 1 }
       { print }
-      END { if (!inserted) { print ""; print new } }
+      END { if (!inserted) { print ""; emit_new() } }
     ' "$doc" > "$tmp"
   fi
 
   mv "$tmp" "$doc"
+  rm -f "$new_file"
 }
 
 # Detect required gates from the current diff context.

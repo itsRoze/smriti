@@ -26,23 +26,26 @@ A personal Claude Code skill stack — opinionated, learns across sessions, gets
 Each skill produces an artifact the next one reads. Run them in order; downstream skills know what came before.
 
 ```
-   ENTRY        THINK              PLAN                       BUILD              REVIEW                   SHIP
-   ─────        ─────              ─────                      ─────              ─────                    ────
-                              ┌─ /plan-eng-review     ─┐                  ┌─ /eng-review     ─┐
-/begin → /bootstrap → /brainstorm →                   →  (you write) →                       → /ship → (merge) → /clean
-           │                  └─ /plan-design-review  ─┘                  └─ /design-review  ─┘
+   ENTRY        THINK            PLAN                              BUILD       REVIEW                   SHIP
+   ─────        ─────            ─────                             ─────       ─────                    ────
+                                        ┌─ /plan-eng-review     ─┐              ┌─ /eng-review     ─┐
+/begin → /bootstrap → /brainstorm → /plan →                     →  /work →                          → /ship → (merge) → /clean
+           │                            └─ /plan-design-review  ─┘              └─ /design-review  ─┘
            ├─ /debug
-           └─ (implement)        /design-consultation                          /learn  (anytime)
+           ├─ /work  (when a plan exists)
+           └─ (implement)      /design-consultation                          /learn  (anytime)
 ```
 
 | Stage | Skill | Writes |
 |-------|-------|--------|
-| Entry | `/begin` | Routes to `/brainstorm`, `/debug`, or implement fast path |
+| Entry | `/begin` | Routes to `/brainstorm`, `/debug`, `/work`, or implement fast path |
 | Think | `/bootstrap` | `PROJECT.md` (one-time per repo) |
 | Think | `/design-consultation` | `DESIGN.md` + self-contained HTML preview |
 | Think | `/brainstorm` | `~/.smriti/projects/<slug>/<branch>-design-<ts>.md` |
-| Plan | `/plan-eng-review` | Engineering Review Decisions section in design doc |
+| Plan | `/plan` | `~/.smriti/projects/<slug>/<branch>-plan-<ts>.md` (unit-by-unit) |
+| Plan | `/plan-eng-review` | Engineering Review Decisions section in plan doc |
 | Plan | `/plan-design-review` | Design Review Decisions section + 0–10 scores |
+| Build | `/work` | The code — incremental per-unit commits |
 | Review | `/eng-review` | Auto-fixes + entries in `reviews.jsonl` |
 | Review | `/design-review` | Atomic `style(design):` commits + audit report (+ optional rendered audit via `smriti browse`) |
 | Ship | `/ship` | Tests, version, CHANGELOG, bisectable commits, PR |
@@ -58,6 +61,7 @@ Each review skill stamps its verdict at the top of the design doc. `/ship` reads
 ## Approvals
 
 - ✅ /brainstorm       — 2026-04-26 — mode: users; rec: Option 2
+- ✅ /plan              — 2026-04-26 — 5 units; 2 parallel groups
 - ✅ /plan-eng-review    — 2026-04-26 — lean: senior; 0 unresolved
 - ⚠️ /plan-design-review — 2026-04-26 — avg 8.2/10; 1 deferred
 - ✅ /eng-review         — 2026-04-26 — 3 findings; 2 auto-fixed
@@ -124,14 +128,14 @@ Claude: Phase 3 (4 of 4 forcing questions, one at a time):
 
         Phase 6 — Get an independent Codex second opinion? [Y/skip]
 
-[...design doc written; approval stamped; handoff to /plan-eng-review]
+[...design doc written; approval stamped; handoff to /plan]
 ```
 
 ## Architecture
 
 ```
 ~/.claude/skills/smriti/                   ← code (this repo)
-├── bin/                                     # smriti (umbrella dispatcher) + smriti-{slug,config,project,learnings-*,codex-probe,update-check,approvals,version-bump,pr-title-rewrite,browse,principles-install,changelog-insert}
+├── bin/                                     # smriti (umbrella dispatcher) + smriti-{slug,config,project,learnings-*,codex-probe,update-check,approvals,version-bump,pr-title-rewrite,browse,principles-install,changelog-insert,latest-doc}
 ├── lib/resolvers/                           # {{PLACEHOLDER}} content (preamble, rubric, hard-rules, principles, etc.)
 ├── scripts/                                 # gen-skill-docs.ts, skill-check.ts, run-tests.sh + test/*.bats + test/*.test.ts
 ├── eng-review/checklist.md                  # the artifact /eng-review reads
@@ -147,6 +151,7 @@ Claude: Phase 3 (4 of 4 forcing questions, one at a time):
     ├── reviews.jsonl                          # one entry per review run
     ├── <branch>-approvals.json                # per-branch approval state
     ├── <branch>-design-<ts>.md                # design docs (one per /brainstorm run)
+    ├── <branch>-plan-<ts>.md                  # implementation plans (one per /plan run)
     ├── <branch>-debug-<ts>.md                 # debug summaries (one per /debug run)
     ├── audit-urls.txt                         # /design-review v2 — URLs to audit (in smriti state, not project repo)
     ├── auth-state.json                        # /design-review v2 — Playwright storageState (mode 0600, never committed)

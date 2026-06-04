@@ -1,12 +1,13 @@
 ---
 name: plan-eng-review
 description: |
-  Pre-implementation architecture review of a design doc / plan. Walks 4 ordered
-  sections (Architecture, Code Quality, Tests, Performance) plus a Step 0 scope
+  Pre-implementation architecture review of the implementation plan (read
+  alongside its design doc for rationale). Walks 4 ordered sections
+  (Architecture, Code Quality, Tests, Performance) plus a Step 0 scope
   challenge. Honors LEAN (senior vs prototype). Issues one AskUserQuestion per
   finding (never batched). Auto-offers Codex plan review.
-  Use AFTER /brainstorm has produced a design doc, BEFORE implementation begins.
-  Run `/plan-eng-review` to lock in architecture before you write code.
+  Use AFTER /plan has produced a plan doc, BEFORE /work. Required gate: errors
+  without a plan. Run `/plan-eng-review` to lock in architecture before /work.
 allowed-tools:
   - Bash
   - Read
@@ -22,20 +23,35 @@ allowed-tools:
 
 # /plan-eng-review — pre-implementation architecture lock-in
 
-Walk the design doc through four ordered review sections. Surface hidden assumptions. Issue **one AskUserQuestion per finding** — never batch. Append a "Engineering Review Decisions" section to the design doc capturing resolutions.
+Walk the **plan** through four ordered review sections, with the **design doc's
+rationale in view** — the plan holds the unit-level "how"; the design holds the
+"why" and the rejected alternatives the units must stay consistent with. Surface
+hidden assumptions. Issue **one AskUserQuestion per finding** — never batch.
+Append an "Engineering Review Decisions" section to the plan doc capturing resolutions.
 
 ## Inputs
 
 ```bash
-# Most recent design doc on this branch (from /brainstorm)
-DESIGN_DOC=$(ls -t "${SMRITI_HOME:-$HOME/.smriti}/projects/$SLUG/"*-"$BRANCH_SLUG"-design-*.md 2>/dev/null | head -1)
+# The plan to review (from /plan) — REQUIRED. /plan is a gate: no plan, no review.
+PLAN_DOC=$(smriti latest-doc --type plan)
 
-if [ -z "$DESIGN_DOC" ]; then
-  echo "/plan-eng-review: no design doc found for branch '$BRANCH'."
-  echo "Run /brainstorm first to produce one, or pass a path: /plan-eng-review <path>"
+if [ -z "$PLAN_DOC" ]; then
+  echo "/plan-eng-review: no plan doc found for branch '$BRANCH'."
+  echo "Run /plan first — this review reads the plan. (Or pass a path: /plan-eng-review <plan-path>)"
   exit 0
 fi
+
+# The design doc the plan derives from (from /brainstorm) — supplies the
+# rationale + rejected alternatives the review checks units against. Warn if
+# absent (older branches predate /plan) but don't block on it.
+DESIGN_DOC=$(smriti latest-doc --type design)
+[ -z "$DESIGN_DOC" ] && echo "WARN: no design doc found — reviewing the plan without its design rationale."
 ```
+
+Read **both** docs: the plan's Implementation Units are the review subject; the
+design's `## Recommended approach` + `### Locked decisions` are the criteria a
+unit's approach must not contradict. A unit that quietly reverses a locked
+design decision is a finding.
 
 If `PROJECT.md` exists, read it (especially the **Lean** section). The `LEAN` var from preamble drives review depth:
 
@@ -147,13 +163,13 @@ One AskUserQuestion per finding.
 
 {{CODEX_SECOND_OPINION}}
 
-Give Codex the design doc + your section-by-section findings + the user's decisions. Ask Codex: *"What did this miss? Is the architecture actually right? What forcing question wasn't asked?"*
+Give Codex the plan + the design rationale + your section-by-section findings + the user's decisions. Ask Codex: *"What did this miss? Is the architecture actually right? What forcing question wasn't asked?"*
 
 Render Codex output verbatim. If Codex disagrees, surface the disagreement and let the user decide.
 
 ## Phase: Persist
 
-Append a section to the design doc:
+Append a section to the **plan doc** (`$PLAN_DOC` — the review's subject):
 
 ```markdown
 ## Engineering Review Decisions
@@ -216,12 +232,12 @@ smriti approvals set plan-eng-review <STATUS> \
 End with:
 
 ```
-/plan-eng-review: complete. <N> decisions captured in <design-doc>.
+/plan-eng-review: complete. <N> decisions captured in <plan-doc>.
 
 Open issues: <count>. <if zero, "Plan is implementation-ready.">
 
 Next steps:
-- Implementation: write the code per the locked plan.
+- /work — build the locked plan (smriti owns execution now).
 - After implementing: run /eng-review to catch the bugs.
 - After review passes: run /ship to ship.
 ```

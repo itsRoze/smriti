@@ -28,7 +28,7 @@ Classify the user's work and route to the right smriti skill. Thin router — cl
 
 ## Hard rules
 
-1. For brainstorm/debug modes: classify, invoke the downstream skill, stop. Do NOT write code.
+1. For brainstorm/debug/work modes: classify, invoke the downstream skill, stop. Do NOT write code (the downstream skill does).
 2. For implement mode: classify, load context, then proceed directly with the implementation.
 3. Route to exactly one downstream skill or the implement fast path. Never re-invoke /begin.
 4. Preserve the user's original prompt verbatim when invoking downstream skills.
@@ -41,18 +41,24 @@ Read silently — do not echo to the user:
 [ -f PROJECT.md ] && cat PROJECT.md
 git log --oneline -10 2>/dev/null
 git status --short 2>/dev/null
+
+# Is there a plan (and design) on this branch? Drives work-mode routing and the
+# implement fast-path plan-guard below.
+PLAN_DOC=$(smriti latest-doc --type plan 2>/dev/null)
+DESIGN_DOC=$(smriti latest-doc --type design 2>/dev/null)
 ```
 
 If `PROJECT.md` is missing, **stop** and recommend `/bootstrap` first. Don't proceed without it.
 
 ## Phase 2: Classify
 
-Read the user's prompt in `<user_prompt>` and classify into one of four internal states:
+Read the user's prompt in `<user_prompt>` and classify into one of five internal states:
 
 | Signal | Mode |
 |--------|------|
 | New feature, design question, "I have an idea," "help me think through," exploring options, wants alternatives | **brainstorm** |
 | Bug, error, stack trace, "why is this failing," "fix this," broken behavior, test failure, regression | **debug** |
+| Execution intent — "build it," "implement the plan," "start working," "let's build/ship it" — **especially when `PLAN_DOC` is non-empty** (a plan exists on this branch) | **work** |
 | Small concrete edit, config change, "add X to Y," rename, update dependency, typo fix, one-file refactor | **implement** |
 | Mixed intent, vague, could be multiple modes | **unclear** |
 
@@ -92,9 +98,35 @@ Skill(skill="debug", args="<user's original prompt from <user_prompt>, verbatim>
 
 /begin is done. The debug skill takes over entirely.
 
+### Mode: work
+
+This is plan execution — the branch has a plan and the user wants it built.
+
+State one line: *"This looks like plan execution. Invoking /work."*
+
+Then invoke the Skill tool:
+
+```
+Skill(skill="work", args="<user's original prompt from <user_prompt>, verbatim>")
+```
+
+/begin is done. The work skill takes over entirely.
+
+**Edge — execution intent but no plan (`PLAN_DOC` empty):** don't route to /work
+(it has nothing to execute). If a design doc exists, say *"There's a design but
+no plan yet — run /plan first, then /work."* If neither exists and the work is
+genuinely small, fall through to the implement fast path. If it sounds like a
+feature, route to /brainstorm.
+
 ### Mode: implement
 
-**Complexity check first.** Before entering implement mode, assess whether the work is actually small:
+**Plan guard first.** If `PLAN_DOC` is non-empty, this branch already has a plan
+— ad-hoc inline editing would step on `/work`, which owns plan execution. State
+*"There's a plan on this branch — routing to /work to execute it instead of
+editing inline."* and invoke `Skill(skill="work", args="<verbatim prompt>")`.
+Only continue the fast path below when there is **no** plan on the branch.
+
+**Complexity check next.** Before entering implement mode, assess whether the work is actually small:
 
 - Will this likely touch 4+ files or introduce new modules/classes/interfaces?
 - Is this architecturally significant (new data flow, new dependency, new API surface)?
@@ -109,11 +141,11 @@ If the work is genuinely small, proceed with the implement fast path:
 smriti learnings-search --limit 5 --format text 2>/dev/null || true
 ```
 
-2. Check for prior design docs on this branch:
+2. Check for a prior design doc on this branch:
 ```bash
-ls -t "${SMRITI_HOME:-$HOME/.smriti}/projects/$SLUG/"*design*.md 2>/dev/null | head -3
+smriti latest-doc --type design
 ```
-If any exist, read the most recent one's recommended approach section for context.
+If one exists, read its recommended approach section for context.
 
 3. State: *"Small implementation — starting work."*
 

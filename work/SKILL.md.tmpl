@@ -1,0 +1,245 @@
+---
+name: work
+description: |
+  Execute the latest plan doc — smriti owns the build step. Phase-0 complexity
+  triage, an execution-strategy picker (inline / serial subagents / parallel
+  subagents with git-worktree isolation), a test-as-you-go loop with a
+  System-Wide Test Check before any unit is marked done, incremental per-unit
+  commits, and a /simplify pass every 2–3 units. Parallel units integrate by
+  serial cherry-pick onto the working branch with a system check between each.
+  Use AFTER /plan (and ideally /plan-eng-review) when it's time to build.
+  Proactively invoke when the user says "build it", "implement the plan",
+  "start working", or "ship the plan" on a branch that has a plan doc.
+  Parallel skill — NOT a pipeline gate (does not join the approvals SKILLS array).
+allowed-tools:
+  - Bash
+  - Read
+  - Edit
+  - Write
+  - Glob
+  - Grep
+  - AskUserQuestion
+---
+
+{{PREAMBLE}}
+
+{{ASK_USER_FORMAT}}
+
+# /work — execute the plan
+
+Consume the latest plan doc and land its Implementation Units as working,
+tested, incrementally-committed code. Investigate the plan, pick an execution
+strategy, then run a test-as-you-go loop where **no unit is done until the whole
+system is still green** — not just the unit's own tests.
+
+<work_request> #$ARGUMENTS </work_request>
+
+## Hard rules
+
+1. **Plan-driven.** `/work` executes a plan; it does not invent scope. If the
+   work isn't in the plan, it doesn't happen here — note it and move on.
+2. **System-Wide Test Check before "done".** A unit's own tests passing is
+   necessary, not sufficient. Check the seams it touches — callbacks,
+   middleware, error chains, anything that imports what it changed — before
+   marking it done.
+3. **One unit integrates at a time.** Even when units are built in parallel,
+   they land on the working branch serially, with the system check between each,
+   so a break has an unambiguous culprit.
+4. **Commit clean units incrementally.** A unit that ships green gets its own
+   commit. Don't batch six units into one commit — bisect dies.
+
+## Phase 0: Triage
+
+```bash
+# The plan to execute (from /plan).
+PLAN_DOC=$(smriti latest-doc --type plan)
+
+if [ -z "$PLAN_DOC" ]; then
+  echo "/work: no plan doc found for branch '$BRANCH'."
+  echo "Run /plan first to produce one, or pass a path: /work <path-to-plan>"
+  exit 0
+fi
+
+# Staleness contract: warn (don't block — prototype lean) if the design moved
+# after the plan was written. A plan built against a stale design is the silent
+# way work drifts from intent.
+DESIGN_DOC=$(smriti latest-doc --type design)
+if [ -n "$DESIGN_DOC" ] && [ "$DESIGN_DOC" -nt "$PLAN_DOC" ]; then
+  echo "NOTE: the design doc is newer than the plan it would execute."
+  echo "      design: $DESIGN_DOC"
+  echo "      plan:   $PLAN_DOC"
+  echo "      Consider re-running /plan before building."
+fi
+```
+
+Read the **full** plan. Then route by complexity:
+
+| Plan shape | Route |
+|------------|-------|
+| **Trivial** — one unit, a handful of lines, no new modules | Inline, directly. Skip the strategy ceremony; build it, test it, commit it. |
+| **Small / medium** — 2–6 units, knowable blast radius | Build a task list (one entry per unit), pick a strategy in Phase 1, run the Phase 2 loop. |
+| **Large** — 8+ units, or units whose files you can't enumerate, or the plan is vague on approach | **Bounce back to `/plan`.** A plan you can't execute confidently is a planning gap, not an execution problem. Say what's missing and stop. |
+
+If `/plan-eng-review` hasn't approved this branch, note it — *"architecture
+isn't locked; building anyway at your call"* — but don't block (prototype lean;
+the user may be iterating).
+
+## Phase 1: Execution strategy
+
+Pick **one** strategy. The picker is driven by the plan's dependency edges +
+file lists, not vibes.
+
+### Parallel-safety check (run before choosing parallel)
+
+Two units may run in **parallel** only if **all** hold:
+
+1. **No file overlap** — their `Files: Create/Modify` sets are disjoint.
+2. **No dependency edge** — neither declares `Depends on` the other (transitively).
+3. **No shared reserved-global file** — neither touches `package.json`,
+   lockfiles, CI config, migrations/schema, shared registries, or top-level
+   exports. (Two units editing the same lockfile are never parallel-safe, even
+   if "different lines".)
+4. **Not the same tightly-coupled subsystem** — conservative heuristic: if both
+   units' files live in the same directory or share an import graph, treat as
+   serial unless the plan explicitly says otherwise.
+
+Any violation → those units are **serial** relative to each other. Group the
+units: disjoint, dependency-free clusters can fan out; everything else runs in
+dependency order.
+
+### The three strategies
+
+| Strategy | When | How |
+|----------|------|-----|
+| **Inline** | Trivial/small plans, or units that share files | The main agent builds units itself, in dependency order, running the Phase 2 loop per unit. Most debuggable — default unless parallelism clearly pays. |
+| **Serial subagents** | Medium plans where you want each unit built in a clean context but ordering matters | Dispatch **one `Agent` per unit, sequentially**. Each gets the unit spec; you integrate + system-check before dispatching the next. |
+| **Parallel subagents (worktree-isolated)** | A group of units that passed the parallel-safety check (disjoint files, no edges) | Dispatch the group **in one message, one `Agent` invocation each, with `isolation: "worktree"`**. They build simultaneously in isolated worktrees; you integrate them serially in Phase 2.3. |
+
+State the chosen strategy and *why* (cite the safety check result for parallel).
+
+### Pre-fan-out preflight (parallel only)
+
+Before dispatching any parallel group, hard-require a clean base:
+
+```bash
+{{BASE_BRANCH_DETECT}}
+CURRENT=$(git branch --show-current)
+git diff --quiet && git diff --cached --quiet || {
+  echo "/work: working tree is dirty — commit or stash before parallel dispatch."
+  exit 0
+}
+```
+
+A dirty tree before fan-out means worktree branches diverge from an ambiguous
+base and integration becomes guesswork. Clean first.
+
+## Phase 2: Build loop
+
+### 2.1 Per-unit loop (inline & serial)
+
+For each unit, in dependency order:
+
+1. **Honor the execution note.** *test-first* → write the failing test first.
+   *characterization-first* → capture current behavior before changing untested
+   code. *pragmatic* → build, then verify by running/observing.
+2. **Build the unit** — follow its Approach and Patterns-to-follow. Match the
+   cited conventions; don't invent a parallel pattern (Tier 1d).
+3. **Unit tests green** — the unit's own Test scenarios pass.
+4. **System-Wide Test Check** — *before* calling it done, run the broader suite
+   and inspect the seams the unit touches: callers that import the changed code,
+   middleware/callback/error chains it participates in. A unit that's green
+   alone but breaks a caller is **not** done.
+5. **Self-review the diff** — read every changed line for style, edge cases,
+   regressions, missing coverage. (Tier 2b: no drive-by refactors riding along.)
+6. **Commit the unit** — one clean commit, subject naming the unit (e.g.
+   `feat(x): U3 — <goal>`). Record per-unit metadata in the commit body or a
+   scratch note: chosen strategy, files touched, tests run, commit SHA.
+7. **On a failed system check** — fix within the unit. If the fix balloons
+   beyond the unit's declared scope, stop and surface it (the plan may be wrong).
+
+### 2.2 Parallel dispatch (worktree-isolated)
+
+For a safety-checked group, dispatch all units **in a single message**, one
+`Agent` each with `isolation: "worktree"`. Give each subagent:
+
+- Its unit spec verbatim (Goal, Files, Approach, Patterns, Test scenarios, Verification).
+- This contract: *"Build only this unit. Run its tests until green in your
+  worktree. **Commit your work to a branch named `work/U<N>` so it survives
+  worktree cleanup** — do not leave commits on a detached HEAD. Return: your
+  branch name, commit SHAs, files touched, and the test result."*
+
+The named-branch commit is **load-bearing**: the harness auto-cleans an
+isolated worktree, and only commits on a real branch ref survive for the
+orchestrator to integrate.
+
+### 2.3 Serial integration (the cherry-pick contract)
+
+Parallel units are **built** concurrently but **integrated serially** onto the
+working branch — this is where the System-Wide Test Check actually earns its
+keep. In dependency order, for each completed unit:
+
+1. `git cherry-pick` the unit's commits from its `work/U<N>` branch onto the
+   working branch. (Disjoint files from the safety check make conflicts rare; a
+   conflict means the safety check was wrong — stop and re-group.)
+2. Run the **System-Wide Test Check** on the working branch *after* the
+   cherry-pick. This is the post-merge check: a unit green in isolation can
+   break a sibling that landed first (shared behavior, callback/middleware/error
+   chains). The failing check pins the **last-integrated** unit as culprit.
+3. Green → the unit is now **globally done**. Red → fix on the working branch or
+   revert that unit's cherry-pick; do not integrate the next unit on a red tree.
+
+**Two-phase completion:** a unit is *provisionally done* when green in its own
+worktree, *globally done* only after it cherry-picks clean AND the post-merge
+system check passes. Never mark a unit finally done from inside its worktree.
+
+### 2.4 Bisectability guard
+
+Each per-unit commit must pass its own Verification **on the working branch
+after integration**. If a unit commit secretly depends on a later unit's shared
+helper, the history is fake-bisectable — squash the dependent units into one
+integration commit rather than ship a bisect that lies.
+
+## Phase 3: Periodic simplify
+
+After every **2–3 cleanly-shipped units**, run a `/simplify` pass over the units
+just landed (reuse, dedup, dead code, altitude) and commit it separately
+(`refactor:` / `style:`).
+
+**Suspend `/simplify` while any parallel worktree is still in flight.**
+Refactoring shared code mid-fan-out invalidates open worktrees and produces
+noisy cherry-picks. Only simplify when no parallel group is open, or after a
+forced reconcile/rebase.
+
+## Phase 4: Close out
+
+When all units are globally done:
+
+1. Confirm the full suite is green on the working branch.
+2. Cross-check the plan: every U-ID has a corresponding commit. Note any unit
+   that ended up DEFERRED or CHANGED vs the plan, and why.
+3. Resolve or re-record the plan's **Deferred to Implementation** questions —
+   each one you answered in context, write down the answer.
+
+End with:
+
+```
+/work: complete. <N>/<M> units landed on <branch>.
+
+Deferred/changed vs plan: <list or "none">.
+
+Next: /eng-review to catch what building missed, then /ship.
+```
+
+State the recommendation; don't auto-invoke. `/work` builds; `/eng-review` and
+`/ship` are separate steps the user runs.
+
+---
+
+{{LEARNINGS_LOG}}
+
+When logging from this skill, prefer keys like:
+
+- `exec-strategy-<area>` — which strategy fit which shape of work here
+- `pitfall-parallel-<topic>` — parallel-safety or integration traps (e.g., a "disjoint" pair that shared a callback chain)
+- `pattern-build-<area>` — recurring build-loop shapes worth reusing
+- `system-check-<area>` — seams that broke despite green unit tests (so the next System-Wide Test Check looks there first)

@@ -10,7 +10,7 @@ description: |
   Proactively invoke (do NOT answer directly) when the user describes a new feature,
   asks whether something is worth building, or wants to think through design decisions
   for something that does not yet exist as code.
-  Use BEFORE /plan-eng-review or /plan-design-review.
+  Use BEFORE /plan (which turns the design into an implementation plan).
 allowed-tools:
   - Bash
   - Read
@@ -28,7 +28,7 @@ allowed-tools:
 
 # /brainstorm — feature ideation
 
-Push back on the framing before any code is written. Generate 2–3 alternatives with effort estimates and completeness scores. Recommend one. Auto-offer a Codex second opinion. Save a design doc that downstream skills (`/plan-eng-review`, `/plan-design-review`) read.
+Push back on the framing before any code is written. Generate 2–3 alternatives with effort estimates and completeness scores. Recommend one. Auto-offer a Codex second opinion. Save a design doc that downstream skills (`/plan`, then `/plan-eng-review` / `/plan-design-review`) read.
 
 ## Hard gate
 
@@ -59,7 +59,7 @@ Load relevant prior learnings:
 **Check for prior design docs on this branch:**
 
 ```bash
-ls -t "${SMRITI_HOME:-$HOME/.smriti}/projects/$SLUG/"*-"$BRANCH_SLUG"-design-*.md 2>/dev/null
+smriti latest-doc --type design --all
 ```
 
 If any exist, list their titles + dates back to the user:
@@ -214,6 +214,8 @@ When you run Codex, give it the design context (the user's mode, forcing-questio
 TS=$(date -u +%Y-%m-%dT%H-%M-%SZ)
 DESIGN_DIR="${SMRITI_HOME:-$HOME/.smriti}/projects/$SLUG"
 mkdir -p "$DESIGN_DIR"
+# Filename contract: <branch-slug>-<type>-<ts>.md — readers find it via
+# `smriti latest-doc --type design`. Keep this shape in sync with that helper.
 DESIGN_FILE="$DESIGN_DIR/$BRANCH_SLUG-design-$TS.md"
 ```
 
@@ -252,9 +254,10 @@ DESIGN_FILE="$DESIGN_DIR/$BRANCH_SLUG-design-$TS.md"
 - <thing the user couldn't answer that needs answering before building>
 
 ## Next steps
-1. <e.g., run /plan-eng-review on this design>
-2. <e.g., run /plan-design-review if UI scope>
-3. <distribution / launch step if relevant>
+1. <e.g., run /plan to turn this design into a unit-by-unit implementation plan>
+2. <e.g., run /plan-eng-review to lock architecture (reads the plan; required)>
+3. <e.g., run /plan-design-review if UI scope>
+4. <distribution / launch step if relevant>
 
 ## What I noticed
 <one or two sentences from you the assistant — patterns, surprises, things to watch>
@@ -277,12 +280,13 @@ This initializes the per-branch approval state file and inserts an `## Approvals
 
 ## Phase 8: Handoff
 
-Pick one based on context:
+The next step is **always `/plan`** (it turns this design into the unit-by-unit
+plan that `/plan-eng-review` requires). Pick the framing by context:
 
-- **Has UI scope + DESIGN.md exists** → *"Run `/plan-eng-review` to lock architecture, then `/plan-design-review` for the UX pass."*
-- **Has UI scope + no DESIGN.md** → *"Run `/design-consultation` first (you don't have a DESIGN.md), then `/plan-eng-review` for architecture."*
-- **No UI scope** → *"Run `/plan-eng-review` next — this is mostly an architecture problem."*
-- **Mode = explore** → *"You don't need a plan-review yet. Sit with the design doc; come back when you want to commit."*
+- **Has UI scope + DESIGN.md exists** → *"Run `/plan` to break this into units, then `/plan-eng-review` to lock architecture and `/plan-design-review` for the UX pass."*
+- **Has UI scope + no DESIGN.md** → *"Run `/design-consultation` first (you don't have a DESIGN.md), then `/plan` → `/plan-eng-review` for architecture."*
+- **No UI scope** → *"Run `/plan` next to draft the implementation units, then `/plan-eng-review` to lock architecture — this is mostly an architecture problem."*
+- **Mode = explore** → *"You don't need a plan yet. Sit with the design doc; come back and run `/plan` when you want to commit."*
 
 State the recommendation clearly. Don't auto-invoke; the user runs the next skill themselves.
 

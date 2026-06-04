@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.13.0 — 2026-06-03
+
+- feat(begin): route execution intent to /work + refresh pipeline docs
+- feat(work): /work skill — smriti owns the build step
+- feat(plan): /plan skill + required gate between /brainstorm and /plan-eng-review
+- fix(doc-lookup): smriti latest-doc helper — repair every per-branch doc lookup
+
+
 ## 0.12.0 — 2026-06-02
 
 - feat(eng-review): multi-persona enrichment — fan out parallel per-principle persona reviewers for diffs above persona_threshold; merge with dedup + cross-persona confidence-gating (ELI-40)
