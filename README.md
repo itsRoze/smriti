@@ -26,23 +26,26 @@ A personal Claude Code skill stack — opinionated, learns across sessions, gets
 Each skill produces an artifact the next one reads. Run them in order; downstream skills know what came before.
 
 ```
-   ENTRY        THINK              PLAN                       BUILD              REVIEW                   SHIP
-   ─────        ─────              ─────                      ─────              ─────                    ────
-                              ┌─ /plan-eng-review     ─┐                  ┌─ /eng-review     ─┐
-/begin → /bootstrap → /brainstorm →                   →  (you write) →                       → /ship → (merge) → /clean
-           │                  └─ /plan-design-review  ─┘                  └─ /design-review  ─┘
+   ENTRY        THINK            PLAN                              BUILD       REVIEW                   SHIP
+   ─────        ─────            ─────                             ─────       ─────                    ────
+                                        ┌─ /plan-eng-review     ─┐              ┌─ /eng-review     ─┐
+/begin → /bootstrap → /brainstorm → /plan →                     →  /work →                          → /ship → (merge) → /clean
+           │                            └─ /plan-design-review  ─┘              └─ /design-review  ─┘
            ├─ /debug
-           └─ (implement)        /design-consultation                          /learn  (anytime)
+           ├─ /work  (when a plan exists)
+           └─ (implement)      /design-consultation                          /learn  (anytime)
 ```
 
 | Stage | Skill | Writes |
 |-------|-------|--------|
-| Entry | `/begin` | Routes to `/brainstorm`, `/debug`, or implement fast path |
+| Entry | `/begin` | Routes to `/brainstorm`, `/debug`, `/work`, or implement fast path |
 | Think | `/bootstrap` | `PROJECT.md` (one-time per repo) |
 | Think | `/design-consultation` | `DESIGN.md` + self-contained HTML preview |
 | Think | `/brainstorm` | `~/.smriti/projects/<slug>/<branch>-design-<ts>.md` |
-| Plan | `/plan-eng-review` | Engineering Review Decisions section in design doc |
+| Plan | `/plan` | `~/.smriti/projects/<slug>/<branch>-plan-<ts>.md` (unit-by-unit) |
+| Plan | `/plan-eng-review` | Engineering Review Decisions section in plan doc |
 | Plan | `/plan-design-review` | Design Review Decisions section + 0–10 scores |
+| Build | `/work` | The code — incremental per-unit commits |
 | Review | `/eng-review` | Auto-fixes + entries in `reviews.jsonl` |
 | Review | `/design-review` | Atomic `style(design):` commits + audit report (+ optional rendered audit via `smriti browse`) |
 | Ship | `/ship` | Tests, version, CHANGELOG, bisectable commits, PR |
@@ -58,6 +61,7 @@ Each review skill stamps its verdict at the top of the design doc. `/ship` reads
 ## Approvals
 
 - ✅ /brainstorm       — 2026-04-26 — mode: users; rec: Option 2
+- ✅ /plan              — 2026-04-26 — 5 units; 2 parallel groups
 - ✅ /plan-eng-review    — 2026-04-26 — lean: senior; 0 unresolved
 - ⚠️ /plan-design-review — 2026-04-26 — avg 8.2/10; 1 deferred
 - ✅ /eng-review         — 2026-04-26 — 3 findings; 2 auto-fixed
