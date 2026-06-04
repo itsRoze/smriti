@@ -59,7 +59,7 @@ Load relevant prior learnings:
 **Check for prior design docs on this branch:**
 
 ```bash
-ls -t "${SMRITI_HOME:-$HOME/.smriti}/projects/$SLUG/"*-"$BRANCH_SLUG"-design-*.md 2>/dev/null
+smriti latest-doc --type design --all
 ```
 
 If any exist, list their titles + dates back to the user:
@@ -214,6 +214,8 @@ When you run Codex, give it the design context (the user's mode, forcing-questio
 TS=$(date -u +%Y-%m-%dT%H-%M-%SZ)
 DESIGN_DIR="${SMRITI_HOME:-$HOME/.smriti}/projects/$SLUG"
 mkdir -p "$DESIGN_DIR"
+# Filename contract: <branch-slug>-<type>-<ts>.md — readers find it via
+# `smriti latest-doc --type design`. Keep this shape in sync with that helper.
 DESIGN_FILE="$DESIGN_DIR/$BRANCH_SLUG-design-$TS.md"
 ```
 

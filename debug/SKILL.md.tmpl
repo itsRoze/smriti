@@ -216,6 +216,8 @@ Render Codex output verbatim. When findings disagree, surface the disagreement e
 TS=$(date -u +%Y-%m-%dT%H-%M-%SZ)
 DEBUG_DIR="${SMRITI_HOME:-$HOME/.smriti}/projects/$SLUG"
 mkdir -p "$DEBUG_DIR"
+# Filename contract: <branch-slug>-<type>-<ts>.md — readers find it via
+# `smriti latest-doc --type debug`. Keep this shape in sync with that helper.
 DEBUG_FILE="$DEBUG_DIR/$BRANCH_SLUG-debug-$TS.md"
 ```
 

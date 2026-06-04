@@ -44,7 +44,7 @@ HAS_DESIGN=no
 [ -f package.json ] && head -40 package.json
 
 # Most recent brainstorm design doc on this branch (often has product-context signal)
-ls -t "${SMRITI_HOME:-$HOME/.smriti}/projects/$SLUG/"*-"$BRANCH_SLUG"-design-*.md 2>/dev/null | head -1
+smriti latest-doc --type design
 ```
 
 If `HAS_DESIGN=yes`, ask once: **update / start fresh / cancel**.

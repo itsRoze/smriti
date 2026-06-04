@@ -179,7 +179,7 @@ Surface coverage in the PR body. If `coverage_pct < 60` and `LEAN=senior`, ask v
 
 ## Step 7: Plan completion audit (subagent)
 
-If a design doc exists for this branch (`~/.smriti/projects/$SLUG/*-$BRANCH_SLUG-design-*.md`), dispatch a subagent:
+If a design doc exists for this branch (`DESIGN_DOC=$(smriti latest-doc --type design)`), dispatch a subagent:
 
 > Read the design doc at `<path>` and the current branch's diff. For each item in the design doc's "Recommended approach" / "Next steps" / "Open questions", classify as DONE / CHANGED / DEFERRED. Output a markdown table.
 
