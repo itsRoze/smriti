@@ -87,7 +87,7 @@ if [ -f "$STATE_FILE" ] && jq -e 'has("office-hours")' "$STATE_FILE" >/dev/null;
 fi
 
 # Skill order in renderings (top-to-bottom pipeline order)
-SKILLS=(brainstorm plan-eng-review plan-design-review eng-review design-review ship)
+SKILLS=(brainstorm plan plan-eng-review plan-design-review eng-review design-review ship)
 
 init_state() {
   local entries=""
