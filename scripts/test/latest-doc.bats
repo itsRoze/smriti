@@ -134,3 +134,18 @@ write_doc() {
   run "$CLI" --type design --frobnicate
   [ "$status" -eq 2 ]
 }
+
+@test "usage error: --type with no value exits 2 (not a shift-failure 1)" {
+  run "$CLI" --type
+  [ "$status" -eq 2 ]
+}
+
+@test "usage error: --slug with no value exits 2" {
+  run "$CLI" --type design --slug
+  [ "$status" -eq 2 ]
+}
+
+@test "usage error: --branch with no value exits 2" {
+  run "$CLI" --type design --branch
+  [ "$status" -eq 2 ]
+}

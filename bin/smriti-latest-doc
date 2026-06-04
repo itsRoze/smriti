@@ -29,9 +29,11 @@ SMRITI_BIN="$(cd "$(dirname "$0")" && pwd -P)"
 TYPE=""; SLUG=""; BRANCH=""; ALL=0
 while [ $# -gt 0 ]; do
   case "$1" in
-    --type)   TYPE="$2"; shift 2 ;;
-    --slug)   SLUG="$2"; shift 2 ;;
-    --branch) BRANCH="$2"; shift 2 ;;
+    # Value-taking flags guard $# so a trailing flag-without-value is a clean
+    # usage error (exit 2), not a `shift 2` failure that set -e turns into exit 1.
+    --type)   [ $# -ge 2 ] || { echo "smriti-latest-doc: --type requires a value" >&2; exit 2; };   TYPE="$2";   shift 2 ;;
+    --slug)   [ $# -ge 2 ] || { echo "smriti-latest-doc: --slug requires a value" >&2; exit 2; };   SLUG="$2";   shift 2 ;;
+    --branch) [ $# -ge 2 ] || { echo "smriti-latest-doc: --branch requires a value" >&2; exit 2; }; BRANCH="$2"; shift 2 ;;
     --all)    ALL=1; shift ;;
     *) echo "smriti-latest-doc: unknown flag: $1" >&2; exit 2 ;;
   esac

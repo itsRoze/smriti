@@ -128,14 +128,14 @@ Claude: Phase 3 (4 of 4 forcing questions, one at a time):
 
         Phase 6 — Get an independent Codex second opinion? [Y/skip]
 
-[...design doc written; approval stamped; handoff to /plan-eng-review]
+[...design doc written; approval stamped; handoff to /plan]
 ```
 
 ## Architecture
 
 ```
 ~/.claude/skills/smriti/                   ← code (this repo)
-├── bin/                                     # smriti (umbrella dispatcher) + smriti-{slug,config,project,learnings-*,codex-probe,update-check,approvals,version-bump,pr-title-rewrite,browse,principles-install,changelog-insert}
+├── bin/                                     # smriti (umbrella dispatcher) + smriti-{slug,config,project,learnings-*,codex-probe,update-check,approvals,version-bump,pr-title-rewrite,browse,principles-install,changelog-insert,latest-doc}
 ├── lib/resolvers/                           # {{PLACEHOLDER}} content (preamble, rubric, hard-rules, principles, etc.)
 ├── scripts/                                 # gen-skill-docs.ts, skill-check.ts, run-tests.sh + test/*.bats + test/*.test.ts
 ├── eng-review/checklist.md                  # the artifact /eng-review reads
@@ -151,6 +151,7 @@ Claude: Phase 3 (4 of 4 forcing questions, one at a time):
     ├── reviews.jsonl                          # one entry per review run
     ├── <branch>-approvals.json                # per-branch approval state
     ├── <branch>-design-<ts>.md                # design docs (one per /brainstorm run)
+    ├── <branch>-plan-<ts>.md                  # implementation plans (one per /plan run)
     ├── <branch>-debug-<ts>.md                 # debug summaries (one per /debug run)
     ├── audit-urls.txt                         # /design-review v2 — URLs to audit (in smriti state, not project repo)
     ├── auth-state.json                        # /design-review v2 — Playwright storageState (mode 0600, never committed)
