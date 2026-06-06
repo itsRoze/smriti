@@ -165,6 +165,32 @@ test('stop is idempotent', async () => {
   expect(second.stdout).toContain('already stopped');
 }, 15000);
 
+test('U2b: SSE delivers a reload event when render bumps the revision', async () => {
+  const { session_id, port } = await serve();
+  const spec2 = join(HOME_DIR, 'spec2.json');
+  writeFileSync(spec2, specJson('rev-2'));
+
+  const ac = new AbortController();
+  const res = await fetch(`http://127.0.0.1:${port}/events`, { signal: ac.signal });
+  const reader = res.body!.getReader();
+  const dec = new TextDecoder();
+
+  // Once subscribed, push a new revision; the open SSE stream should get a reload.
+  setTimeout(() => { void sh(['render', '--session', session_id, spec2]); }, 250);
+
+  let buf = '';
+  let sawReload = false;
+  const deadline = Date.now() + 6000;
+  while (Date.now() < deadline) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value);
+    if (buf.includes('event: reload') && buf.includes('rev-2')) { sawReload = true; break; }
+  }
+  ac.abort();
+  expect(sawReload).toBe(true);
+}, 15000);
+
 test('D2: server self-terminates after the idle window', async () => {
   const r = await sh(['serve', SPEC, '--no-open', '--idle', '1200']);
   expect(r.code).toBe(0);

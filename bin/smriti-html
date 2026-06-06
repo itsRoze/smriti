@@ -392,12 +392,31 @@ document.getElementById('copy-btn').addEventListener('click', () => {
 const served = location.protocol === 'http:' || location.protocol === 'https:';
 if (served) {
   document.getElementById('server-controls').hidden = false;
+
+  // Dirty-state guard (U2b): track unsaved edits so a live-reload never blows
+  // away in-progress typing.
+  let dirty = false;
+  document.addEventListener('input', () => { dirty = true; });
+  document.addEventListener('change', () => { dirty = true; });
+  function showRefresh() {
+    const b = document.getElementById('banner');
+    if (document.getElementById('refresh-btn')) { b.style.display = 'block'; return; }
+    const btn = document.createElement('button');
+    btn.id = 'refresh-btn'; btn.textContent = 'Refresh'; btn.style.marginLeft = '10px';
+    btn.addEventListener('click', () => location.reload());
+    b.appendChild(btn); b.style.display = 'block';
+  }
+
   async function submit(action) {
     try {
       const res = await fetch('/submit', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(buildPayload(action)) });
       const data = await res.json();
-      if (data.status === 'accepted') flash(action === 'finish' ? 'Review finished — return to Claude Code.' : 'Submitted — Claude is revising…');
-      else flash('Server: ' + (data.status || 'rejected') + (data.unknown_card_ids ? (' ' + JSON.stringify(data.unknown_card_ids)) : ''));
+      if (data.status === 'accepted') {
+        dirty = false; // submitted — let the next revision auto-reload us in
+        flash(action === 'finish' ? 'Review finished — return to Claude Code.' : 'Submitted — Claude is revising…');
+      } else {
+        flash('Server: ' + (data.status || 'rejected') + (data.unknown_card_ids ? (' ' + JSON.stringify(data.unknown_card_ids)) : ''));
+      }
     } catch (e) {
       flash('Submit failed — use “Copy response” instead.');
       document.getElementById('copy-fallback').scrollIntoView();
@@ -405,6 +424,16 @@ if (served) {
   }
   document.getElementById('submit-btn').addEventListener('click', () => submit('submit'));
   document.getElementById('finish-btn').addEventListener('click', () => submit('finish'));
+
+  // SSE live-reload (U2b): when Claude pushes the next revision, refresh the tab
+  // in place — unless the user has unsaved edits, in which case offer a button.
+  try {
+    const es = new EventSource('/events');
+    es.addEventListener('reload', () => {
+      if (dirty) { flash('Claude updated this view.'); showRefresh(); }
+      else { location.reload(); }
+    });
+  } catch (e) { /* no SSE — manual refresh still works */ }
 }
 </script>
 </body>
@@ -620,10 +649,15 @@ function sweepOrphans(): void {
   if (!existsSync(base)) return;
   for (const entry of readdirSync(base)) {
     const dir = join(base, entry);
-    const pf = join(dir, 'pidfile');
-    if (!existsSync(pf)) { rmSync(dir, { recursive: true, force: true }); continue; }
-    const pid = parseInt((readFileSync(pf, 'utf8').trim().split('\n')[0]) ?? '', 10);
-    if (!pid || !pidAlive(pid)) rmSync(dir, { recursive: true, force: true });
+    // Any statedir we can't confirm belongs to a live process is an orphan:
+    // missing/partial/locked pidfile, NaN pid, or a dead pid. Defensive — a
+    // half-written pidfile from a crashed startup must not wedge future serves.
+    let alive = false;
+    try {
+      const pid = parseInt((readFileSync(join(dir, 'pidfile'), 'utf8').trim().split('\n')[0]) ?? '', 10);
+      alive = !!pid && pidAlive(pid);
+    } catch { alive = false; }
+    if (!alive) rmSync(dir, { recursive: true, force: true });
   }
 }
 
@@ -698,7 +732,7 @@ async function cmdServer(args: string[]): Promise<number> {
     current: '',
     pending: null as Payload | null,
     waiters: [] as Array<(p: Payload | null) => void>,
-    sse: new Set<(rev: string) => void>(),
+    sse: new Set<(frame: string) => void>(),
     last: Date.now(),
   };
   state.current = state.spec.revision_id;
@@ -707,7 +741,9 @@ async function cmdServer(args: string[]): Promise<number> {
   const json = (obj: unknown, status = 200) =>
     new Response(JSON.stringify(obj), { status, headers: { 'content-type': 'application/json' } });
 
-  function broadcast(rev: string) { for (const fn of state.sse) fn(rev); }
+  const enc = new TextEncoder();
+  const sseFrame = (event: string, data: string) => `event: ${event}\ndata: ${data}\n\n`;
+  function broadcast(rev: string) { for (const fn of state.sse) fn(sseFrame('reload', rev)); }
 
   const server = Bun.serve({
     hostname: '127.0.0.1',
@@ -762,14 +798,15 @@ async function cmdServer(args: string[]): Promise<number> {
       }
 
       if (req.method === 'GET' && path === '/events') {
-        // SSE live-reload (U2b). Each client gets reload events on /__render.
+        // SSE live-reload (U2b). Each client gets a reload event on /__render so
+        // the open tab updates in place when Claude pushes the next revision.
         let unsub = () => {};
         const stream = new ReadableStream({
           start(controller) {
-            const send = (rev: string) => {
-              try { controller.enqueue(`event: reload\ndata: ${rev}\n\n`); } catch { /* closed */ }
+            const send = (frame: string) => {
+              try { controller.enqueue(enc.encode(frame)); } catch { /* client gone */ }
             };
-            controller.enqueue(`event: hello\ndata: ${state.current}\n\n`);
+            send(sseFrame('hello', state.current));
             state.sse.add(send);
             unsub = () => state.sse.delete(send);
           },
@@ -792,6 +829,15 @@ async function cmdServer(args: string[]): Promise<number> {
 
   writeFileSync(join(statedir, 'portfile'), `${server.port}\n${nonce}\n`);
   writeFileSync(join(statedir, 'pidfile'), `${process.pid}\n${nonce}\n`);
+
+  // Keep-alive: while a tab is connected (an SSE client is listening), refresh
+  // last-activity + send a comment frame. So an open page with a thinking human
+  // never trips the idle reaper (D2) mid-review; a closed tab drops SSE and the
+  // idle timer resumes.
+  const heartbeat = setInterval(() => {
+    if (state.sse.size) { touch(); for (const fn of state.sse) fn(': keep-alive\n\n'); }
+  }, 20000);
+  heartbeat.unref?.();
 
   const reaper = setInterval(() => {
     if (Date.now() - state.last > idleMs) {
