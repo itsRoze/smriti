@@ -135,10 +135,55 @@ JSON
 @test "no args: prints usage and exits 1" {
   run bun "$HTML"
   [ "$status" -eq 1 ]
-  [[ "$output" == *"Subcommands:"* ]]
+  [[ "$output" == *"render"* ]]
+  [[ "$output" == *"Exit codes:"* ]]
 }
 
 @test "unknown subcommand exits non-zero" {
   run bun "$HTML" frobnicate
   [ "$status" -ne 0 ]
+}
+
+# ─── transport argv (U2a — no server spun up) ────────────────────────────────
+
+@test "serve: missing spec is a usage error" {
+  run bun "$HTML" serve
+  [ "$status" -eq 1 ]
+}
+
+@test "await: missing --session is a usage error" {
+  run bun "$HTML" await
+  [ "$status" -eq 1 ]
+}
+
+@test "stop: missing --session is a usage error" {
+  run bun "$HTML" stop
+  [ "$status" -eq 1 ]
+}
+
+@test "render --session: missing spec is a usage error" {
+  run bun "$HTML" render --session sess-x
+  [ "$status" -eq 1 ]
+}
+
+@test "await: nonexistent session exits 6 (no live server)" {
+  run bun "$HTML" await --session sess-does-not-exist --timeout 300
+  [ "$status" -eq 6 ]
+}
+
+@test "stop: nonexistent session is idempotent (exit 0, already stopped)" {
+  run bun "$HTML" stop --session sess-does-not-exist
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"already stopped"* ]]
+}
+
+# ─── ELI-37: production invocation path via the PATH dispatcher ───────────────
+
+@test "dispatcher: 'smriti html' routes to bin/smriti-html (production path)" {
+  FAKE_BIN="$WORK/fake-bin"
+  mkdir -p "$FAKE_BIN"
+  ln -s "$ROOT/bin/smriti" "$FAKE_BIN/smriti"
+  run env PATH="$FAKE_BIN:$PATH" smriti html check-spec "$SPEC"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"ok"* ]]
 }

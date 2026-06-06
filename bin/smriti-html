@@ -29,16 +29,24 @@
 // truth for the spec/payload contract. lib/resolvers/html-render.md mirrors
 // them in prose for the model; if the two ever disagree, THIS FILE wins.
 
-import { readFileSync, writeFileSync, mkdirSync, chmodSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, chmodSync, existsSync, readdirSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
-const TOOL_VERSION = '0.1.0';
+const TOOL_VERSION = '0.2.0';
 const SCHEMA_VERSION = 1;
 
+// Generous idle window: a server with no await/render/submit activity for this
+// long self-terminates (D2) so a skill that died mid-loop doesn't orphan it.
+const DEFAULT_IDLE_MS = 30 * 60 * 1000;
+// How long `await` blocks for a submission before reporting a timeout (D2 caps
+// the unbounded wait). Server holds the request; client waits a bit longer.
+const DEFAULT_AWAIT_TIMEOUT_MS = 10 * 60 * 1000;
+
 const SMRITI_BIN = dirname(fileURLToPath(import.meta.url));
+const SELF = fileURLToPath(import.meta.url);
 const SMRITI_HOME = process.env.SMRITI_HOME || join(homedir(), '.smriti');
 
 // ─── Canonical schema (D4) ───────────────────────────────────────────────────
@@ -455,7 +463,7 @@ function readJsonFile(path: string): unknown {
 function usage(): never {
   process.stderr.write(`smriti html v${TOOL_VERSION} (schema v${SCHEMA_VERSION})
 
-Subcommands:
+Render / validate:
   render <spec.json> [--out <file>] [--no-open]
                         Render a spec to a self-contained interactive HTML file,
                         print its path, and open it in the browser.
@@ -464,22 +472,34 @@ Subcommands:
   check-payload <payload.json> --spec <spec.json>
                         Validate a payload + reconcile card ids (D7); prints
                         {ok, unknown_card_ids}; exit 3 if invalid/unknown ids.
+
+Loop transport (thread --session, printed by serve):
+  serve <spec.json> [--no-open] [--idle <ms>]
+                        Start a detached 127.0.0.1 server; print {session_id,port,url}.
+  render --session <id> <spec.json>
+                        Swap content + bump revision for a live session (re-render).
+  await --session <id> [--timeout <ms>]
+                        Block until the user submits for the current revision;
+                        print the decision payload JSON.
+  stop  --session <id>  Tear the server down (idempotent).
   help                  Show this help.
 
-Exit codes: 0=ok 1=usage 2=runtime 3=invalid-spec-or-payload
+Exit codes: 0=ok 1=usage 2=runtime 3=invalid 5=await-timeout 6=no-server
 `);
   process.exit(1);
 }
 
 // ─── Subcommands ─────────────────────────────────────────────────────────────
 
-function cmdRender(args: string[]): number {
+async function cmdRender(args: string[]): Promise<number> {
   let specPath: string | null = null;
   let out: string | null = null;
+  let session: string | null = null;
   let open = true;
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === '--out') out = args[++i] ?? null;
+    else if (a === '--session') session = args[++i] ?? null;
     else if (a === '--no-open') open = false;
     else if (a.startsWith('--')) err(`render: unknown flag: ${a}`);
     else if (!specPath) specPath = a;
@@ -491,6 +511,27 @@ function cmdRender(args: string[]): number {
   let spec: Spec;
   try { spec = validateSpec(readJsonFile(specPath)); }
   catch (e) { process.stderr.write(`smriti-html: ${String((e as Error).message)}\n`); return 3; }
+
+  // Server path (loop): push the new spec to a live session — swaps content +
+  // bumps the revision so `await` waits for the new round and the open tab
+  // live-reloads (U2b). No flag → standalone file render (the copy-paste floor).
+  if (session) {
+    const info = readPortfile(session);
+    if (!info) { process.stderr.write(`smriti-html: no live server for session ${session}\n`); return 6; }
+    let res: Response;
+    try {
+      res = await fetch(`http://127.0.0.1:${info.port}/__render`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-smriti-nonce': info.nonce },
+        body: JSON.stringify(spec),
+        signal: AbortSignal.timeout(5000),
+      });
+    } catch { process.stderr.write(`smriti-html: server unreachable for session ${session}\n`); return 6; }
+    const data = (await res.json()) as { status: string; revision_id?: string };
+    if (data.status === 'ok') { process.stdout.write(`${data.revision_id}\n`); return 0; }
+    process.stderr.write(`smriti-html: render rejected: ${data.status}\n`);
+    return 2;
+  }
 
   const safeSkill = spec.skill.replace(/[^a-z0-9-]/gi, '-');
   const outPath = out ?? join(viewsDir(), `${getBranchSlug()}-${safeSkill}-${spec.revision_id}.html`);
@@ -535,9 +576,292 @@ function cmdCheckPayload(args: string[]): number {
   return ok ? 0 : 3;
 }
 
+// ─── Transport: sessioned localhost server (U2a) ─────────────────────────────
+//
+// The iterative loop runs over four commands the calling skill threads by an
+// explicit --session id (D3 — no implicit "current session" pointer, so two
+// concurrent review loops can never collide):
+//
+//   serve <spec>   → start a detached 127.0.0.1 server, print {session_id,port,url}
+//   await --session → block until the user submits for the current revision
+//   render --session <spec> → swap content + bump revision (re-render the loop)
+//   stop  --session → tear the server down
+//
+// The server accepts a submission only when session_id AND revision_id match
+// the latest open revision (Codex: old-tab / concurrent-run submits would
+// otherwise cross streams). Port + an orphan-detection nonce live in a per-
+// session statedir keyed by the id, so await/render/stop need only --session.
+
+function rand12(): string {
+  return globalThis.crypto.randomUUID().replace(/-/g, '').slice(0, 12);
+}
+
+function serverStateDir(sessionId: string): string {
+  return join(SMRITI_HOME, 'projects', getSlug(), 'views', '.server', sessionId);
+}
+
+function readPortfile(sessionId: string): { port: number; nonce: string } | null {
+  const pf = join(serverStateDir(sessionId), 'portfile');
+  if (!existsSync(pf)) return null;
+  const [portStr, nonce] = readFileSync(pf, 'utf8').trim().split('\n');
+  const port = parseInt(portStr ?? '', 10);
+  if (!port || !nonce) return null;
+  return { port, nonce };
+}
+
+function pidAlive(pid: number): boolean {
+  try { process.kill(pid, 0); return true; } catch { return false; }
+}
+
+// D2 — sweep statedirs whose server process is gone (stale pidfile). Belt for
+// the case where a previous run died before `stop` and before idle-exit fired.
+function sweepOrphans(): void {
+  const base = join(SMRITI_HOME, 'projects', getSlug(), 'views', '.server');
+  if (!existsSync(base)) return;
+  for (const entry of readdirSync(base)) {
+    const dir = join(base, entry);
+    const pf = join(dir, 'pidfile');
+    if (!existsSync(pf)) { rmSync(dir, { recursive: true, force: true }); continue; }
+    const pid = parseInt((readFileSync(pf, 'utf8').trim().split('\n')[0]) ?? '', 10);
+    if (!pid || !pidAlive(pid)) rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+function cmdServe(args: string[]): number {
+  let specPath: string | null = null;
+  let open = true;
+  let idleMs = DEFAULT_IDLE_MS;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '--no-open') open = false;
+    else if (a === '--idle') idleMs = parseInt(args[++i] ?? '', 10) || DEFAULT_IDLE_MS;
+    else if (a.startsWith('--')) err(`serve: unknown flag: ${a}`);
+    else if (!specPath) specPath = a;
+    else err(`serve: unexpected argument: ${a}`);
+  }
+  if (!specPath) err('serve: <spec.json> required');
+
+  let spec: Spec;
+  try { spec = validateSpec(readJsonFile(specPath)); }
+  catch (e) { process.stderr.write(`smriti-html: ${String((e as Error).message)}\n`); return 3; }
+
+  sweepOrphans();
+
+  const sessionId = 'sess-' + rand12();
+  const nonce = rand12();
+  const dir = serverStateDir(sessionId);
+  ensureDir(dir, 0o700);
+  writeFileSync(join(dir, 'spec.json'), JSON.stringify(spec));
+
+  const child = spawn(
+    process.execPath,
+    [SELF, '__server', '--session', sessionId, '--statedir', dir, '--nonce', nonce, '--idle', String(idleMs)],
+    { detached: true, stdio: 'ignore' },
+  );
+  child.unref();
+
+  // Wait for the detached server to bind + write its portfile.
+  const deadline = Date.now() + 5000;
+  let info: { port: number; nonce: string } | null = null;
+  while (Date.now() < deadline) {
+    info = readPortfile(sessionId);
+    if (info) break;
+    Bun.sleepSync(50);
+  }
+  if (!info) {
+    process.stderr.write('smriti-html: server did not start within 5s\n');
+    rmSync(dir, { recursive: true, force: true });
+    return 2;
+  }
+
+  const url = `http://127.0.0.1:${info.port}/`;
+  process.stdout.write(JSON.stringify({ session_id: sessionId, port: info.port, url }) + '\n');
+  if (open) openInBrowser(url);
+  return 0;
+}
+
+// Hidden subcommand: the actual long-lived server process spawned by `serve`.
+async function cmdServer(args: string[]): Promise<number> {
+  let sessionId = '', statedir = '', nonce = '';
+  let idleMs = DEFAULT_IDLE_MS;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '--session') sessionId = args[++i] ?? '';
+    else if (a === '--statedir') statedir = args[++i] ?? '';
+    else if (a === '--nonce') nonce = args[++i] ?? '';
+    else if (a === '--idle') idleMs = parseInt(args[++i] ?? '', 10) || DEFAULT_IDLE_MS;
+  }
+  if (!sessionId || !statedir || !nonce) err('__server: --session/--statedir/--nonce required');
+
+  const state = {
+    spec: validateSpec(JSON.parse(readFileSync(join(statedir, 'spec.json'), 'utf8'))) as Spec,
+    current: '',
+    pending: null as Payload | null,
+    waiters: [] as Array<(p: Payload | null) => void>,
+    sse: new Set<(rev: string) => void>(),
+    last: Date.now(),
+  };
+  state.current = state.spec.revision_id;
+  const touch = () => { state.last = Date.now(); };
+  const authed = (req: Request) => req.headers.get('x-smriti-nonce') === nonce;
+  const json = (obj: unknown, status = 200) =>
+    new Response(JSON.stringify(obj), { status, headers: { 'content-type': 'application/json' } });
+
+  function broadcast(rev: string) { for (const fn of state.sse) fn(rev); }
+
+  const server = Bun.serve({
+    hostname: '127.0.0.1',
+    port: 0,
+    async fetch(req: Request): Promise<Response> {
+      const url = new URL(req.url);
+      const path = url.pathname;
+      touch();
+
+      if (req.method === 'GET' && path === '/') {
+        return new Response(renderHtml(state.spec), { headers: { 'content-type': 'text/html; charset=utf-8' } });
+      }
+
+      if (req.method === 'POST' && path === '/submit') {
+        let payload: Payload;
+        try { payload = validatePayload(await req.json()); }
+        catch (e) { return json({ status: 'invalid', message: String((e as Error).message) }, 400); }
+        if (payload.session_id !== sessionId) return json({ status: 'unknown_session' }, 409);
+        if (payload.revision_id !== state.current) return json({ status: 'stale_revision', current: state.current }, 409);
+        const unknown = unknownCardIds(payload, state.spec);
+        if (unknown.length) return json({ status: 'unknown_card_ids', unknown_card_ids: unknown }, 409);
+        const w = state.waiters.shift();
+        if (w) w(payload); else state.pending = payload;
+        return json({ status: 'accepted' });
+      }
+
+      if (req.method === 'GET' && path === '/await') {
+        if (!authed(req)) return json({ status: 'forbidden' }, 403);
+        const timeout = parseInt(url.searchParams.get('timeout') ?? '', 10) || DEFAULT_AWAIT_TIMEOUT_MS;
+        if (state.pending) { const p = state.pending; state.pending = null; return json({ status: 'submission', payload: p }); }
+        return await new Promise<Response>((resolve) => {
+          let done = false;
+          const settle = (p: Payload | null) => {
+            if (done) return; done = true; clearTimeout(timer);
+            resolve(p ? json({ status: 'submission', payload: p }) : json({ status: 'timeout' }));
+          };
+          state.waiters.push(settle);
+          const timer = setTimeout(() => settle(null), timeout);
+        });
+      }
+
+      if (req.method === 'POST' && path === '/__render') {
+        if (!authed(req)) return json({ status: 'forbidden' }, 403);
+        let next: Spec;
+        try { next = validateSpec(await req.json()); }
+        catch (e) { return json({ status: 'invalid', message: String((e as Error).message) }, 400); }
+        state.spec = next;
+        state.current = next.revision_id;
+        state.pending = null;
+        broadcast(next.revision_id);
+        return json({ status: 'ok', revision_id: next.revision_id });
+      }
+
+      if (req.method === 'GET' && path === '/events') {
+        // SSE live-reload (U2b). Each client gets reload events on /__render.
+        let unsub = () => {};
+        const stream = new ReadableStream({
+          start(controller) {
+            const send = (rev: string) => {
+              try { controller.enqueue(`event: reload\ndata: ${rev}\n\n`); } catch { /* closed */ }
+            };
+            controller.enqueue(`event: hello\ndata: ${state.current}\n\n`);
+            state.sse.add(send);
+            unsub = () => state.sse.delete(send);
+          },
+          cancel() { unsub(); },
+        });
+        return new Response(stream, {
+          headers: { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' },
+        });
+      }
+
+      if (req.method === 'POST' && path === '/__stop') {
+        if (!authed(req)) return json({ status: 'forbidden' }, 403);
+        queueMicrotask(() => { try { rmSync(statedir, { recursive: true, force: true }); } catch {} process.exit(0); });
+        return json({ status: 'stopping' });
+      }
+
+      return new Response('not found', { status: 404 });
+    },
+  });
+
+  writeFileSync(join(statedir, 'portfile'), `${server.port}\n${nonce}\n`);
+  writeFileSync(join(statedir, 'pidfile'), `${process.pid}\n${nonce}\n`);
+
+  const reaper = setInterval(() => {
+    if (Date.now() - state.last > idleMs) {
+      try { rmSync(statedir, { recursive: true, force: true }); } catch {}
+      process.exit(0);
+    }
+  }, 1000);
+  reaper.unref?.();
+
+  return await new Promise<number>(() => {}); // run until idle-exit or /__stop
+}
+
+async function cmdAwait(args: string[]): Promise<number> {
+  let sessionId = '';
+  let timeoutMs = DEFAULT_AWAIT_TIMEOUT_MS;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '--session') sessionId = args[++i] ?? '';
+    else if (a === '--timeout') timeoutMs = parseInt(args[++i] ?? '', 10) || DEFAULT_AWAIT_TIMEOUT_MS;
+    else if (a.startsWith('--')) err(`await: unknown flag: ${a}`);
+    else err(`await: unexpected argument: ${a}`);
+  }
+  if (!sessionId) err('await: --session <id> required');
+  const info = readPortfile(sessionId);
+  if (!info) { process.stderr.write(`smriti-html: no live server for session ${sessionId}\n`); return 6; }
+
+  let res: Response;
+  try {
+    res = await fetch(`http://127.0.0.1:${info.port}/await?timeout=${timeoutMs}`, {
+      headers: { 'x-smriti-nonce': info.nonce },
+      signal: AbortSignal.timeout(timeoutMs + 15000),
+    });
+  } catch { process.stderr.write(`smriti-html: server unreachable for session ${sessionId}\n`); return 6; }
+
+  const data = (await res.json()) as { status: string; payload?: Payload };
+  if (data.status === 'submission' && data.payload) { process.stdout.write(JSON.stringify(data.payload) + '\n'); return 0; }
+  if (data.status === 'timeout') { process.stderr.write('smriti-html: await timed out\n'); return 5; }
+  process.stderr.write(`smriti-html: await got status "${data.status}"\n`);
+  return 2;
+}
+
+async function cmdStop(args: string[]): Promise<number> {
+  let sessionId = '';
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '--session') sessionId = args[++i] ?? '';
+    else if (a.startsWith('--')) err(`stop: unknown flag: ${a}`);
+    else err(`stop: unexpected argument: ${a}`);
+  }
+  if (!sessionId) err('stop: --session <id> required');
+  const dir = serverStateDir(sessionId);
+  const pf = join(dir, 'pidfile');
+  if (!existsSync(pf)) { process.stdout.write('already stopped\n'); return 0; } // idempotent
+  // Read pid/port BEFORE the graceful stop — the server deletes its statedir on
+  // /__stop, so re-reading the pidfile afterward would race into ENOENT.
+  const pid = parseInt((readFileSync(pf, 'utf8').trim().split('\n')[0]) ?? '', 10);
+  const info = readPortfile(sessionId);
+  if (info) {
+    try { await fetch(`http://127.0.0.1:${info.port}/__stop`, { method: 'POST', headers: { 'x-smriti-nonce': info.nonce }, signal: AbortSignal.timeout(2000) }); }
+    catch { /* server may be unreachable — fall through to kill */ }
+  }
+  if (pid && pidAlive(pid)) { try { process.kill(pid, 'SIGTERM'); } catch {} }
+  rmSync(dir, { recursive: true, force: true });
+  process.stdout.write('stopped\n');
+  return 0;
+}
+
 // ─── Main ────────────────────────────────────────────────────────────────────
 
-function main(): void {
+async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const sub = argv[0];
   const rest = argv.slice(1);
@@ -545,12 +869,19 @@ function main(): void {
 
   let code: number;
   switch (sub) {
-    case 'render':        code = cmdRender(rest); break;
+    case 'render':        code = await cmdRender(rest); break;
     case 'check-spec':    code = cmdCheckSpec(rest); break;
     case 'check-payload': code = cmdCheckPayload(rest); break;
+    case 'serve':         code = cmdServe(rest); break;
+    case 'await':         code = await cmdAwait(rest); break;
+    case 'stop':          code = await cmdStop(rest); break;
+    case '__server':      code = await cmdServer(rest); break; // hidden — spawned by serve
     default:              err(`unknown subcommand: ${sub}`);
   }
   process.exit(code);
 }
 
-main();
+main().catch((e) => {
+  process.stderr.write(`smriti-html: ${String(e?.message ?? e)}\n`);
+  process.exit(2);
+});
