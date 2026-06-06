@@ -17,6 +17,7 @@ A personal Claude Code skill stack — opinionated, learns across sessions, gets
 - [Managing tracked projects](#managing-tracked-projects)
 - [Principles](#principles)
 - [Browser audit](#browser-audit-design-review-v2)
+- [Interactive HTML specs](#interactive-html-specs)
 - [What's deferred (v0.2 / later)](#whats-deferred-v02--later)
 - [Acknowledgments](#acknowledgments)
 - [License](#license)
@@ -43,7 +44,7 @@ Each skill produces an artifact the next one reads. Run them in order; downstrea
 | Think | `/design-consultation` | `DESIGN.md` + self-contained HTML preview |
 | Think | `/brainstorm` | `~/.smriti/projects/<slug>/<branch>-design-<ts>.md` |
 | Plan | `/plan` | `~/.smriti/projects/<slug>/<branch>-plan-<ts>.md` (unit-by-unit) |
-| Plan | `/plan-eng-review` | Engineering Review Decisions section in plan doc |
+| Plan | `/plan-eng-review` | Engineering Review Decisions section in plan doc (findings as an [interactive HTML triage loop](#interactive-html-specs)) |
 | Plan | `/plan-design-review` | Design Review Decisions section + 0–10 scores |
 | Build | `/work` | The code — incremental per-unit commits |
 | Review | `/eng-review` | Auto-fixes + entries in `reviews.jsonl` |
@@ -259,6 +260,43 @@ Subsequent audits reuse it: `smriti browse audit ... --storage <path>`. If the s
 **Exit codes:** `0` ok · `1` usage · `2` browser/runtime · `3` auth-stale · `4` URL gate violation.
 
 **Updating:** `smriti browse update` bumps the npm package and refreshes the bundled Chromium binary in lockstep (avoids a binary/package version mismatch).
+
+## Interactive HTML specs
+
+Long markdown review reports get skimmed. When a review skill has **several
+findings**, `smriti html` renders them as one interactive page you triage in the
+browser — accept / reject / edit each finding, add free-form notes — then round-
+trips your decisions back into the skill in an **iterative loop**: submit → Claude
+revises → the tab live-reloads → react again, until you finish. `/plan-eng-review`
+is the first consumer; `/eng-review` and `/plan-design-review` are next.
+
+**Markdown stays the source of truth.** The HTML is a *generated view* of the
+findings, written to `~/.smriti/projects/<slug>/views/` (runtime state, never
+committed) — so grep-ability is preserved and nothing in-repo gains markup noise.
+
+**Sessioned local app, not a dumb transport:**
+
+- **Localhost only.** The server binds `127.0.0.1` on an ephemeral port; nothing
+  is exposed off-machine.
+- **Revision-scoped.** Each review run gets a `session_id`, each render a
+  `revision_id`. A submit is accepted only when both match the latest open
+  revision — an old browser tab or a second concurrent review can't cross streams
+  (`stale_revision` / `unknown_session`). Decisions key off **stable finding ids**,
+  so a stale submit is never misapplied to the wrong card.
+- **Self-cleaning.** An idle server self-terminates and stale state is swept on
+  the next `serve`, so a skill that dies mid-loop never orphans a process.
+- **Never hard-stuck.** The page always offers a **copy-paste** payload block if
+  the server is gone, and the skill falls back to one AskUserQuestion per finding
+  if you'd rather not open a browser.
+
+```
+smriti html serve <spec.json>          # start the server, print {session_id,port,url}
+smriti html await --session <id>       # block until you submit; print the decisions
+smriti html render --session <id> <spec.json>   # swap content + bump revision (re-render)
+smriti html stop  --session <id>       # tear down (idempotent)
+```
+
+**Exit codes:** `0` ok · `1` usage · `2` runtime · `3` invalid spec/payload · `5` await-timeout · `6` no-server.
 
 ## What's deferred (v0.2 / later)
 
