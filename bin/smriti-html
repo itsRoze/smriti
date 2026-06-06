@@ -1,0 +1,556 @@
+#!/usr/bin/env bun
+// smriti html — interactive HTML spec renderer + round-trip transport for
+// human-in-the-loop review skills (ELI-44).
+//
+// Markdown stays the source of truth; this renders a generated, interactive
+// VIEW of a "spec" and round-trips the user's structured decisions + free-form
+// notes back to the calling skill across an iterative loop.
+//
+// Subcommands:
+//   render <spec.json> [--out <file>] [--no-open]
+//                          Render a spec to a self-contained interactive HTML
+//                          file (under the project's views/ dir, or --out),
+//                          print its path, and open it in the browser.
+//   check-spec <spec.json>
+//                          Validate a spec against the canonical schema.
+//                          Exit 0 if valid, 3 if invalid.
+//   check-payload <payload.json> --spec <spec.json>
+//                          Validate a payload AND reconcile it against the
+//                          spec's card ids (D7 finding-identity contract).
+//                          Prints {ok, unknown_card_ids}; exit 0 if clean,
+//                          3 if invalid/unknown ids.
+//   help                   Show this help.
+//
+//   (serve / await / stop — the sessioned localhost transport — added in U2a.)
+//
+// Exit codes: 0=ok  1=usage  2=runtime  3=invalid-spec-or-payload
+//
+// SCHEMA IS CANONICAL HERE (D4): the TS types below are the single source of
+// truth for the spec/payload contract. lib/resolvers/html-render.md mirrors
+// them in prose for the model; if the two ever disagree, THIS FILE wins.
+
+import { readFileSync, writeFileSync, mkdirSync, chmodSync, existsSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { homedir } from 'node:os';
+import { fileURLToPath } from 'node:url';
+
+const TOOL_VERSION = '0.1.0';
+const SCHEMA_VERSION = 1;
+
+const SMRITI_BIN = dirname(fileURLToPath(import.meta.url));
+const SMRITI_HOME = process.env.SMRITI_HOME || join(homedir(), '.smriti');
+
+// ─── Canonical schema (D4) ───────────────────────────────────────────────────
+
+type Decision = 'accept' | 'reject' | 'edit';
+type CardStatus = 'open' | 'resolved' | 'new';
+
+type Card = {
+  id: string;
+  title: string;
+  body_md: string;
+  status?: CardStatus;
+  default_decision?: Decision;
+};
+
+type Section = { id: string; title: string; cards: Card[] };
+
+type Spec = {
+  title: string;
+  skill: string;
+  session_id: string;
+  revision_id: string;
+  source_hash: string;
+  sections: Section[];
+  global_notes_prompt?: string;
+};
+
+type CardDecision = { decision: Decision; edited_text?: string; notes?: string };
+
+type Payload = {
+  session_id: string;
+  revision_id: string;
+  source_hash: string;
+  action: 'submit' | 'finish';
+  decisions: Record<string, CardDecision>;
+  global_notes?: string;
+};
+
+// ─── Validation ──────────────────────────────────────────────────────────────
+//
+// Strict: unknown fields are rejected (a typo'd key is a bug we want loud, not
+// silently dropped on the load-bearing interface). Card ids must be unique —
+// the D7 identity contract depends on ids being stable, single keys.
+
+const SPEC_KEYS = new Set(['title', 'skill', 'session_id', 'revision_id', 'source_hash', 'sections', 'global_notes_prompt']);
+const SECTION_KEYS = new Set(['id', 'title', 'cards']);
+const CARD_KEYS = new Set(['id', 'title', 'body_md', 'status', 'default_decision']);
+const PAYLOAD_KEYS = new Set(['session_id', 'revision_id', 'source_hash', 'action', 'decisions', 'global_notes']);
+const DECISION_KEYS = new Set(['decision', 'edited_text', 'notes']);
+const DECISIONS = new Set<Decision>(['accept', 'reject', 'edit']);
+const STATUSES = new Set<CardStatus>(['open', 'resolved', 'new']);
+
+class ValidationError extends Error {}
+
+function asObj(v: unknown, what: string): Record<string, unknown> {
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) {
+    throw new ValidationError(`${what}: expected an object`);
+  }
+  return v as Record<string, unknown>;
+}
+
+function reqStr(o: Record<string, unknown>, key: string, what: string): string {
+  const v = o[key];
+  if (typeof v !== 'string' || v.length === 0) {
+    throw new ValidationError(`${what}: missing or non-string field "${key}"`);
+  }
+  return v;
+}
+
+function rejectUnknownKeys(o: Record<string, unknown>, allowed: Set<string>, what: string): void {
+  for (const k of Object.keys(o)) {
+    if (!allowed.has(k)) throw new ValidationError(`${what}: unknown field "${k}"`);
+  }
+}
+
+function validateSpec(input: unknown): Spec {
+  const o = asObj(input, 'spec');
+  rejectUnknownKeys(o, SPEC_KEYS, 'spec');
+  const spec: Spec = {
+    title: reqStr(o, 'title', 'spec'),
+    skill: reqStr(o, 'skill', 'spec'),
+    session_id: reqStr(o, 'session_id', 'spec'),
+    revision_id: reqStr(o, 'revision_id', 'spec'),
+    source_hash: reqStr(o, 'source_hash', 'spec'),
+    sections: [],
+  };
+  if (!Array.isArray(o.sections) || o.sections.length === 0) {
+    throw new ValidationError('spec: "sections" must be a non-empty array');
+  }
+  const seen = new Set<string>();
+  spec.sections = o.sections.map((s, si) => {
+    const so = asObj(s, `spec.sections[${si}]`);
+    rejectUnknownKeys(so, SECTION_KEYS, `spec.sections[${si}]`);
+    const id = reqStr(so, 'id', `spec.sections[${si}]`);
+    const title = reqStr(so, 'title', `spec.sections[${si}]`);
+    if (!Array.isArray(so.cards)) throw new ValidationError(`spec.sections[${si}]: "cards" must be an array`);
+    const cards: Card[] = so.cards.map((c, ci) => {
+      const co = asObj(c, `card[${si}.${ci}]`);
+      rejectUnknownKeys(co, CARD_KEYS, `card[${si}.${ci}]`);
+      const cid = reqStr(co, 'id', `card[${si}.${ci}]`);
+      if (seen.has(cid)) throw new ValidationError(`card: duplicate id "${cid}" (ids must be unique — D7 identity contract)`);
+      seen.add(cid);
+      const card: Card = { id: cid, title: reqStr(co, 'title', `card ${cid}`), body_md: reqStr(co, 'body_md', `card ${cid}`) };
+      if (co.status !== undefined) {
+        if (typeof co.status !== 'string' || !STATUSES.has(co.status as CardStatus)) throw new ValidationError(`card ${cid}: invalid status "${String(co.status)}"`);
+        card.status = co.status as CardStatus;
+      }
+      if (co.default_decision !== undefined) {
+        if (typeof co.default_decision !== 'string' || !DECISIONS.has(co.default_decision as Decision)) throw new ValidationError(`card ${cid}: invalid default_decision`);
+        card.default_decision = co.default_decision as Decision;
+      }
+      return card;
+    });
+    return { id, title, cards };
+  });
+  if (o.global_notes_prompt !== undefined) {
+    if (typeof o.global_notes_prompt !== 'string') throw new ValidationError('spec: global_notes_prompt must be a string');
+    spec.global_notes_prompt = o.global_notes_prompt;
+  }
+  return spec;
+}
+
+function validatePayload(input: unknown): Payload {
+  const o = asObj(input, 'payload');
+  rejectUnknownKeys(o, PAYLOAD_KEYS, 'payload');
+  const action = reqStr(o, 'action', 'payload');
+  if (action !== 'submit' && action !== 'finish') throw new ValidationError('payload: action must be "submit" or "finish"');
+  const decisionsObj = asObj(o.decisions, 'payload.decisions');
+  const decisions: Record<string, CardDecision> = {};
+  for (const [cardId, dv] of Object.entries(decisionsObj)) {
+    const dvo = asObj(dv, `payload.decisions["${cardId}"]`);
+    rejectUnknownKeys(dvo, DECISION_KEYS, `payload.decisions["${cardId}"]`);
+    const decision = reqStr(dvo, 'decision', `decision for "${cardId}"`);
+    if (!DECISIONS.has(decision as Decision)) throw new ValidationError(`payload.decisions["${cardId}"]: invalid decision "${decision}"`);
+    const cd: CardDecision = { decision: decision as Decision };
+    if (dvo.edited_text !== undefined) {
+      if (typeof dvo.edited_text !== 'string') throw new ValidationError(`decision "${cardId}": edited_text must be a string`);
+      cd.edited_text = dvo.edited_text;
+    }
+    if (dvo.notes !== undefined) {
+      if (typeof dvo.notes !== 'string') throw new ValidationError(`decision "${cardId}": notes must be a string`);
+      cd.notes = dvo.notes;
+    }
+    decisions[cardId] = cd;
+  }
+  const payload: Payload = {
+    session_id: reqStr(o, 'session_id', 'payload'),
+    revision_id: reqStr(o, 'revision_id', 'payload'),
+    source_hash: reqStr(o, 'source_hash', 'payload'),
+    action: action as 'submit' | 'finish',
+    decisions,
+  };
+  if (o.global_notes !== undefined) {
+    if (typeof o.global_notes !== 'string') throw new ValidationError('payload: global_notes must be a string');
+    payload.global_notes = o.global_notes;
+  }
+  return payload;
+}
+
+// D7 — finding-identity reconciliation. A decision keyed by a card id that the
+// current spec does not contain must NOT be silently applied (it would attach a
+// stale/reordered decision to the wrong finding). Callers reject on a non-empty
+// list. Exported shape: the set of payload decision ids absent from the spec.
+function unknownCardIds(payload: Payload, spec: Spec): string[] {
+  const known = new Set<string>();
+  for (const s of spec.sections) for (const c of s.cards) known.add(c.id);
+  return Object.keys(payload.decisions).filter((id) => !known.has(id));
+}
+
+// ─── HTML render (themeable: /plan-design-review owns the look) ───────────────
+
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+// Markdown-lite: enough to make decision-brief body_md readable without pulling
+// in a markdown dependency. Themed/upgraded in U2b/plan-design-review.
+function mdLite(s: string): string {
+  let h = escapeHtml(s);
+  h = h.replace(/`([^`]+)`/g, '<code>$1</code>');
+  h = h.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  h = h.replace(/\n/g, '<br>\n');
+  return h;
+}
+
+function jsonForScript(obj: unknown): string {
+  // Safe to embed in a <script> block: neutralize the closing-tag sequence.
+  return JSON.stringify(obj).replace(/</g, '\\u003c');
+}
+
+// renderHtml(spec) → a self-contained interactive page. ONE function so the
+// look can be re-themed later without touching protocol logic. The same page
+// works two ways: opened as a file:// it shows the copy-paste floor; served
+// over http (U2a) it enables fetch-POST submit + (U2b) SSE live-reload.
+function renderHtml(spec: Spec): string {
+  const sectionsHtml = spec.sections
+    .map((sec) => {
+      const cards = sec.cards
+        .map((card) => {
+          const status = card.status ?? 'open';
+          const def = card.default_decision ?? 'accept';
+          const radio = (value: Decision, label: string) =>
+            `<label><input type="radio" name="dec-${escapeHtml(card.id)}" value="${value}"${def === value ? ' checked' : ''}> ${label}</label>`;
+          return `      <article class="card" data-card-id="${escapeHtml(card.id)}" data-status="${status}">
+        <header>
+          <span class="badge badge-${status}">${status}</span>
+          <h3>${escapeHtml(card.title)}</h3>
+        </header>
+        <div class="body">${mdLite(card.body_md)}</div>
+        <div class="controls">
+          <div class="decision">${radio('accept', 'Accept')} ${radio('reject', 'Reject')} ${radio('edit', 'Edit')}</div>
+          <textarea class="edited" placeholder="Revised finding text…"${def === 'edit' ? '' : ' hidden'}></textarea>
+          <textarea class="notes" placeholder="Notes for Claude (free-form — drives the next revision)…"></textarea>
+        </div>
+      </article>`;
+        })
+        .join('\n');
+      return `    <section class="group">
+      <h2>${escapeHtml(sec.title)}</h2>
+${cards}
+    </section>`;
+    })
+    .join('\n');
+
+  const session = { session_id: spec.session_id, revision_id: spec.revision_id, source_hash: spec.source_hash };
+  const globalPrompt = spec.global_notes_prompt ?? 'Anything else for Claude? (restructure, merge findings, overall direction…)';
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${escapeHtml(spec.title)}</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body { font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, sans-serif; margin: 0; background: Canvas; color: CanvasText; }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 24px 20px 120px; }
+  header.top { position: sticky; top: 0; background: Canvas; padding: 16px 0; border-bottom: 1px solid color-mix(in srgb, CanvasText 18%, transparent); z-index: 5; }
+  header.top h1 { font-size: 20px; margin: 0 0 4px; }
+  .meta { font-size: 12px; opacity: 0.6; }
+  .group { margin-top: 28px; }
+  .group > h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; opacity: 0.65; border-bottom: 1px solid color-mix(in srgb, CanvasText 12%, transparent); padding-bottom: 6px; }
+  .card { border: 1px solid color-mix(in srgb, CanvasText 16%, transparent); border-radius: 10px; padding: 14px 16px; margin: 14px 0; }
+  .card[data-status="resolved"] { opacity: 0.5; }
+  .card header { display: flex; align-items: baseline; gap: 8px; }
+  .card h3 { font-size: 16px; margin: 0; }
+  .badge { font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; padding: 2px 6px; border-radius: 999px; border: 1px solid currentColor; opacity: 0.7; }
+  .badge-new { color: #2563eb; } .badge-resolved { color: #16a34a; } .badge-open { opacity: 0.4; }
+  .body { margin: 10px 0; white-space: normal; }
+  .body code { background: color-mix(in srgb, CanvasText 10%, transparent); padding: 1px 4px; border-radius: 4px; font-size: 0.9em; }
+  .controls { display: flex; flex-direction: column; gap: 8px; }
+  .decision { display: flex; gap: 16px; font-size: 14px; }
+  textarea { width: 100%; min-height: 54px; font: inherit; padding: 8px; border-radius: 8px; border: 1px solid color-mix(in srgb, CanvasText 22%, transparent); background: color-mix(in srgb, Canvas 92%, CanvasText); resize: vertical; }
+  .bar { position: fixed; left: 0; right: 0; bottom: 0; background: Canvas; border-top: 1px solid color-mix(in srgb, CanvasText 18%, transparent); padding: 12px 20px; display: flex; gap: 10px; align-items: center; justify-content: flex-end; flex-wrap: wrap; }
+  .bar .spacer { flex: 1; }
+  button { font: inherit; font-weight: 600; padding: 9px 16px; border-radius: 8px; border: 1px solid color-mix(in srgb, CanvasText 25%, transparent); background: color-mix(in srgb, Canvas 85%, CanvasText); color: CanvasText; cursor: pointer; }
+  button.primary { background: #2563eb; color: white; border-color: #2563eb; }
+  #banner { display: none; padding: 8px 12px; border-radius: 8px; background: color-mix(in srgb, #2563eb 18%, Canvas); font-size: 13px; }
+  #copy-fallback { margin-top: 20px; }
+  #payload-out { display: none; min-height: 160px; font-family: ui-monospace, monospace; font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <h1>${escapeHtml(spec.title)}</h1>
+    <div class="meta">${escapeHtml(spec.skill)} · revision ${escapeHtml(spec.revision_id)}</div>
+  </header>
+
+  <div id="banner"></div>
+
+${sectionsHtml}
+
+  <section class="group">
+    <h2>Overall</h2>
+    <textarea id="global-notes" placeholder="${escapeHtml(globalPrompt)}"></textarea>
+  </section>
+
+  <div id="copy-fallback">
+    <button id="copy-btn" type="button">Copy response</button>
+    <p class="meta">No server? Click “Copy response”, then paste the JSON into Claude Code.</p>
+    <textarea id="payload-out" readonly></textarea>
+  </div>
+</div>
+
+<div class="bar">
+  <span id="bar-status" class="meta"></span>
+  <span class="spacer"></span>
+  <div id="server-controls" hidden>
+    <button id="submit-btn" class="primary" type="button">Submit round</button>
+    <button id="finish-btn" type="button">Finish review</button>
+  </div>
+</div>
+
+<script>
+const SESSION = ${jsonForScript(session)};
+function buildPayload(action) {
+  const decisions = {};
+  document.querySelectorAll('article.card[data-card-id]').forEach((card) => {
+    const id = card.dataset.cardId;
+    const picked = card.querySelector('input[type=radio]:checked');
+    const decision = picked ? picked.value : 'accept';
+    const d = { decision };
+    if (decision === 'edit') {
+      const t = card.querySelector('textarea.edited');
+      if (t && t.value.trim()) d.edited_text = t.value;
+    }
+    const n = card.querySelector('textarea.notes');
+    if (n && n.value.trim()) d.notes = n.value;
+    decisions[id] = d;
+  });
+  const payload = Object.assign({}, SESSION, { action: action, decisions: decisions });
+  const gn = document.getElementById('global-notes');
+  if (gn && gn.value.trim()) payload.global_notes = gn.value;
+  return payload;
+}
+// Edit-textarea visibility follows the radio selection.
+document.querySelectorAll('article.card').forEach((card) => {
+  card.querySelectorAll('input[type=radio]').forEach((r) =>
+    r.addEventListener('change', () => {
+      const edit = card.querySelector('textarea.edited');
+      if (edit) edit.hidden = card.querySelector('input[type=radio]:checked').value !== 'edit';
+    })
+  );
+});
+function flash(msg) { const b = document.getElementById('banner'); b.textContent = msg; b.style.display = 'block'; }
+// Copy-paste floor — always available, the dead-server fallback.
+document.getElementById('copy-btn').addEventListener('click', () => {
+  const json = JSON.stringify(buildPayload('submit'), null, 2);
+  const out = document.getElementById('payload-out');
+  out.value = json; out.style.display = 'block';
+  if (navigator.clipboard) {
+    navigator.clipboard.writeText(json).then(() => flash('Copied — paste into Claude Code')).catch(() => flash('Select the box below and copy manually'));
+  } else { flash('Select the box below and copy manually'); }
+});
+// Server path (U2a) — only when served over http(s). file:// keeps copy-paste only.
+const served = location.protocol === 'http:' || location.protocol === 'https:';
+if (served) {
+  document.getElementById('server-controls').hidden = false;
+  async function submit(action) {
+    try {
+      const res = await fetch('/submit', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(buildPayload(action)) });
+      const data = await res.json();
+      if (data.status === 'accepted') flash(action === 'finish' ? 'Review finished — return to Claude Code.' : 'Submitted — Claude is revising…');
+      else flash('Server: ' + (data.status || 'rejected') + (data.unknown_card_ids ? (' ' + JSON.stringify(data.unknown_card_ids)) : ''));
+    } catch (e) {
+      flash('Submit failed — use “Copy response” instead.');
+      document.getElementById('copy-fallback').scrollIntoView();
+    }
+  }
+  document.getElementById('submit-btn').addEventListener('click', () => submit('submit'));
+  document.getElementById('finish-btn').addEventListener('click', () => submit('finish'));
+}
+</script>
+</body>
+</html>
+`;
+}
+
+// ─── Path / environment helpers ──────────────────────────────────────────────
+
+function ensureDir(path: string, mode: number): void {
+  mkdirSync(path, { recursive: true, mode });
+  try { chmodSync(path, mode); } catch { /* best-effort */ }
+}
+
+function sh(cmd: string, args: string[]): string {
+  const r = spawnSync(cmd, args, { encoding: 'utf8' });
+  return (r.stdout || '').trim();
+}
+
+function getSlug(): string {
+  const slugBin = join(SMRITI_BIN, 'smriti-slug');
+  if (existsSync(slugBin)) {
+    const m = sh(slugBin, []).match(/SLUG=([^\n;]+)/);
+    if (m) return m[1].replace(/^["']|["']$/g, '').trim() || 'unknown';
+  }
+  return 'unknown';
+}
+
+function getBranchSlug(): string {
+  const b = sh('git', ['branch', '--show-current']) || 'unknown';
+  return b.replace(/\//g, '--');
+}
+
+function viewsDir(): string {
+  const dir = join(SMRITI_HOME, 'projects', getSlug(), 'views');
+  ensureDir(dir, 0o700);
+  return dir;
+}
+
+function openInBrowser(path: string): void {
+  const opener = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open';
+  spawnSync(opener, [path], { stdio: 'ignore' });
+}
+
+function err(msg: string): never {
+  process.stderr.write(`smriti-html: ${msg}\n`);
+  process.exit(1);
+}
+
+function readJsonFile(path: string): unknown {
+  let raw: string;
+  try { raw = readFileSync(path, 'utf8'); } catch { err(`cannot read file: ${path}`); }
+  try { return JSON.parse(raw); } catch (e) { err(`invalid JSON in ${path}: ${String((e as Error).message)}`); }
+}
+
+function usage(): never {
+  process.stderr.write(`smriti html v${TOOL_VERSION} (schema v${SCHEMA_VERSION})
+
+Subcommands:
+  render <spec.json> [--out <file>] [--no-open]
+                        Render a spec to a self-contained interactive HTML file,
+                        print its path, and open it in the browser.
+  check-spec <spec.json>
+                        Validate a spec against the canonical schema (exit 3 if invalid).
+  check-payload <payload.json> --spec <spec.json>
+                        Validate a payload + reconcile card ids (D7); prints
+                        {ok, unknown_card_ids}; exit 3 if invalid/unknown ids.
+  help                  Show this help.
+
+Exit codes: 0=ok 1=usage 2=runtime 3=invalid-spec-or-payload
+`);
+  process.exit(1);
+}
+
+// ─── Subcommands ─────────────────────────────────────────────────────────────
+
+function cmdRender(args: string[]): number {
+  let specPath: string | null = null;
+  let out: string | null = null;
+  let open = true;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '--out') out = args[++i] ?? null;
+    else if (a === '--no-open') open = false;
+    else if (a.startsWith('--')) err(`render: unknown flag: ${a}`);
+    else if (!specPath) specPath = a;
+    else err(`render: unexpected argument: ${a}`);
+  }
+  if (!specPath) err('render: <spec.json> required');
+  if (out === null && args.includes('--out')) err('render: --out requires a path');
+
+  let spec: Spec;
+  try { spec = validateSpec(readJsonFile(specPath)); }
+  catch (e) { process.stderr.write(`smriti-html: ${String((e as Error).message)}\n`); return 3; }
+
+  const safeSkill = spec.skill.replace(/[^a-z0-9-]/gi, '-');
+  const outPath = out ?? join(viewsDir(), `${getBranchSlug()}-${safeSkill}-${spec.revision_id}.html`);
+  ensureDir(dirname(outPath), 0o700);
+  writeFileSync(outPath, renderHtml(spec));
+  process.stdout.write(outPath + '\n');
+  if (open) openInBrowser(outPath);
+  return 0;
+}
+
+function cmdCheckSpec(args: string[]): number {
+  const specPath = args[0];
+  if (!specPath || specPath.startsWith('--')) err('check-spec: <spec.json> required');
+  try { validateSpec(readJsonFile(specPath)); }
+  catch (e) { process.stderr.write(`smriti-html: invalid spec: ${String((e as Error).message)}\n`); return 3; }
+  process.stdout.write('ok\n');
+  return 0;
+}
+
+function cmdCheckPayload(args: string[]): number {
+  let payloadPath: string | null = null;
+  let specPath: string | null = null;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '--spec') specPath = args[++i] ?? null;
+    else if (a.startsWith('--')) err(`check-payload: unknown flag: ${a}`);
+    else if (!payloadPath) payloadPath = a;
+    else err(`check-payload: unexpected argument: ${a}`);
+  }
+  if (!payloadPath) err('check-payload: <payload.json> required');
+  if (!specPath) err('check-payload: --spec <spec.json> required');
+
+  let spec: Spec, payload: Payload;
+  try { spec = validateSpec(readJsonFile(specPath)); }
+  catch (e) { process.stderr.write(`smriti-html: invalid spec: ${String((e as Error).message)}\n`); return 3; }
+  try { payload = validatePayload(readJsonFile(payloadPath)); }
+  catch (e) { process.stderr.write(`smriti-html: invalid payload: ${String((e as Error).message)}\n`); return 3; }
+
+  const unknown = unknownCardIds(payload, spec);
+  const ok = unknown.length === 0;
+  process.stdout.write(JSON.stringify({ ok, unknown_card_ids: unknown }) + '\n');
+  return ok ? 0 : 3;
+}
+
+// ─── Main ────────────────────────────────────────────────────────────────────
+
+function main(): void {
+  const argv = process.argv.slice(2);
+  const sub = argv[0];
+  const rest = argv.slice(1);
+  if (!sub || sub === 'help' || sub === '--help' || sub === '-h') usage();
+
+  let code: number;
+  switch (sub) {
+    case 'render':        code = cmdRender(rest); break;
+    case 'check-spec':    code = cmdCheckSpec(rest); break;
+    case 'check-payload': code = cmdCheckPayload(rest); break;
+    default:              err(`unknown subcommand: ${sub}`);
+  }
+  process.exit(code);
+}
+
+main();

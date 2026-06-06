@@ -14,7 +14,7 @@ while [ -L "$_self" ]; do
 done
 SMRITI_BIN="$(cd "$(dirname "$_self")" && pwd -P)"
 
-USER_COMMANDS=(browse config principles-install project)
+USER_COMMANDS=(browse config html principles-install project)
 
 show_help() {
   cat <<EOF
@@ -25,6 +25,7 @@ Usage: smriti <command> [args...]
 Commands:
   browse              Browser audit CLI (install, login, audit, update)
   config              Global config get/set/unset/list
+  html                Interactive HTML spec renderer + round-trip (render, serve, await, stop)
   principles-install  Install coding principles into a project's CLAUDE.md
   project             Manage tracked projects (list, current, forget, new, rename)
 
