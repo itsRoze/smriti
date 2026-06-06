@@ -453,13 +453,17 @@ function sh(cmd: string, args: string[]): string {
   return (r.stdout || '').trim();
 }
 
+let _slug: string | null = null;
 function getSlug(): string {
+  if (_slug !== null) return _slug; // memoized — getSlug shells out, called per path build
   const slugBin = join(SMRITI_BIN, 'smriti-slug');
+  let slug = 'unknown';
   if (existsSync(slugBin)) {
     const m = sh(slugBin, []).match(/SLUG=([^\n;]+)/);
-    if (m) return m[1].replace(/^["']|["']$/g, '').trim() || 'unknown';
+    if (m) slug = m[1].replace(/^["']|["']$/g, '').trim() || 'unknown';
   }
-  return 'unknown';
+  _slug = slug;
+  return slug;
 }
 
 function getBranchSlug(): string {
@@ -467,8 +471,14 @@ function getBranchSlug(): string {
   return b.replace(/\//g, '--');
 }
 
+// Single source for the project's render dir; serverStateDir + sweepOrphans
+// derive from it so the path shape lives in one place.
+function projectViewsDir(): string {
+  return join(SMRITI_HOME, 'projects', getSlug(), 'views');
+}
+
 function viewsDir(): string {
-  const dir = join(SMRITI_HOME, 'projects', getSlug(), 'views');
+  const dir = projectViewsDir();
   ensureDir(dir, 0o700);
   return dir;
 }
@@ -626,7 +636,7 @@ function rand12(): string {
 }
 
 function serverStateDir(sessionId: string): string {
-  return join(SMRITI_HOME, 'projects', getSlug(), 'views', '.server', sessionId);
+  return join(projectViewsDir(), '.server', sessionId);
 }
 
 function readPortfile(sessionId: string): { port: number; nonce: string } | null {
@@ -645,7 +655,7 @@ function pidAlive(pid: number): boolean {
 // D2 — sweep statedirs whose server process is gone (stale pidfile). Belt for
 // the case where a previous run died before `stop` and before idle-exit fired.
 function sweepOrphans(): void {
-  const base = join(SMRITI_HOME, 'projects', getSlug(), 'views', '.server');
+  const base = join(projectViewsDir(), '.server');
   if (!existsSync(base)) return;
   for (const entry of readdirSync(base)) {
     const dir = join(base, entry);
