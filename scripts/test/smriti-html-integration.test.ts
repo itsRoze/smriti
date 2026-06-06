@@ -92,6 +92,20 @@ test('round-trip: serve → submit → await returns the payload → stop', asyn
   expect(stopped.code).toBe(0);
 }, 15000);
 
+test('served page embeds the server session_id, so a real browser submit is accepted', async () => {
+  // The spec on disk carries a placeholder session_id; serve must stamp its own.
+  writeFileSync(SPEC, JSON.stringify({ ...JSON.parse(specJson('rev-1')), session_id: 'placeholder-not-real' }));
+  const { session_id, port } = await serve();
+  expect(session_id).not.toBe('placeholder-not-real');
+
+  const html = await (await fetch(`http://127.0.0.1:${port}/`)).text();
+  const embedded = html.match(/"session_id":"(sess-[a-f0-9]+)"/)?.[1];
+  expect(embedded).toBe(session_id); // page POSTs the id the server actually checks
+
+  const res = await submit(port, decisionPayload(embedded!, 'rev-1'));
+  expect((await res.json()).status).toBe('accepted');
+}, 15000);
+
 test('stale revision_id is rejected and await does not return it', async () => {
   const { session_id, port } = await serve();
 

@@ -745,6 +745,10 @@ async function cmdServer(args: string[]): Promise<number> {
     sse: new Set<(frame: string) => void>(),
     last: Date.now(),
   };
+  // The server is the authority for session_id: stamp it into the served spec so
+  // the page embeds (and POSTs back) the id this server actually checks. The
+  // skill's spec session_id is a placeholder until serve assigns the real one.
+  state.spec.session_id = sessionId;
   state.current = state.spec.revision_id;
   const touch = () => { state.last = Date.now(); };
   const authed = (req: Request) => req.headers.get('x-smriti-nonce') === nonce;
@@ -800,6 +804,7 @@ async function cmdServer(args: string[]): Promise<number> {
         let next: Spec;
         try { next = validateSpec(await req.json()); }
         catch (e) { return json({ status: 'invalid', message: String((e as Error).message) }, 400); }
+        next.session_id = sessionId; // server stays the session_id authority across re-renders
         state.spec = next;
         state.current = next.revision_id;
         state.pending = null;
