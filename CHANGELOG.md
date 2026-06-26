@@ -19,20 +19,20 @@
 
 ## 0.14.0 — 2026-06-25
 
-- feat(html): lock the action bar after submit with a 'sent to Claude' state (ELI-44)
-- fix(html): action buttons → Accept / Request changes (ELI-44)
-- fix(html): one contextual box per card + clearer action labels (ELI-44)
-- style(html): editorial render — frc-devbox-inspired aesthetic (ELI-44)
-- fix(html): await survives long waits (Bun idleTimeout would kill the long-poll) (ELI-44)
-- fix(html): eng-review — waiter drain, SSE client leak, pidfile-first ordering (ELI-44)
-- docs(readme): U5 — document the interactive HTML specs flow (ELI-44)
-- feat(plan-eng-review): U4 — HTML triage loop as the default presentation (ELI-44)
-- feat(html): U3 — html-render resolver (invocation protocol skills follow) (ELI-44)
-- fix(html): server is the authority for session_id (ELI-44)
-- refactor(html): memoize slug + single projectViewsDir helper (ELI-44)
-- feat(html): U2b — live-UX (SSE live-reload + dirty-guard + keep-alive) (ELI-44)
-- feat(html): U2a — sessioned localhost transport (serve/await/render/stop) (ELI-44)
-- feat(html): U1 — smriti-html renderer + canonical schema + finding-identity contract (ELI-44)
+- feat(html): lock the action bar after submit with a 'sent to Claude' state
+- fix(html): action buttons → Accept / Request changes
+- fix(html): one contextual box per card + clearer action labels
+- style(html): editorial render — frc-devbox-inspired aesthetic
+- fix(html): await survives long waits (Bun idleTimeout would kill the long-poll)
+- fix(html): eng-review — waiter drain, SSE client leak, pidfile-first ordering
+- docs(readme): U5 — document the interactive HTML specs flow
+- feat(plan-eng-review): U4 — HTML triage loop as the default presentation
+- feat(html): U3 — html-render resolver (invocation protocol skills follow)
+- fix(html): server is the authority for session_id
+- refactor(html): memoize slug + single projectViewsDir helper
+- feat(html): U2b — live-UX (SSE live-reload + dirty-guard + keep-alive)
+- feat(html): U2a — sessioned localhost transport (serve/await/render/stop)
+- feat(html): U1 — smriti-html renderer + canonical schema + finding-identity contract
 
 
 ## 0.13.0 — 2026-06-03
@@ -45,7 +45,7 @@
 
 ## 0.12.0 — 2026-06-02
 
-- feat(eng-review): multi-persona enrichment — fan out parallel per-principle persona reviewers for diffs above persona_threshold; merge with dedup + cross-persona confidence-gating (ELI-40)
+- feat(eng-review): multi-persona enrichment — fan out parallel per-principle persona reviewers for diffs above persona_threshold; merge with dedup + cross-persona confidence-gating
 - feat(config): add persona_threshold config key (default 400) — /eng-review single-agent vs parallel-persona dispatch cutoff, derived from this repo's PR-insertion distribution
 - feat(eng-review): new "Unsubstantiated thresholds / defaults" Pass-2 checklist category — flags judgment-encoding numbers (thresholds, limits, defaults) with no cited basis
 
@@ -53,17 +53,17 @@
 ## 0.11.0 — 2026-05-24
 
 - docs(README): add /begin to pipeline diagram and skill table
-- feat(begin): /begin skill — triage entry point for smriti pipeline (ELI-47)
+- feat(begin): /begin skill — triage entry point for smriti pipeline
 
 
 ## 0.10.1 — 2026-05-22
 
-- feat(brainstorm): read debug docs as cross-skill artifact bridge (ELI-42)
+- feat(brainstorm): read debug docs as cross-skill artifact bridge
 
 
 ## 0.10.0 — 2026-05-20
 
-- feat(slug-cache): store SOURCE_PATH alongside SLUG in cache files; lazy-upgrade legacy single-line format (ELI-46)
+- feat(slug-cache): store SOURCE_PATH alongside SLUG in cache files; lazy-upgrade legacy single-line format
 - feat(project): add PATH column to 'smriti project list' showing source repo location
 - feat(project): add 'smriti project rename <old> <new>' subcommand for renaming tracked projects
 - feat(slug): detect when path-* slug has a remote available; print migration notice to stderr
@@ -71,19 +71,18 @@
 
 ## 0.9.1 — 2026-05-20
 
-- fix(approvals): fail loud on malformed state file and broken smriti-slug (ELI-41)
+- fix(approvals): fail loud on malformed state file and broken smriti-slug
 
 
 ## 0.9.0 — 2026-05-20
 
-- feat(cli): umbrella dispatcher replaces per-helper PATH symlinks (ELI-45)
+- feat(cli): umbrella dispatcher replaces per-helper PATH symlinks
 
 
 ## 0.8.0 — 2026-05-19
 
 ### Added
-- `/clean` skill — post-merge tidy: checkout default branch, pull, delete the merged feature branch, prune. Composes with the smriti pipeline (`/ship` → GitHub merge → `/clean` → next ticket). Issues a decision-brief AskUserQuestion before any deletion; lists candidate branches inline (no blind approval). ([ELI-30](https://linear.app/itselijah/issue/ELI-30))
-- `bin/smriti-clean` — non-interactive script the skill wraps. Modes: `--plan` (emits one JSON action object: `{action: single|batch|noop|refuse, detection: gh|git-fallback, current_branch, candidates, refusal_reason}`), `--list-merged` (JSONL projection of the same internal candidate model), `--branch <name>` (single-branch tidy), `--all` (batch tidy). Modifiers: `--force` (override branch-local safety guards — unmerged, no-upstream, ahead-of-upstream; does NOT override global preconditions), `--default-branch <name>` (internal/test-only). Stable exit-code contract: `0` success, `2` dirty tree, `3` denylist, `4` unmerged, `5` branch-local soft refusal, `6` detached HEAD / unborn, `8` state-changed mismatch between `--plan` and execute, `64` usage. Revalidates on execute so a branch switch / new commit between `--plan` and `--branch` fails closed instead of deleting the wrong thing.
+- `/clean` skill — post-merge tidy: checkout default branch, pull, delete the merged feature branch, prune. Composes with the smriti pipeline (`/ship` → GitHub merge → `/clean` → next ticket). Issues a decision-brief AskUserQuestion before any deletion; lists candidate branches inline (no blind approval).- `bin/smriti-clean` — non-interactive script the skill wraps. Modes: `--plan` (emits one JSON action object: `{action: single|batch|noop|refuse, detection: gh|git-fallback, current_branch, candidates, refusal_reason}`), `--list-merged` (JSONL projection of the same internal candidate model), `--branch <name>` (single-branch tidy), `--all` (batch tidy). Modifiers: `--force` (override branch-local safety guards — unmerged, no-upstream, ahead-of-upstream; does NOT override global preconditions), `--default-branch <name>` (internal/test-only). Stable exit-code contract: `0` success, `2` dirty tree, `3` denylist, `4` unmerged, `5` branch-local soft refusal, `6` detached HEAD / unborn, `8` state-changed mismatch between `--plan` and execute, `64` usage. Revalidates on execute so a branch switch / new commit between `--plan` and `--branch` fails closed instead of deleting the wrong thing.
 - `bin/smriti-default-branch` — single source of truth for default-branch detection. Detection order: `origin/HEAD` → existence of `main` / `master` / `develop` → `init.defaultBranch` → literal `main`. Replaces the inline bash that previously lived only in `lib/resolvers/base-branch-detect.md`; both skill templates (via the resolver) and `bin/` scripts now share one path. Tier 1d — one obvious pattern per task.
 - `scripts/test/smriti-clean.bats` — 34 bats cases. Every `--plan` action dispatch, every exit-code path (including state-changed exit 8 and the squash-merge production happy-path that `git branch -d` reaches via "merged into upstream tip" rather than "merged into HEAD"), `gh` detection (mocked) + `git-fallback`, `--all` skip-with-note for branch-local refusals + hard-stop for global preconditions. Plus a regression assertion for the `Next: /clean` line in the rendered `ship/SKILL.md`.
 - `scripts/test/base-branch.bats` — 6 cases covering the four detection paths plus the outside-a-git-repo fallback.
@@ -110,8 +109,7 @@ Today the post-merge tidy is four lines of git the user types after every merged
 ## 0.7.0 — 2026-05-18
 
 ### Added
-- `bin/smriti-project` — CLI for managing the *set* of smriti-tracked projects under `~/.smriti/projects/`. Three subcommands in v1: `list` (slug, last-used, learnings count, designs count per project; excludes `_archive/`), `current` (prints the same slug as the preamble's `SLUG`, wrapping `smriti-slug --print`), and `forget <slug> [--yes]` (destructive — deletes both the project dir AND every slug-cache file pointing at it, so the next `cd` into the repo doesn't resurrect the same slug; interactive confirm unless `--yes`; refuses without `--yes` in non-interactive shells). Prints a reminder after `forget` that in-repo `PROJECT.md` / `DESIGN.md` are git-tracked and untouched. ([ELI-19](https://linear.app/itselijah/issue/ELI-19))
-- `scripts/test/project.bats` — 12-scenario suite: empty-state listing, design/learning counts, `_archive` exclusion, slug-cache reverse-lookup deletes every matching cache file while leaving unrelated entries intact, path-traversal guard, non-interactive refuses without `--yes`, unknown slug exits non-zero, usage/help exit codes. Invokes the CLI through a fake PATH symlink (per ELI-37) so sibling-resolution of `smriti-slug` from `current` is exercised in the production install shape.
+- `bin/smriti-project` — CLI for managing the *set* of smriti-tracked projects under `~/.smriti/projects/`. Three subcommands in v1: `list` (slug, last-used, learnings count, designs count per project; excludes `_archive/`), `current` (prints the same slug as the preamble's `SLUG`, wrapping `smriti-slug --print`), and `forget <slug> [--yes]` (destructive — deletes both the project dir AND every slug-cache file pointing at it, so the next `cd` into the repo doesn't resurrect the same slug; interactive confirm unless `--yes`; refuses without `--yes` in non-interactive shells). Prints a reminder after `forget` that in-repo `PROJECT.md` / `DESIGN.md` are git-tracked and untouched.- `scripts/test/project.bats` — 12-scenario suite: empty-state listing, design/learning counts, `_archive` exclusion, slug-cache reverse-lookup deletes every matching cache file while leaving unrelated entries intact, path-traversal guard, non-interactive refuses without `--yes`, unknown slug exits non-zero, usage/help exit codes. Invokes the CLI through a fake PATH symlink so sibling-resolution of `smriti-slug` from `current` is exercised in the production install shape.
 
 ### Security
 - `bin/smriti-project` rejects slugs containing `/` or starting with `.` before `rm -rf`. Without this guard, `forget ../slug-cache --yes` would resolve to `~/.smriti/slug-cache` (the cache dir exists, so the `[ -d ]` check would pass) and nuke every repo's path→slug mapping. Surfaced during /eng-review on this PR.
@@ -122,7 +120,7 @@ Today the post-merge tidy is four lines of git the user types after every merged
 ## 0.6.1 — 2026-05-18
 
 - docs: add smriti-changelog-insert to README bin enumeration
-- fix(ship): smriti-changelog-insert helper to bypass BSD awk multi-line -v (ELI-43)
+- fix(ship): smriti-changelog-insert helper to bypass BSD awk multi-line -v
 
 
 ## 0.6.0 — 2026-05-14
@@ -135,21 +133,20 @@ Today the post-merge tidy is four lines of git the user types after every merged
 ## 0.5.0 — 2026-05-07
 
 ### Added
-- `eng-review/checklist.md` Pass 2 — new "CLI binary symlink coverage" item flags new or modified `bin/` scripts that derive their install location from `$0` / `$BASH_SOURCE` / `dirname` but lack a symlink-invocation test. Production invocations through `~/.local/bin/` are symlinks; absolute-path tests miss path-resolution bugs (the ELI-36 class). ([ELI-37](https://linear.app/itselijah/issue/ELI-37))
-- `ship/SKILL.md.tmpl` Step 5b — smoke-test new CLIs via the PATH symlink before opening the PR. Sits between Step 5 (tests) and Step 6 (coverage audit); detects changed `bin/smriti-*` scripts and exercises each through the production install path, sandboxing destructive CLIs via `mktemp -d`. Calls out explicitly that `--help` alone is insufficient — early-exit help short-circuits before path resolution, exactly the gap that let ELI-36 ship.
+- `eng-review/checklist.md` Pass 2 — new "CLI binary symlink coverage" item flags new or modified `bin/` scripts that derive their install location from `$0` / `$BASH_SOURCE` / `dirname` but lack a symlink-invocation test. Production invocations through `~/.local/bin/` are symlinks; absolute-path tests miss path-resolution bugs (this class of bug).
+- `ship/SKILL.md.tmpl` Step 5b — smoke-test new CLIs via the PATH symlink before opening the PR. Sits between Step 5 (tests) and Step 6 (coverage audit); detects changed `bin/smriti-*` scripts and exercises each through the production install path, sandboxing destructive CLIs via `mktemp -d`. Calls out explicitly that `--help` alone is insufficient — early-exit help short-circuits before path resolution, exactly the gap that let this bug class ship.
 
 ### Changed
 - `ship/SKILL.md.tmpl` intro — pre-existing "12 steps" undercount corrected to "13 steps (plus sub-step 5b)" to match the actual numbered steps.
 
 ### Why
 
-ELI-36 shipped with green tests because the suite invoked the binary by absolute repo path while production invokes via `~/.local/bin/` symlink — `$0` differs between the two. Filing a permanent checklist item + smoke step is the durable fix for that bug class; "remember to test it manually" is not.
+This bug shipped with green tests because the suite invoked the binary by absolute repo path while production invokes via `~/.local/bin/` symlink — `$0` differs between the two. Filing a permanent checklist item + smoke step is the durable fix for that bug class; "remember to test it manually" is not.
 
 ## 0.4.1 — 2026-05-07
 
 ### Fixed
-- `bin/smriti-principles-install` resolved its install path from `$0` directly, but `$0` is the symlink path when invoked via PATH (`~/.local/bin/smriti-principles-install` → repo's `bin/`). `pwd -P` resolves the *directory's* symlinks, never the script's own — so `smriti_root` derived from the symlink's parent (`~/.local`) instead of the actual repo. Result: every project that ran `smriti-principles-install` got an `@`-line pointing at `~/.local/lib/resolvers/principles.md` (a non-existent path), Claude Code silently failed to load the principles, and the preamble's `HAS_PRINCIPLES=yes` check passed (it only verified marker + adjacent `@`-line *shape*, not that the referenced file existed) — so no nudge fired either. ([ELI-36](https://linear.app/itselijah/issue/ELI-36))
-- Fix: dereference `$0` via the existing `resolve_symlink_one_level` helper before deriving `bin_dir`. One-hop resolution is sufficient for the documented install shape (PATH symlink → repo file). Multi-hop is acknowledged as out of scope in the helper's comment.
+- `bin/smriti-principles-install` resolved its install path from `$0` directly, but `$0` is the symlink path when invoked via PATH (`~/.local/bin/smriti-principles-install` → repo's `bin/`). `pwd -P` resolves the *directory's* symlinks, never the script's own — so `smriti_root` derived from the symlink's parent (`~/.local`) instead of the actual repo. Result: every project that ran `smriti-principles-install` got an `@`-line pointing at `~/.local/lib/resolvers/principles.md` (a non-existent path), Claude Code silently failed to load the principles, and the preamble's `HAS_PRINCIPLES=yes` check passed (it only verified marker + adjacent `@`-line *shape*, not that the referenced file existed) — so no nudge fired either.- Fix: dereference `$0` via the existing `resolve_symlink_one_level` helper before deriving `bin_dir`. One-hop resolution is sufficient for the documented install shape (PATH symlink → repo file). Multi-hop is acknowledged as out of scope in the helper's comment.
 - **Migration:** users with existing installs re-run `smriti-principles-install` once per affected repo. The CLI's marker-update path detects the smriti-shaped `@`-line at the wrong path and replaces it. Idempotent; preserves user content.
 
 ### Added
@@ -157,13 +154,12 @@ ELI-36 shipped with green tests because the suite invoked the binary by absolute
 
 ### Process
 - `.gitignore` adds `/CLAUDE.md` (anchored to repo root) so smriti's own dev clone — where the CLI resolves the `@`-line to a machine-specific path like `~/dev/smriti/lib/resolvers/principles.md` — doesn't accidentally commit a non-portable CLAUDE.md. Anchored pattern prevents accidentally ignoring fixture or sub-dir CLAUDE.md files.
-- Filed [ELI-37](https://linear.app/itselijah/issue/ELI-37): adds a Pass-2 checklist item to `eng-review/checklist.md` ("CLI binary symlink coverage") and a `/ship` smoke step that invokes new `bin/*` scripts via PATH symlink before opening the PR. Permanent guardrail for the class of bug ELI-36 represents.
+- Added a Pass-2 checklist item to `eng-review/checklist.md` ("CLI binary symlink coverage") and a `/ship` smoke step that invokes new `bin/*` scripts via PATH symlink before opening the PR. Permanent guardrail for the class of path-resolution bug where tests pass but the installed CLI breaks.
 
 ## 0.4.0 — 2026-05-07
 
 ### Added
-- `lib/resolvers/principles.md` — single-source-of-truth coding-principles file shared across every project that opts in. Tier 1 (hard gates) operationalizes "optimize for AI" as four behaviors: searchability, locality, explicitness, consistency. Tier 2 captures user preferences (small functions, descriptive names, comments-for-WHY, facade-only-on-second-consumer, etc.). Tier 2b operationalizes "leave the garden better" as a review-effort budget. Tier 3 is a narrative tie-breaker. Smell appendix names rigidity / fragility / immobility / opacity for cite-ability — diagnoses, not rules. Conflict ladder: lower-numbered tier wins. ([ELI-33](https://linear.app/itselijah/issue/ELI-33))
-- `bin/smriti-principles-install` — idempotent CLI that adds (or updates) a sentinel-marker block in the project's `CLAUDE.md`:
+- `lib/resolvers/principles.md` — single-source-of-truth coding-principles file shared across every project that opts in. Tier 1 (hard gates) operationalizes "optimize for AI" as four behaviors: searchability, locality, explicitness, consistency. Tier 2 captures user preferences (small functions, descriptive names, comments-for-WHY, facade-only-on-second-consumer, etc.). Tier 2b operationalizes "leave the garden better" as a review-effort budget. Tier 3 is a narrative tie-breaker. Smell appendix names rigidity / fragility / immobility / opacity for cite-ability — diagnoses, not rules. Conflict ladder: lower-numbered tier wins.- `bin/smriti-principles-install` — idempotent CLI that adds (or updates) a sentinel-marker block in the project's `CLAUDE.md`:
   ```
   # smriti:principles
   @~/.claude/skills/smriti/lib/resolvers/principles.md
@@ -183,7 +179,7 @@ Editing `lib/resolvers/principles.md` in this repo propagates to every project t
 
 ### Follow-up
 
-- v2 (structured + `smriti-principles` CLI with cite-by-ID and schema validation) tracked as [ELI-32](https://linear.app/itselijah/issue/ELI-32).
+- v2 (structured + `smriti-principles` CLI with cite-by-ID and schema validation) tracked as a follow-up.
 
 ## 0.3.0 — 2026-05-02
 
@@ -209,8 +205,7 @@ Editing `lib/resolvers/principles.md` in this repo propagates to every project t
 ## 0.2.0 — 2026-05-01
 
 ### Fixed
-- `/ship` Step 9 now correctly detects when `VERSION` and `package.json` drift apart on a bumped branch. Previously, a single-file diff against base classified as "already bumped" and silently left the other file stale. New 4-state classifier (`FRESH` / `ALREADY_BUMPED` / `DRIFT_STALE_PKG` / `DRIFT_UNEXPECTED`) repairs the stale file without re-bumping. ([ELI-22](https://linear.app/itselijah/issue/ELI-22))
-- `bin/smriti-approvals` now sanitizes branch names containing `/` (e.g., `elijah/eli-22-...`) when building state-file paths. Existing slash-named state files are migrated on first run.
+- `/ship` Step 9 now correctly detects when `VERSION` and `package.json` drift apart on a bumped branch. Previously, a single-file diff against base classified as "already bumped" and silently left the other file stale. New 4-state classifier (`FRESH` / `ALREADY_BUMPED` / `DRIFT_STALE_PKG` / `DRIFT_UNEXPECTED`) repairs the stale file without re-bumping.- `bin/smriti-approvals` now sanitizes branch names containing `/` (e.g., `feature/foo-...`) when building state-file paths. Existing slash-named state files are migrated on first run.
 - Five `SKILL.md.tmpl` files (`office-hours`, `plan-eng-review`, `plan-design-review`, `design-consultation`, `ship`) had the same latent slash-in-path bug — fixed via a new `BRANCH_SLUG` var in the shared preamble.
 
 ### Added

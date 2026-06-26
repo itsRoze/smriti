@@ -177,7 +177,7 @@ JSON
   [[ "$output" == *"already stopped"* ]]
 }
 
-# ─── ELI-37: production invocation path via the PATH dispatcher ───────────────
+# ─── production invocation path via the PATH dispatcher ───────────────────────
 
 @test "dispatcher: 'smriti html' routes to bin/smriti-html (production path)" {
   FAKE_BIN="$WORK/fake-bin"

@@ -8,7 +8,7 @@ setup() {
   cd "$WORK"
 
   # PATH-symlink invocation: exercise the production install shape, not the
-  # in-repo absolute path. Same lesson as ELI-37 — early-exit help or argv[0]
+  # in-repo absolute path. The lesson — early-exit help or argv[0]
   # behavior can differ between $0=absolute vs $0=symlink-in-PATH.
   FAKE_BIN="$WORK/fake-bin"
   mkdir -p "$FAKE_BIN"

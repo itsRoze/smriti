@@ -9,7 +9,7 @@ setup() {
 
   # Production-shape invocation: symlink the script into a fake PATH dir so
   # the test exercises the same install path /ship uses when the user has the
-  # script on $PATH. Same lesson as ELI-37.
+  # script on $PATH — exercising the production invocation path, not the in-repo absolute path.
   FAKE_BIN="$WORK/fake-bin"
   mkdir -p "$FAKE_BIN"
   ln -s "$ROOT/bin/smriti-changelog-insert" "$FAKE_BIN/smriti-changelog-insert"

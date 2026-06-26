@@ -6,7 +6,7 @@
 # glob: a silent drift between the writers' filename shape and the readers'
 # glob (readers expected a leading `*-` segment the writers never produced)
 # broke EVERY doc lookup on every branch once — approvals never spliced and
-# the review skills couldn't find their input (ELI-39). Centralizing the
+# the review skills couldn't find their input. Centralizing the
 # contract here kills that bug class.
 #
 # Filename contract — writers (/brainstorm, /plan, /debug) all follow it:

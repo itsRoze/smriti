@@ -52,7 +52,7 @@ Parse `<bug_description>` to a clear problem statement:
 | Input shape | What to do |
 |-------------|------------|
 | GitHub issue ref (`#123`, `org/repo#123`, github URL) | `gh issue view <num> --json title,body,comments,labels` — read **every** comment, especially the latest |
-| Linear issue ref (Linear URL or `ELI-NNN`) | Use the Linear MCP `get_issue` tool. If unavailable, ask the user to paste the issue body + comment thread |
+| Linear issue ref (Linear URL or issue ID like `ABC-123`) | Use the Linear MCP `get_issue` tool. If unavailable, ask the user to paste the issue body + comment thread |
 | Stack trace / error message / free-form description | The input is the problem statement |
 
 Read the *full* conversation when fetched — comments often contain narrower repro steps, prior failed attempts, and revised root-cause suspicions. Treating the opening post as the whole picture sends investigation in the wrong direction.

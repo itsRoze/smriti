@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# Tests for the severity-gated decision cadence (ELI-style delegate posture):
+# Tests for the severity-gated decision cadence (delegate posture):
 #   1-3. Contract lint on lib/resolvers/ask-user-format.md — the gate's source
 #        of truth that 7 skills inherit via {{ASK_USER_FORMAT}}.
 #   4.   Drift guard: the two review skills that DON'T consume the resolver

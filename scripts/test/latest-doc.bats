@@ -4,7 +4,7 @@
 # filename construction the writer skills use (<branch-slug>-<type>-<ts>.md,
 # branch-slug = branch with `/` → `--`), then asserts the helper finds it.
 # A glob-only test would re-green through writer/reader drift — the exact bug
-# (ELI-39) that silently broke every lookup. The round-trip catches drift.
+# that silently broke every lookup. The round-trip catches drift.
 #
 # Run via: bun run test (which shells out to scripts/run-tests.sh)
 

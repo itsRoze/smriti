@@ -4,7 +4,7 @@
 #
 # Test isolation: every test gets its own mktemp dir + git init. The script is
 # invoked through a PATH-symlink (FAKE_BIN) so we exercise the production shape,
-# not the in-repo absolute path — same lesson as ELI-37.
+# not the in-repo absolute path — the production invocation path.
 #
 # gh is mocked via a PATH-shim that produces canned JSON, so the gh-detection
 # path is exercised even in environments without GitHub auth.

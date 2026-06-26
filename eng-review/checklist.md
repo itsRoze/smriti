@@ -203,7 +203,7 @@ When the diff introduces a number that encodes a judgment — a threshold, limit
 ## CLI binary symlink coverage
 
 **Flag:**
-- A new or modified script in `bin/` that derives its install location from `$0`, `$BASH_SOURCE`, or `dirname` — but no test invokes it via a symlink. Production invocations through `~/.local/bin/` are symlinks; tests that use absolute repo paths don't catch path-resolution bugs (see ELI-36).
+- A new or modified script in `bin/` that derives its install location from `$0`, `$BASH_SOURCE`, or `dirname` — but no test invokes it via a symlink. Production invocations through `~/.local/bin/` are symlinks; tests that use absolute repo paths don't catch path-resolution bugs.
 
 **Always-safe alternatives:**
 - A bats test that creates a symlink to the script in a sibling dir and invokes the script via the symlink, asserting the script behaves the same as a direct invocation.

@@ -10,8 +10,8 @@
 #   2. Fallback: `path-<sha-of-repo-root>` if no remote
 #
 # Cache format (KV, parsed with grep/cut — never sourced):
-#   SLUG=ray-portfolio
-#   SOURCE_PATH=/Users/roze/dev/ray-portfolio
+#   SLUG=acme-widgets
+#   SOURCE_PATH=/Users/you/dev/widgets
 # Old single-line format (just the slug) is read transparently.
 #
 # Cache: $SMRITI_HOME/slug-cache/<sha-of-path>

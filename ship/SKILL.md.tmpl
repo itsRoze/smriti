@@ -139,9 +139,9 @@ If failures: triage in-branch (caused by this branch's changes) vs pre-existing 
 
 ## Step 5b: Smoke-test new CLIs (production-shape invocation)
 
-If the diff adds or modifies any `bin/smriti-*` script, exercise it **via the umbrella dispatcher** (`smriti <name>`, not the absolute repo path) so path-resolution and shebang bugs that absolute-path tests miss surface here. This is the guardrail against the ELI-36 class of bug: green tests + broken CLI.
+If the diff adds or modifies any `bin/smriti-*` script, exercise it **via the umbrella dispatcher** (`smriti <name>`, not the absolute repo path) so path-resolution and shebang bugs that absolute-path tests miss surface here. This is the guardrail against a whole class of bug: green tests + broken CLI.
 
-The smoke invocation must reach the script's path-resolution code. An early-exit `--help` is **not enough** — that's exactly what ELI-36 would have passed. Pick a no-op that runs through the normal code path, sandboxing if it would mutate user state.
+The smoke invocation must reach the script's path-resolution code. An early-exit `--help` is **not enough** — that's exactly what a path-resolution bug would slip past. Pick a no-op that runs through the normal code path, sandboxing if it would mutate user state.
 
 ```bash
 CHANGED_BINS=$(git diff --name-only "origin/$BASE_BRANCH" -- 'bin/smriti-*' \

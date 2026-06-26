@@ -123,11 +123,11 @@ teardown() {
 
 @test "repo with remote: derives slug from remote URL" {
   cd "$REPO"
-  git -C "$REPO" remote add origin git@github.com:itsRoze/My-Project.git
+  git -C "$REPO" remote add origin git@github.com:acme/My-Project.git
 
   run "$CLI" --print
   [ "$status" -eq 0 ]
-  [ "$output" = "itsroze-my-project" ]
+  [ "$output" = "acme-my-project" ]
 }
 
 @test "repo without remote: derives path-<hash> slug" {

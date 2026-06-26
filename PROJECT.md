@@ -18,7 +18,7 @@ Just the author (solo developer). smriti is built for one person's workflow and 
 - git + gh (version control, PR creation via `/ship`)
 
 ## Deploy
-Local CLI tool. No deploy target — installed by cloning the repo and adding `bin/` to PATH (now via umbrella dispatcher post-ELI-45).
+Local CLI tool. No deploy target — installed by cloning the repo and adding `bin/` to PATH (now via umbrella dispatcher).
 
 ## Design Priority
 **Low.** CLI and skill stack — no user-facing UI beyond terminal output and occasional Playwright-rendered audit pages.

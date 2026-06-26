@@ -98,7 +98,7 @@ cd ~/.claude/skills/smriti
 ```
 You:    /bootstrap
 
-Claude: SLUG: itsroze-myapp     BRANCH: main     IS_FIRST_TIME: yes
+Claude: SLUG: acme-myapp        BRANCH: main     IS_FIRST_TIME: yes
         Pre-filling from package.json + README + git log...
 
         [single bundled AskUserQuestion: project type / target user /
@@ -227,7 +227,7 @@ That's the rollout signal — opt in when you see it. No interactive prompts; ig
 ### Trade-offs accepted in v1
 
 - **Path portability.** The `@`-import uses the smriti install path (`~/.claude/skills/smriti/`). On machines where smriti lives elsewhere, the import won't resolve until the user updates the path. Acceptable trade-off in solo / intrapreneur use.
-- **No cite-by-ID.** Reviews say `Tier 1b (locality)` rather than `violates p1-locality`. Structured frontmatter + a `smriti-principles` CLI is tracked as a v2 follow-up ([ELI-32](https://linear.app/itselijah/issue/ELI-32)).
+- **No cite-by-ID.** Reviews say `Tier 1b (locality)` rather than `violates p1-locality`. Structured frontmatter + a `smriti-principles` CLI is tracked as a v2 follow-up.
 - **Mid-session reload.** Adding the `@`-import in an already-running Claude Code session won't auto-load until the session restarts — the CLI prints a one-line reminder.
 
 ## Browser audit (`/design-review` v2)

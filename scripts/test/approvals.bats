@@ -11,7 +11,7 @@ setup() {
   # Mimic ~/.local/bin/ install: symlink ONLY smriti-approvals into a fake bin dir.
   # When the script looks for sibling helpers like smriti-slug at $SMRITI_BIN/, the lookup
   # fails silently and the script falls back to the env SLUG/BRANCH we set below.
-  # This is the same shape ELI-36/ELI-37 surfaced — exercising the production install path.
+  # This exercises the production install path — the class of path-resolution bug that absolute-path tests miss.
   FAKE_BIN="$WORK/fake-bin"
   mkdir -p "$FAKE_BIN"
   ln -s "$ROOT/bin/smriti-approvals" "$FAKE_BIN/smriti-approvals"

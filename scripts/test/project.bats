@@ -8,8 +8,8 @@ setup() {
 
   # Production-shape invocation: symlink BOTH bins into a fake PATH dir so we
   # exercise the same install shape /ship uses (~/.local/bin/smriti-* symlinks).
-  # Same lesson as ELI-37 — absolute-path invocation hides path-resolution bugs
-  # like ELI-36. smriti-project's `current` subcommand calls its sibling
+  # The lesson — absolute-path invocation hides path-resolution bugs
+  # that symlinked production installs hit. smriti-project's `current` subcommand calls its sibling
   # smriti-slug; the symlink test catches sibling-resolution regressions.
   FAKE_BIN="$WORK/fake-bin"
   mkdir -p "$FAKE_BIN"

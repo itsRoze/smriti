@@ -43,7 +43,7 @@ set -e
 # Resolve our own bin/ dir and prepend to PATH so sibling helpers
 # (smriti-default-branch) are found whether we were invoked by absolute path
 # or via the ~/.local/bin/ symlink that `setup` installs. Same dereference
-# pattern as smriti-principles-install (ELI-36): readlink the symlink first,
+# pattern as smriti-principles-install: readlink the symlink first,
 # THEN dirname, otherwise `$(dirname "$0")` resolves to the symlink's own dir.
 _self="$0"
 [ -L "$_self" ] && _self=$(readlink "$_self")
