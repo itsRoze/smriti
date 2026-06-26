@@ -741,7 +741,9 @@ async function cmdServer(args: string[]): Promise<number> {
     spec: validateSpec(JSON.parse(readFileSync(join(statedir, 'spec.json'), 'utf8'))) as Spec,
     current: '',
     pending: null as Payload | null,
-    waiters: [] as Array<(p: Payload | null) => void>,
+    // A waiter returns true only if it actually delivered a payload to a live
+    // /await; a timed-out waiter returns false so /submit drains past it.
+    waiters: [] as Array<(p: Payload | null) => boolean>,
     sse: new Set<(frame: string) => void>(),
     last: Date.now(),
   };
@@ -775,12 +777,23 @@ async function cmdServer(args: string[]): Promise<number> {
         let payload: Payload;
         try { payload = validatePayload(await req.json()); }
         catch (e) { return json({ status: 'invalid', message: String((e as Error).message) }, 400); }
+        // revision_id is the enforced staleness gate; source_hash is carried for
+        // forward-compat (reserved) but not separately checked — a bumped
+        // revision already means "this view moved".
         if (payload.session_id !== sessionId) return json({ status: 'unknown_session' }, 409);
         if (payload.revision_id !== state.current) return json({ status: 'stale_revision', current: state.current }, 409);
         const unknown = unknownCardIds(payload, state.spec);
         if (unknown.length) return json({ status: 'unknown_card_ids', unknown_card_ids: unknown }, 409);
-        const w = state.waiters.shift();
-        if (w) w(payload); else state.pending = payload;
+        // Hand off to the first LIVE waiter, draining any that already timed out
+        // (a dead waiter returns false). No live waiter → park in `pending`;
+        // last-write-wins is intentional: the user's latest answer to the open
+        // revision is the one we want.
+        let delivered = false;
+        while (state.waiters.length) {
+          const w = state.waiters.shift()!;
+          if (w(payload)) { delivered = true; break; }
+        }
+        if (!delivered) state.pending = payload;
         return json({ status: 'accepted' });
       }
 
@@ -790,12 +803,18 @@ async function cmdServer(args: string[]): Promise<number> {
         if (state.pending) { const p = state.pending; state.pending = null; return json({ status: 'submission', payload: p }); }
         return await new Promise<Response>((resolve) => {
           let done = false;
-          const settle = (p: Payload | null) => {
-            if (done) return; done = true; clearTimeout(timer);
+          const settle = (p: Payload | null): boolean => {
+            if (done) return false; // already settled (e.g. timed out) — not a live consumer
+            done = true; clearTimeout(timer);
             resolve(p ? json({ status: 'submission', payload: p }) : json({ status: 'timeout' }));
+            return p != null; // true only when a payload was actually delivered
           };
           state.waiters.push(settle);
-          const timer = setTimeout(() => settle(null), timeout);
+          const timer = setTimeout(() => {
+            const i = state.waiters.indexOf(settle); // remove self so /submit never shifts a dead waiter
+            if (i !== -1) state.waiters.splice(i, 1);
+            settle(null);
+          }, timeout);
         });
       }
 
@@ -819,7 +838,9 @@ async function cmdServer(args: string[]): Promise<number> {
         const stream = new ReadableStream({
           start(controller) {
             const send = (frame: string) => {
-              try { controller.enqueue(enc.encode(frame)); } catch { /* client gone */ }
+              // On a dead client, unsubscribe — otherwise a leaked subscriber keeps
+              // state.sse non-empty and the heartbeat pins the idle reaper forever.
+              try { controller.enqueue(enc.encode(frame)); } catch { state.sse.delete(send); }
             };
             send(sseFrame('hello', state.current));
             state.sse.add(send);
@@ -842,8 +863,11 @@ async function cmdServer(args: string[]): Promise<number> {
     },
   });
 
-  writeFileSync(join(statedir, 'portfile'), `${server.port}\n${nonce}\n`);
+  // Write pidfile FIRST, portfile LAST: serve treats the portfile as the
+  // readiness marker, so by the time it returns the pidfile already exists and
+  // an immediate `stop` can never race into a false "already stopped".
   writeFileSync(join(statedir, 'pidfile'), `${process.pid}\n${nonce}\n`);
+  writeFileSync(join(statedir, 'portfile'), `${server.port}\n${nonce}\n`);
 
   // Keep-alive: while a tab is connected (an SSE client is listening), refresh
   // last-activity + send a comment frame. So an open page with a thinking human

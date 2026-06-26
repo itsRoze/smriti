@@ -159,6 +159,24 @@ test('concurrent sessions are isolated', async () => {
   expect(gotB.code).toBe(5); // B saw nothing — timed out
 }, 20000);
 
+test('a submit after an await timeout is parked, not lost (waiter drain)', async () => {
+  const { session_id, port } = await serve();
+
+  // First await times out with no submission — its waiter must be removed.
+  const first = await sh(['await', '--session', session_id, '--timeout', '400']);
+  expect(first.code).toBe(5);
+
+  // The user now submits for the current revision. It must NOT be dropped onto
+  // the stale (timed-out) waiter — it should park in `pending`.
+  const res = await submit(port, decisionPayload(session_id, 'rev-1'));
+  expect((await res.json()).status).toBe('accepted');
+
+  // A fresh await retrieves the parked submission.
+  const second = await sh(['await', '--session', session_id, '--timeout', '4000']);
+  expect(second.code).toBe(0);
+  expect(JSON.parse(second.stdout).decisions['f-001'].decision).toBe('accept');
+}, 15000);
+
 test('unknown session id is rejected by the server', async () => {
   const { port } = await serve();
   const res = await submit(port, decisionPayload('sess-bogus', 'rev-1'));
@@ -208,12 +226,18 @@ test('U2b: SSE delivers a reload event when render bumps the revision', async ()
 test('D2: server self-terminates after the idle window', async () => {
   const r = await sh(['serve', SPEC, '--no-open', '--idle', '1200']);
   expect(r.code).toBe(0);
-  const { session_id } = JSON.parse(r.stdout);
+  const { session_id, port } = JSON.parse(r.stdout);
   openSessions.push({ id: session_id });
 
   await Bun.sleep(3000); // exceed the idle window with margin
 
-  // The idle-exited server removed its statedir, so stop reports already-stopped.
+  // The idle-exited server is genuinely gone: the port no longer listens...
+  let reachable = true;
+  try { await fetch(`http://127.0.0.1:${port}/`, { signal: AbortSignal.timeout(800) }); }
+  catch { reachable = false; }
+  expect(reachable).toBe(false);
+
+  // ...and its statedir was removed, so stop reports already-stopped.
   const stopped = await sh(['stop', '--session', session_id]);
   expect(stopped.stdout).toContain('already stopped');
 }, 10000);
