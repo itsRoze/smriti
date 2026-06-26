@@ -28,10 +28,11 @@ Classify the user's work and route to the right smriti skill. Thin router — cl
 
 ## Hard rules
 
-1. For brainstorm/debug/work modes: classify, invoke the downstream skill, stop. Do NOT write code (the downstream skill does).
-2. For implement mode: classify, load context, then proceed directly with the implementation.
-3. Route to exactly one downstream skill or the implement fast path. Never re-invoke /begin.
-4. Preserve the user's original prompt verbatim when invoking downstream skills.
+1. For **debug/work** modes: classify, invoke the downstream skill, stop. Do NOT write code (the downstream skill does).
+2. For **brainstorm** mode: engage the autonomous pipeline (see *Autonomous pipeline* below) — classify, then drive the chain stage by stage. Do NOT write code yourself; each downstream skill does its own part.
+3. For implement mode: classify, load context, then proceed directly with the implementation.
+4. Never re-invoke /begin. Debug/implement route once; the brainstorm pipeline drives a sequence of downstream skills, but the orchestration loop lives here — it does not re-enter /begin.
+5. Preserve the user's original prompt verbatim when invoking downstream skills.
 
 ## Phase 1: Context gathering (silent)
 
@@ -74,17 +75,18 @@ Options should be the two or three candidate modes with short descriptions of wh
 
 ## Phase 3: Route
 
-### Mode: brainstorm
+### Mode: brainstorm → engage the autonomous pipeline
 
-State one line: *"This looks like feature/design work. Invoking /brainstorm."*
+State one line: *"Feature work — engaging the autonomous pipeline. I'll drive design → plan → review → build, and stop for your plan approval."*
 
-Then invoke the Skill tool:
+Then follow the **Autonomous pipeline** section below. It begins with
+`Skill(skill="brainstorm", args="<user's original prompt, verbatim>")` and walks
+the stage-table from there. Unlike debug/implement, /begin does **not** hand off
+and stop here — it orchestrates the chain, pausing only at the two human gates.
 
-```
-Skill(skill="brainstorm", args="<user's original prompt from <user_prompt>, verbatim>")
-```
-
-/begin is done. The brainstorm skill takes over entirely.
+(Opt-out: if the user only wants to think out loud — "just brainstorm", or
+`Mode = explore` — do the single `Skill(brainstorm)` handoff and stop, per the
+pipeline's opt-out note.)
 
 ### Mode: debug
 
@@ -152,6 +154,10 @@ If one exists, read its recommended approach section for context.
 4. Proceed directly with the user's request. Implement the change.
 
 5. When the implementation is complete, state: *"Done. Run `/eng-review` to review changes, then `/ship` to ship."*
+
+---
+
+{{PIPELINE}}
 
 ---
 
