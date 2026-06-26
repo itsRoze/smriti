@@ -1,0 +1,42 @@
+{
+  "title": "Plan approval — Autonomous pipeline",
+  "skill": "begin",
+  "session_id": "pending",
+  "revision_id": "rev-1",
+  "source_hash": "plan0001",
+  "sections": [
+    {
+      "id": "implementation-units",
+      "title": "Implementation Units",
+      "cards": [
+        {
+          "id": "u1",
+          "title": "U1 — pipeline.md resolver",
+          "body_md": "**Goal:** stage-table + walk + validator.\n**Approach:** new lib/resolvers/pipeline.md.",
+          "status": "open",
+          "default_decision": "accept"
+        },
+        {
+          "id": "u2",
+          "title": "U2 — runtime semantics",
+          "body_md": "**Goal:** gates, repair-loop cap, ping.\n**Approach:** extend pipeline.md.",
+          "status": "open",
+          "default_decision": "accept"
+        },
+        {
+          "id": "u3",
+          "title": "U3 — wire into /begin",
+          "body_md": "**Goal:** {{PIPELINE}} into begin + regenerate.",
+          "status": "open"
+        },
+        {
+          "id": "u4",
+          "title": "U4 — durable tests",
+          "body_md": "**Goal:** pipeline.bats + spec fixture.",
+          "status": "open"
+        }
+      ]
+    }
+  ],
+  "global_notes_prompt": "Approve the plan, or note any unit to revise."
+}
