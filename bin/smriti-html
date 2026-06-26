@@ -42,8 +42,13 @@ const SCHEMA_VERSION = 1;
 // long self-terminates (D2) so a skill that died mid-loop doesn't orphan it.
 const DEFAULT_IDLE_MS = 30 * 60 * 1000;
 // How long `await` blocks for a submission before reporting a timeout (D2 caps
-// the unbounded wait). Server holds the request; client waits a bit longer.
+// the unbounded wait). Total budget; the client re-polls in MAX_POLL_MS windows.
 const DEFAULT_AWAIT_TIMEOUT_MS = 10 * 60 * 1000;
+// Per-poll window. A single held /await connection must stay under Bun.serve's
+// request idleTimeout (255s max) or Bun closes the idle socket and the client
+// fetch throws. So each poll is bounded and `await` re-issues until the budget
+// is spent — long human waits work without one connection going idle.
+const MAX_POLL_MS = 240 * 1000;
 
 const SMRITI_BIN = dirname(fileURLToPath(import.meta.url));
 const SELF = fileURLToPath(import.meta.url);
@@ -764,6 +769,7 @@ async function cmdServer(args: string[]): Promise<number> {
   const server = Bun.serve({
     hostname: '127.0.0.1',
     port: 0,
+    idleTimeout: 255, // max; the long-poll holds a connection — don't let Bun reap it
     async fetch(req: Request): Promise<Response> {
       const url = new URL(req.url);
       const path = url.pathname;
@@ -799,7 +805,8 @@ async function cmdServer(args: string[]): Promise<number> {
 
       if (req.method === 'GET' && path === '/await') {
         if (!authed(req)) return json({ status: 'forbidden' }, 403);
-        const timeout = parseInt(url.searchParams.get('timeout') ?? '', 10) || DEFAULT_AWAIT_TIMEOUT_MS;
+        // Cap the held duration under idleTimeout regardless of what the client asks.
+        const timeout = Math.min(parseInt(url.searchParams.get('timeout') ?? '', 10) || MAX_POLL_MS, MAX_POLL_MS);
         if (state.pending) { const p = state.pending; state.pending = null; return json({ status: 'submission', payload: p }); }
         return await new Promise<Response>((resolve) => {
           let done = false;
@@ -903,19 +910,28 @@ async function cmdAwait(args: string[]): Promise<number> {
   const info = readPortfile(sessionId);
   if (!info) { process.stderr.write(`smriti-html: no live server for session ${sessionId}\n`); return 6; }
 
-  let res: Response;
-  try {
-    res = await fetch(`http://127.0.0.1:${info.port}/await?timeout=${timeoutMs}`, {
-      headers: { 'x-smriti-nonce': info.nonce },
-      signal: AbortSignal.timeout(timeoutMs + 15000),
-    });
-  } catch { process.stderr.write(`smriti-html: server unreachable for session ${sessionId}\n`); return 6; }
-
-  const data = (await res.json()) as { status: string; payload?: Payload };
-  if (data.status === 'submission' && data.payload) { process.stdout.write(JSON.stringify(data.payload) + '\n'); return 0; }
-  if (data.status === 'timeout') { process.stderr.write('smriti-html: await timed out\n'); return 5; }
-  process.stderr.write(`smriti-html: await got status "${data.status}"\n`);
-  return 2;
+  // Re-poll in bounded windows so no single connection idles past the server's
+  // limit; a submit that lands between polls parks in `pending` and the next
+  // poll grabs it. SMRITI_HTML_POLL_MS overrides the window (tests use a tiny one).
+  const pollMs = parseInt(process.env.SMRITI_HTML_POLL_MS ?? '', 10) || MAX_POLL_MS;
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const thisPoll = Math.min(pollMs, deadline - Date.now());
+    let res: Response;
+    try {
+      res = await fetch(`http://127.0.0.1:${info.port}/await?timeout=${thisPoll}`, {
+        headers: { 'x-smriti-nonce': info.nonce },
+        signal: AbortSignal.timeout(thisPoll + 15000),
+      });
+    } catch { process.stderr.write(`smriti-html: server unreachable for session ${sessionId}\n`); return 6; }
+    const data = (await res.json()) as { status: string; payload?: Payload };
+    if (data.status === 'submission' && data.payload) { process.stdout.write(JSON.stringify(data.payload) + '\n'); return 0; }
+    if (data.status === 'timeout') continue; // poll window elapsed with no submit — re-issue
+    process.stderr.write(`smriti-html: await got status "${data.status}"\n`);
+    return 2;
+  }
+  process.stderr.write('smriti-html: await timed out\n');
+  return 5;
 }
 
 async function cmdStop(args: string[]): Promise<number> {

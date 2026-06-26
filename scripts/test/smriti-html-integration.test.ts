@@ -28,10 +28,10 @@ function specJson(revision: string): string {
 }
 
 // Run the CLI to completion, capturing stdout/stderr/exit code.
-function sh(args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
+function sh(args: string[], extraEnv: Record<string, string> = {}): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
     const child = spawn('bun', [HTML, ...args], {
-      env: { ...process.env, SMRITI_HOME: HOME_DIR },
+      env: { ...process.env, SMRITI_HOME: HOME_DIR, ...extraEnv },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let out = '', e = '';
@@ -175,6 +175,18 @@ test('a submit after an await timeout is parked, not lost (waiter drain)', async
   const second = await sh(['await', '--session', session_id, '--timeout', '4000']);
   expect(second.code).toBe(0);
   expect(JSON.parse(second.stdout).decisions['f-001'].decision).toBe('accept');
+}, 15000);
+
+test('await re-polls in bounded windows so a wait spanning several polls survives', async () => {
+  const { session_id, port } = await serve();
+  // Tiny poll window forces the client to re-issue several /await connections
+  // before the submit arrives (guards the Bun idle-timeout long-poll bug).
+  const awaiting = sh(['await', '--session', session_id, '--timeout', '8000'], { SMRITI_HTML_POLL_MS: '500' });
+  await Bun.sleep(2200); // ~4 poll cycles elapse with no submission
+  const res = await submit(port, decisionPayload(session_id, 'rev-1'));
+  expect((await res.json()).status).toBe('accepted');
+  const got = await awaiting;
+  expect(got.code).toBe(0); // received despite spanning multiple poll connections
 }, 15000);
 
 test('unknown session id is rejected by the server', async () => {
