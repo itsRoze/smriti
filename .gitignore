@@ -12,3 +12,7 @@ dist/
 # developer runs `smriti-principles-install` locally to generate it.
 # Anchored to repo root so a fixture or sub-dir named CLAUDE.md isn't ignored.
 /CLAUDE.md
+
+# Machine-local Claude Code settings (per-developer permissions, env, hooks).
+# Never commit — it's specific to one machine and may hold local paths.
+.claude/settings.local.json
