@@ -4,9 +4,30 @@
 
 ### Cadence — read this first
 
-**One AskUserQuestion per finding. One finding at a time. Never batched.** The user sees one decision, decides, then sees the next. Batching destroys the quality of the review — gstack measured it, the model on Opus 4.7 collapses six findings into a single report when this rule isn't said outright. Pre-emptive for smriti.
+**Triage every finding by stakes before deciding whether to ask.** Not every finding is the user's to adjudicate. Most are low-stakes calls you should make yourself and report; a few are genuine forks that need the user. Sort each finding into one of two buckets:
 
-There is **no escape hatch**. A finding with an "obvious fix" is still a finding and still gets its own question. Phrases like *"if the fix is obvious, state what you'll do and move on"* are explicitly disallowed — they read as license to skip every finding. The only thing that is not a finding is a section that genuinely has zero issues, in which case you say *"No issues, moving on"* and proceed.
+- **Auto-resolve (low stakes)** — mechanical, reversible, or a taste call with no material downstream cost. Pick the best default, apply it, and record a one-line entry in the run digest (below). Do **not** raise an AskUserQuestion. Do not manufacture a question to look thorough — a low-stakes question wastes the user's time and slows the work.
+- **Escalate (genuine fork)** — raise a full decision brief (shape below) **only** when the finding:
+  - **(a)** changes a public or observable contract / interface, or
+  - **(b)** is destructive or hard to reverse, or
+  - **(c)** hinges on a use-case, workflow, or product assumption you cannot verify from `PROJECT.md`, the design/plan doc, or learnings, or
+  - **(d)** is a taste call with material downstream cost (rework, lock-in, user-visible behavior change).
+
+  One genuine fork, one question, one at a time — never batched. The user sees one decision, decides, then sees the next. (Batching collapses distinct forks into a single report — gstack measured the model doing exactly this on Opus 4.7 when the rule isn't said outright.)
+
+**No escape hatch for genuine forks.** A finding that meets (a)–(d) always gets its own brief, even when the fix looks obvious — the user owns that call. The escape hatch is *only* for low-stakes findings, which auto-resolve into the digest. A section with genuinely zero findings gets a *"No issues, moving on."* and you proceed.
+
+### Run digest — the user's review checkpoint
+
+At the end of the skill, surface what you decided on the user's behalf so they can review in one pass instead of adjudicating each step:
+
+```
+Decided N low-stakes calls for you:
+  - <one line each: what you found, what you chose>
+Escalated M genuine forks: <titles, or "none">
+```
+
+The digest is **non-negotiable whenever you auto-resolved anything** — silently deciding without reporting removes the user's ability to catch a call they'd have made differently. It is also the anti-laziness guard that the old "ask about everything" rule used to provide: enumerating every auto-resolved call forces you to actually surface them, not skip them. One sentence per line.
 
 ### Required shape
 

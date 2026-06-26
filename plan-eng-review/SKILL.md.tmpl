@@ -6,7 +6,7 @@ description: |
   (Architecture, Code Quality, Tests, Performance) plus a Step 0 scope
   challenge. Honors LEAN (senior vs prototype). Presents findings as an
   interactive HTML triage loop when there are several (accept/reject/edit each at
-  once); falls back to one AskUserQuestion per finding (never batched). Auto-offers
+  once); falls back to one AskUserQuestion per genuine fork (never batched). Auto-offers
   Codex plan review.
   Use AFTER /plan has produced a plan doc, BEFORE /work. Required gate: errors
   without a plan. Run `/plan-eng-review` to lock in architecture before /work.
@@ -28,8 +28,9 @@ allowed-tools:
 Walk the **plan** through four ordered review sections, with the **design doc's
 rationale in view** — the plan holds the unit-level "how"; the design holds the
 "why" and the rejected alternatives the units must stay consistent with. Surface
-hidden assumptions. Issue **one AskUserQuestion per finding** — never batch.
-Append an "Engineering Review Decisions" section to the plan doc capturing resolutions.
+hidden assumptions. Severity-gate the findings: auto-resolve low-stakes calls
+into the run digest, and issue **one AskUserQuestion per genuine fork** — never
+batch. Append an "Engineering Review Decisions" section to the plan doc capturing resolutions.
 
 ## Inputs
 
@@ -70,17 +71,21 @@ The principles file below governs code in this project. Treat it as the criteria
 
 {{PRINCIPLES}}
 
-## Hard rule: one AskUserQuestion per finding, decision-brief shape
+## Hard rule: severity-gate the findings (see the cadence above)
 
-Every finding gets its own AskUserQuestion in the **decision-brief shape**
-defined at the top of this skill (D<N>, ELI10, Stakes, Recommendation,
-Pros/cons with ≥2 ✅ + ≥1 ❌, Net line). One finding, one question. Never
-batched. Never collapsed into a report.
+Apply the triage from the AskUserQuestion-format cadence at the top of this
+skill: **auto-resolve low-stakes findings** (pick the best default, apply it, and
+log it in the run digest) and **escalate only genuine forks** — a
+public/observable contract change, a destructive or hard-to-reverse call, an
+un-inferable use-case/workflow assumption, or a taste call with material
+downstream cost — each as its own decision brief (D<N>, ELI10, Stakes,
+Recommendation, ≥2 ✅ + ≥1 ❌, Net). One genuine fork, one question, never
+batched. A section with zero findings gets a *"No issues, moving on."*
 
-There is no escape hatch. A finding with an "obvious fix" still gets its
-own question — the user is the one who decides whether the fix lands. The
-only thing that's not a finding is a section that genuinely has zero
-issues, in which case state *"No issues, moving on"* and proceed.
+This review is architecture-critical, so the escalation bar is lower than in a
+routine pass: a **Tier 1 violation or a load-bearing architecture decision is
+always a genuine fork**. But a mechanical or clearly-correct fix is still
+auto-resolved into the digest, not turned into a question.
 
 ## Presentation: HTML triage loop (default for several findings)
 
@@ -93,13 +98,15 @@ exactly what fills each card's `body_md`.
 
 **Two presentation modes, same decisions:**
 - **HTML triage loop (default, ≥ ~3 findings).** Walk Step 0 + Sections 1–4 and
-  **collect findings without asking inline**; assemble them into a spec (one
+  **collect the genuine forks without asking inline** (auto-resolved low-stakes
+  findings go straight to the digest, not the spec); assemble them into a spec (one
   section per review section, one card per finding, `default_decision: "accept"`
   on the recommended option); run the loop below; apply the returned decisions.
-- **AskUserQuestion per finding (fallback).** Used when the user declines/ignores
-  the HTML, the server is unavailable, or there are only one or two findings. The
-  per-section instructions in Sections 1–4 ("one AskUserQuestion per finding") are
-  authoritative for this mode.
+- **AskUserQuestion per genuine fork (fallback).** Used when the user
+  declines/ignores the HTML, the server is unavailable, or there are only one or
+  two escalated forks. The per-section instructions in Sections 1–4 (escalate
+  genuine forks per the gate) are authoritative for this mode. Auto-resolved
+  low-stakes findings never become cards or questions — they go to the digest.
 
 Build each card's `id` as `<section>-<n>` (e.g. `architecture-1`) and **keep it
 stable across re-renders** (the finding-identity contract — see the protocol
@@ -160,7 +167,7 @@ Walk:
 
 If `LEAN=prototype`: skip the failure-mode subsection. Just flag bugs that will bite within the prototype's lifetime.
 
-One AskUserQuestion per finding.
+Auto-resolve low-stakes findings into the digest; one AskUserQuestion per genuine fork.
 
 ## Section 3: Test review
 
@@ -189,7 +196,7 @@ Walk:
 
 `LEAN=prototype`: only flag perf issues that will affect the demo / current usage. Skip "but at 10K users" hypotheticals.
 
-One AskUserQuestion per finding.
+Auto-resolve low-stakes findings into the digest; one AskUserQuestion per genuine fork.
 
 ## Step 4.6: Codex plan review (auto-offered)
 

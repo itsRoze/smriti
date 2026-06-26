@@ -6,7 +6,7 @@ description: |
   system alignment, responsive/a11y, unresolved decisions). Each pass rated 0–10
   with what 10 looks like; re-rate after fixes. Reads DESIGN.md as source of truth.
   Use AFTER /brainstorm has produced a design doc with UI scope, BEFORE /plan-eng-review
-  (or in parallel — both feed implementation). One AskUserQuestion per finding.
+  (or in parallel — both feed implementation). One AskUserQuestion per genuine fork.
 allowed-tools:
   - Bash
   - Read
@@ -22,7 +22,7 @@ allowed-tools:
 
 # /plan-design-review — designer's-eye review
 
-Walk a design doc through 7 passes, rate each 0–10, fix gaps via inline plan edits, re-rate. Target 10. Issue **one AskUserQuestion per finding** — never batch. Reads `DESIGN.md` as source of truth.
+Walk a design doc through 7 passes, rate each 0–10, fix gaps via inline plan edits, re-rate. Target 10. Severity-gate the findings: auto-resolve low-stakes calls into the run digest, escalate **one AskUserQuestion per genuine fork** — never batch. Reads `DESIGN.md` as source of truth.
 
 ## Pre-audit
 
@@ -47,15 +47,19 @@ Load relevant prior learnings:
 
 {{LEARNINGS_SEARCH}}
 
-## Hard rule: one AskUserQuestion per finding, decision-brief shape
+## Hard rule: severity-gate the findings (see the cadence above)
 
-Each pass produces 0+ findings; each finding gets its own AskUserQuestion
-in the **decision-brief shape** defined at the top of this skill (D<N>,
-ELI10, Stakes, Recommendation, Pros/cons with ≥2 ✅ + ≥1 ❌, Net line).
-Within a single pass, ask one, wait, then the next.
+Each pass produces 0+ findings. Apply the triage from the AskUserQuestion-format
+cadence at the top of this skill: **auto-resolve low-stakes findings** (pick the
+best default, apply it, log it in the run digest) and **escalate only genuine
+forks** — a public/observable contract change, a destructive or hard-to-reverse
+call, an un-inferable use-case/workflow assumption, or a taste call with material
+downstream cost — each as its own decision brief (D<N>, ELI10, Stakes,
+Recommendation, ≥2 ✅ + ≥1 ❌, Net). Within a single pass, ask one genuine fork,
+wait, then the next; never batch.
 
-There is no escape hatch — a finding with an "obvious fix" still gets its
-own question. Pass-level "no findings here" is the only way to skip.
+The escape hatch is only for low-stakes findings, which auto-resolve into the
+digest. Pass-level "no findings here" still skips the pass entirely.
 
 ## Step 0: Design scope assessment
 

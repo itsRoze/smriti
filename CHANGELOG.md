@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.15.0 — 2026-06-26
+
+- test(gate): U5 — lock the severity-gate contract in ask-user-format
+- feat(brainstorm): U3 — self-answer forcing questions, gate the Codex offer
+- feat(reviews): U2 — align review skills with the severity gate
+- feat(resolver): U1 — severity-gate + run-digest cadence in ask-user-format
+
+
 ## 0.14.0 — 2026-06-25
 
 - feat(html): lock the action bar after submit with a 'sent to Claude' state (ELI-44)

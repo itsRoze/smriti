@@ -110,14 +110,9 @@ Claude: SLUG: itsroze-myapp     BRANCH: main     IS_FIRST_TIME: yes
 You:    /brainstorm
 
 Claude: Phase 1 — context loaded.
-        Phase 2 — what's the goal here?
-          [users / learn / prototype / intrapreneur / explore]
-
-You:    users
-
-Claude: Phase 3 (4 of 4 forcing questions, one at a time):
-        "What evidence do you have that someone wants this?"
-        ...
+        Phase 2 — goal inferred from PROJECT.md (Users section): users.
+        Phase 3 — forcing questions self-answered from context; nothing
+        un-inferable to surface, so no blocking questions.
         Phase 5 — Three options:
           Option 1 (minimal viable): human ~6h / Claude ~25min, Completeness 6/10
           Option 2 (ideal):          human ~3d / Claude ~2h,    Completeness 9/10
@@ -286,7 +281,7 @@ committed) — so grep-ability is preserved and nothing in-repo gains markup noi
 - **Self-cleaning.** An idle server self-terminates and stale state is swept on
   the next `serve`, so a skill that dies mid-loop never orphans a process.
 - **Never hard-stuck.** The page always offers a **copy-paste** payload block if
-  the server is gone, and the skill falls back to one AskUserQuestion per finding
+  the server is gone, and the skill falls back to one AskUserQuestion per genuine fork
   if you'd rather not open a browser.
 
 ```

@@ -153,10 +153,25 @@ Skip Design — that's `/design-review`'s job.
 
 ## Phase 4: Fix-First classification
 
-For each finding, classify:
+Severity-gate each finding. (The gate's source of truth is
+`lib/resolvers/ask-user-format.md`; this skill doesn't import that resolver but
+follows the same triage — keep the two in sync.)
 
-- **`AUTO-FIX`** — mechanical, safe, unambiguous. Examples: parameterizing a SQL query, adding a missing `await`, renaming a var that shadowed an import, swapping `==` for `===`. Apply silently via `Edit`. Surface count at the end (*"Auto-fixed 4 findings."*).
-- **`ASK`** — judgment required. Examples: deciding whether to add an index (cost / benefit unclear), whether a missing test is worth writing now or later, whether to escape an enum-completeness gap as out-of-scope. Batch into a single AskUserQuestion (one prompt, multi-select) if **3 or fewer**; otherwise issue one AskUserQuestion per finding.
+- **`AUTO-FIX`** — mechanical, safe, unambiguous, or a judgment call you can make
+  correctly yourself. Examples: parameterizing a SQL query, adding a missing
+  `await`, renaming a var that shadowed an import, swapping `==` for `===`. Apply
+  silently via `Edit` and record each in the run digest.
+- **`ASK`** — escalate **only genuine forks**: a public/observable contract
+  change, a destructive or hard-to-reverse call, an un-inferable
+  use-case/workflow assumption, or a taste call with material downstream cost
+  (e.g. adding an index when the cost/benefit is genuinely unclear, or deferring
+  a missing test the user may want now). One AskUserQuestion per genuine fork;
+  if a rare run surfaces several, ask one at a time, never batched into a report.
+  Do not turn a call you can make correctly into a question — that's an AUTO-FIX
+  with a digest line.
+
+End with the **run digest**: `Auto-fixed N low-stakes findings: [one line each]`
+followed by any escalated forks (or "none").
 
 **Auto-fix changes are uncommitted.** The user runs `/ship` to commit them with the rest of their work.
 

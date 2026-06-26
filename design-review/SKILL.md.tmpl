@@ -101,7 +101,11 @@ Specific code patterns to grep for:
 - Glassmorphism class combos (`backdrop-blur-*` + `bg-white/10`) on every surface
 - Stat-counter components with no source of stats
 
-For each finding, **don't auto-fix**. These are taste calls — propose a grounded alternative referencing DESIGN.md tokens via AskUserQuestion.
+For each finding, **gate it**: when DESIGN.md clearly settles the call (the
+pattern contradicts a documented rule/token), AUTO-FIX it and log the swap in the
+run digest. Escalate via AskUserQuestion **only** when the slop might be
+intentional or DESIGN.md is silent — a genuine taste fork — proposing a grounded
+alternative referencing DESIGN.md tokens.
 
 ### Pass C: Hierarchy violations
 
@@ -109,7 +113,10 @@ For each finding, **don't auto-fix**. These are taste calls — propose a ground
 - **Skipped heading levels** — `<h1>` then `<h3>` with no `<h2>`
 - **Multiple primary buttons on one screen** — should be one (look for `bg-primary` / `variant="primary"` count per route)
 
-For each: **ASK**. These are intentional sometimes (e.g., a stats page deliberately uses big numbers). Propose the fix via AskUserQuestion.
+For each: **gate it**. A clear violation DESIGN.md settles → AUTO-FIX and log it
+in the digest. These are intentional sometimes (e.g., a stats page deliberately
+uses big numbers), so when intent is plausibly deliberate it's a genuine taste
+fork → propose the fix via AskUserQuestion.
 
 ### Pass D: Token consistency
 
@@ -256,6 +263,12 @@ Display the count by bucket so the user sees the surface area:
 ```
 
 ## Phase 4: Fix loop
+
+Severity-gate each finding. (The gate's source of truth is
+`lib/resolvers/ask-user-format.md`; this skill doesn't import that resolver but
+follows the same triage — keep the two in sync.) AUTO-FIX is the default;
+**ASK only on a genuine taste fork** — where intent is plausibly deliberate or
+DESIGN.md is silent. A finding DESIGN.md clearly settles is an AUTO-FIX.
 
 For each finding **in impact order** (high → medium → polish):
 

@@ -82,11 +82,12 @@ If the user confirms relevance, read the full debug doc — especially `## Root 
 
 If `PROJECT.md` is missing, **stop** and recommend `/bootstrap` first. Don't proceed without it.
 
-## Phase 2: Goal mode (single AskUserQuestion)
+## Phase 2: Goal mode (infer first, confirm only if ambiguous)
 
-Ask: *"Before we dig in — what's the goal here?"*
-
-Options:
+Infer the goal mode from `PROJECT.md` (its Users / Lean / Overview sections
+usually settle it) and the user's prompt — a solo prototype tool reads as
+`prototype`/`users`; an internal work project as `intrapreneur`; a build-to-learn
+exercise as `learn`.
 
 | Option | Mode |
 |--------|------|
@@ -96,11 +97,24 @@ Options:
 | **Intrapreneur** — internal project at work, ship fast | `intrapreneur` |
 | **Explore** — playful, no pressure | `explore` |
 
-The mode determines which forcing questions you ask in Phase 3 and how aggressive the recommendation is. Persist the chosen mode in the design doc.
+The mode shapes Phase 3 and how aggressive the recommendation is. Raise a single
+AskUserQuestion **only** when the mode is genuinely un-inferable and it would
+change the recommendation (a real fork, criterion c). Otherwise state the
+inferred mode in one line and proceed. Persist the chosen mode in the design doc.
 
-## Phase 3: Forcing questions (one per question, never batched)
+## Phase 3: Forcing questions (self-answer from context; escalate only genuine forks)
 
-Pick **4–5** of the questions below based on mode. Issue them as **separate** AskUserQuestion calls — one question, then wait, then the next. Never batch.
+The questions below are the **analysis checklist** — what a good brainstorm must
+reason about, not a list to interrogate the user with. **Answer them yourself**
+from `PROJECT.md`, the codebase, git history, and learnings, and record your
+inferred answers in the design doc's "What the user said / What I inferred"
+section. Surface a single AskUserQuestion **only** when the answer materially
+changes the design and you genuinely cannot infer it — an un-inferable use-case,
+workflow, or product assumption (criterion c). Don't fire 4–5 mandatory
+questions; that volume is exactly what the severity gate exists to cut.
+
+Pick the **4–5** questions relevant to the mode and work through them in your own
+reasoning:
 
 ### Mode: users
 1. **Demand reality** — *"What evidence do you have that someone wants this enough to switch from what they're using now?"*
@@ -201,11 +215,22 @@ neither side dominates), keep the `(recommended)` label on whichever is
 default and say so in prose: *"this is a taste call, no strong preference
 either way."* Never drop the label.
 
-## Phase 6: Codex second opinion (auto-offered)
+## Phase 6: Codex second opinion (gated)
 
 {{CODEX_SECOND_OPINION}}
 
-When you run Codex, give it the design context (the user's mode, forcing-question answers, your three options, your recommendation) and ask it for an independent take: *"Did you miss anything? Is the recommendation actually right? What would you have asked that wasn't asked?"*
+**Delegate-posture override (this skill):** the offer itself is a low-stakes
+call under the severity gate. When your recommendation is confident, treat the
+offer as auto-resolved — state in one line that Codex is available and proceed,
+rather than firing the `CODEX_DEFAULT=ask` prompt. Actually offer (or run) the
+second opinion only when the recommendation is a genuine close call or
+high-stakes architecture decision, or when the user asks. A user who set
+`codex_default=on`/`off` has already decided; honor that without prompting.
+
+When you do run Codex, give it the design context (the inferred mode,
+forcing-question answers, your options, your recommendation) and ask for an
+independent take: *"Did you miss anything? Is the recommendation actually right?
+What would you have asked that wasn't asked?"*
 
 ## Phase 7: Write design doc
 
@@ -234,8 +259,9 @@ DESIGN_FILE="$DESIGN_DIR/$BRANCH_SLUG-design-$TS.md"
 ## Problem
 <one or two paragraphs>
 
-## What the user said
-<concise summary of forcing-question answers — not a transcript, a synthesis>
+## What the user said / What I inferred
+<synthesis of the forcing-question answers — mark which the user stated directly
+and which you inferred from PROJECT.md / codebase / learnings. Not a transcript.>
 
 ## Premises challenged
 - <premise 1 → resolution>
