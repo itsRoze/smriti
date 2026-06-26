@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.14.0 — 2026-06-25
+
+- feat(html): lock the action bar after submit with a 'sent to Claude' state (ELI-44)
+- fix(html): action buttons → Accept / Request changes (ELI-44)
+- fix(html): one contextual box per card + clearer action labels (ELI-44)
+- style(html): editorial render — frc-devbox-inspired aesthetic (ELI-44)
+- fix(html): await survives long waits (Bun idleTimeout would kill the long-poll) (ELI-44)
+- fix(html): eng-review — waiter drain, SSE client leak, pidfile-first ordering (ELI-44)
+- docs(readme): U5 — document the interactive HTML specs flow (ELI-44)
+- feat(plan-eng-review): U4 — HTML triage loop as the default presentation (ELI-44)
+- feat(html): U3 — html-render resolver (invocation protocol skills follow) (ELI-44)
+- fix(html): server is the authority for session_id (ELI-44)
+- refactor(html): memoize slug + single projectViewsDir helper (ELI-44)
+- feat(html): U2b — live-UX (SSE live-reload + dirty-guard + keep-alive) (ELI-44)
+- feat(html): U2a — sessioned localhost transport (serve/await/render/stop) (ELI-44)
+- feat(html): U1 — smriti-html renderer + canonical schema + finding-identity contract (ELI-44)
+
+
 ## 0.13.0 — 2026-06-03
 
 - feat(begin): route execution intent to /work + refresh pipeline docs

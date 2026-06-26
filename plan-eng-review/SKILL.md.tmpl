@@ -4,8 +4,10 @@ description: |
   Pre-implementation architecture review of the implementation plan (read
   alongside its design doc for rationale). Walks 4 ordered sections
   (Architecture, Code Quality, Tests, Performance) plus a Step 0 scope
-  challenge. Honors LEAN (senior vs prototype). Issues one AskUserQuestion per
-  finding (never batched). Auto-offers Codex plan review.
+  challenge. Honors LEAN (senior vs prototype). Presents findings as an
+  interactive HTML triage loop when there are several (accept/reject/edit each at
+  once); falls back to one AskUserQuestion per finding (never batched). Auto-offers
+  Codex plan review.
   Use AFTER /plan has produced a plan doc, BEFORE /work. Required gate: errors
   without a plan. Run `/plan-eng-review` to lock in architecture before /work.
 allowed-tools:
@@ -79,6 +81,36 @@ There is no escape hatch. A finding with an "obvious fix" still gets its
 own question — the user is the one who decides whether the fix lands. The
 only thing that's not a finding is a section that genuinely has zero
 issues, in which case state *"No issues, moving on"* and proceed.
+
+## Presentation: HTML triage loop (default for several findings)
+
+When the review yields **several findings**, present them as one interactive HTML
+view the user triages in the browser, instead of N serial AskUserQuestion prompts
+— this is the richer, lower-context-switch path (ELI-44). One finding is still one
+decision: each finding is its own **card**, never collapsed into a report. The
+decision-brief content (D<N>, ELI10, Stakes, Recommendation, pros/cons, Net) is
+exactly what fills each card's `body_md`.
+
+**Two presentation modes, same decisions:**
+- **HTML triage loop (default, ≥ ~3 findings).** Walk Step 0 + Sections 1–4 and
+  **collect findings without asking inline**; assemble them into a spec (one
+  section per review section, one card per finding, `default_decision: "accept"`
+  on the recommended option); run the loop below; apply the returned decisions.
+- **AskUserQuestion per finding (fallback).** Used when the user declines/ignores
+  the HTML, the server is unavailable, or there are only one or two findings. The
+  per-section instructions in Sections 1–4 ("one AskUserQuestion per finding") are
+  authoritative for this mode.
+
+Build each card's `id` as `<section>-<n>` (e.g. `architecture-1`) and **keep it
+stable across re-renders** (the finding-identity contract — see the protocol
+below). Use `git hash-object "$PLAN_DOC"` (or `shasum`) for `source_hash`. Apply
+accept/reject deterministically; treat per-card `notes` + `global_notes` as
+conversation that drives the next revision (re-render with the same ids). Record
+every resolution into the plan doc's "Engineering Review Decisions" section just
+as the fallback mode would — the loop changes *how decisions are collected*, not
+how they're recorded.
+
+{{HTML_RENDER}}
 
 ## Step 0: Scope challenge
 
