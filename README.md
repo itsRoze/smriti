@@ -1,8 +1,26 @@
-# smriti
+<div align="center">
 
-> **स्मृति** — Sanskrit for *memory; that which is remembered.*
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.svg">
+  <img alt="smriti" src="assets/logo.svg" width="260">
+</picture>
 
-A personal Claude Code skill stack — opinionated, learns across sessions, gets smarter on each codebase over time. Inspired by [gstack](https://github.com/garrytan/gstack), slimmed down for solo use.
+<p><em>स्मृति — Sanskrit for memory; that which is remembered.</em></p>
+
+<p>
+  A personal Claude Code skill stack — opinionated, learns across sessions,<br>
+  gets smarter on each codebase over time.
+</p>
+
+<p>
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-6E7681?style=flat"></a>
+  <a href="https://github.com/itsRoze/smriti/releases"><img alt="version" src="https://img.shields.io/github/package-json/v/itsRoze/smriti?style=flat&label=version&color=A37B5C"></a>
+  <a href="https://docs.anthropic.com/en/docs/claude-code"><img alt="built for Claude Code" src="https://img.shields.io/badge/built%20for-Claude%20Code-D97757?style=flat"></a>
+</p>
+
+</div>
+
+Inspired by [gstack](https://github.com/garrytan/gstack), slimmed down for solo use.
 
 ---
 
