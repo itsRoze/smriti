@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.16.0 — 2026-06-26
+
+- chore: apply /eng-review auto-fixes
+- test(pipeline): U4 — durable pipeline.bats + plan-spec fixture
+- feat(begin): U3 — wire {{PIPELINE}} into /begin, brainstorm drives the chain
+- feat(pipeline): U2 — gates, repair-loop cap, ping in pipeline.md
+- feat(pipeline): U1 — pipeline.md resolver (stage-table + walk + validator)
+
+
 ## 0.15.0 — 2026-06-26
 
 - test(gate): U5 — lock the severity-gate contract in ask-user-format
