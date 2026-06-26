@@ -132,3 +132,73 @@ hand-off and the post-check's completion marker — keep the shape fixed:
 
 The orchestrator synthesizes this from git state + `smriti approvals get-json` —
 the downstream skill does not produce it (that's what keeps skills chain-agnostic).
+
+### Gate 1: approve the plan (interactive HTML card loop)
+
+Once the plan is locked (`plan-eng-review` — and `plan-design-review` when it
+applies — are terminal-good), present the plan for approval as an **interactive
+HTML view**, not a wall of markdown. Reuse the review-loop transport described
+in the HTML-render resolver (`serve` → `await` → `render` → `stop`) — same
+machinery `/plan-eng-review` uses, so there's one obvious way to do this
+(Tier 1d).
+
+Map the plan to a spec: **one card per Implementation Unit**, in a single
+`Implementation Units` section. Each card's `body_md` is the unit's Goal +
+Approach in brief; the card id is the U-ID (`u1`, `u2`, …) so edits round-trip
+to a stable identity. The canonical spec schema lives in `bin/smriti-html`
+(required: `title`, `skill`, `session_id`, `revision_id`, `source_hash`,
+non-empty `sections`; each card needs `id`, `title`, `body_md`). Set
+`global_notes_prompt` to invite overall direction.
+
+The loop:
+
+1. Build the spec, `source_hash` over the plan doc. `smriti html serve <spec>` —
+   capture the `session_id`.
+2. `smriti html await --session <id>` — block for the user's decisions.
+3. Read the payload:
+   - A card `reject`/`edit` (or `global_notes`) → revise that unit in the plan
+     **markdown** (source of truth), bump `revision_id`, `smriti html render
+     --session <id> <next-spec>`, and re-await.
+   - `action: finish` → the plan is approved. `smriti html stop --session <id>`
+     and advance to the `work` stage.
+4. **Block-with-fallback** (per the HTML-render resolver): if the server is
+   unreachable or the user ignores the browser, fall back to a single
+   AskUserQuestion — *approve the plan / request revisions* — so the gate is
+   never a hard stop.
+
+Approval here is a **human checkpoint**, not an approvals-key transition — the
+plan key was already stamped by `/plan`. Re-grounding doesn't apply (a gate
+mutates nothing).
+
+### Repair loop (one bounce per review class, then escalate)
+
+A `review-only` stage that returns `NEEDS_CHANGES` is a real blocker, not a
+suggestion. Route it back **once**:
+
+- `plan-eng-review` → `NEEDS_CHANGES`: bounce to `Skill(plan)` to revise the
+  plan, then re-run `Skill(plan-eng-review)`.
+- `eng-review` / `design-review` → `NEEDS_CHANGES`: bounce to `Skill(work)` to
+  address the findings, then re-run that same review.
+
+Track the bounce count **per review class** in-conversation. If the review is
+*still* `NEEDS_CHANGES` after one bounce, **stop and escalate to the human** with
+the blocking finding — do not loop a second time. Mechanical/auto-fixable
+findings are handled inside the review stage itself (its severity-gated posture);
+the repair loop is only for the blocking remainder.
+
+### Gate 2: ping — stop before ship
+
+When `work` is done and `eng-review` (plus `design-review` when it applied) are
+terminal-good, the autonomous run is over. Emit the final completion block, then
+a short ping and **stop**:
+
+```
+✅ pipeline complete — implementation built and reviewed on <branch>.
+   <N> units landed · eng-review <status>· design-review <status|skipped>
+   Next (you drive): /ship to ship, then /clean after it merges.
+```
+
+Default ping is this stop-and-print hand-off (no push-notification dependency).
+Do **not** auto-invoke `/ship` or `/clean` — shipping is outward-facing and stays
+in the user's hands by design.
+
