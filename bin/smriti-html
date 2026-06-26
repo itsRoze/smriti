@@ -389,8 +389,8 @@ ${sectionsHtml}
   <span class="bar-hint" id="bar-hint"></span>
   <span class="spacer"></span>
   <div id="server-controls" hidden>
-    <button id="submit-btn" type="button">Submit &amp; continue</button>
-    <button id="finish-btn" class="primary" type="button">Submit &amp; finish</button>
+    <button id="finish-btn" class="primary" type="button">Accept</button>
+    <button id="submit-btn" type="button">Request changes</button>
   </div>
 </div>
 
@@ -438,7 +438,7 @@ document.getElementById('copy-btn').addEventListener('click', () => {
 const served = location.protocol === 'http:' || location.protocol === 'https:';
 if (served) {
   document.getElementById('server-controls').hidden = false;
-  document.getElementById('bar-hint').textContent = 'Continue → Claude revises & you review again   ·   Finish → apply & done';
+  document.getElementById('bar-hint').textContent = 'Accept → apply your calls & finish   ·   Request changes → Claude revises & you review again';
 
   // Dirty-state guard (U2b): track unsaved edits so a live-reload never blows
   // away in-progress typing.
