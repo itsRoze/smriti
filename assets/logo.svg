@@ -1,0 +1,9 @@
+<svg width="250" height="86" viewBox="0 0 250 86" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="smriti">
+  <title>smriti</title>
+  <g fill="#14181f">
+    <rect x="32" y="28" width="46" height="46" rx="12" opacity="0.35"/>
+    <rect x="20" y="20" width="46" height="46" rx="12" opacity="0.62"/>
+    <rect x="8" y="12" width="46" height="46" rx="12"/>
+  </g>
+  <text x="92" y="59" font-family="Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif" font-size="46" font-weight="600" letter-spacing="-2" fill="#14181f">smriti</text>
+</svg>
