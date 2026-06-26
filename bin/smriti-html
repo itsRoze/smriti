@@ -356,6 +356,7 @@ ${cards}
   .bar .spacer{flex:1}
   .bar-hint{font:500 11px/1.45 "JetBrains Mono",monospace;letter-spacing:.03em;color:var(--muted);max-width:48%}
   @media(max-width:620px){.bar-hint{display:none}}
+  .sent{font:600 13.5px/1.4 "Hanken Grotesk",sans-serif;color:var(--signal)}
   .bar button{font:600 13px/1 "Hanken Grotesk",sans-serif;letter-spacing:.01em;padding:12px 22px;border-radius:10px;
     border:1px solid var(--hair);background:var(--paper-2);color:var(--soft);cursor:pointer;transition:.15s}
   .bar button:hover{background:#fff;border-color:var(--muted)}
@@ -388,6 +389,7 @@ ${sectionsHtml}
 <div class="bar">
   <span class="bar-hint" id="bar-hint"></span>
   <span class="spacer"></span>
+  <span id="sent" class="sent" hidden></span>
   <div id="server-controls" hidden>
     <button id="finish-btn" class="primary" type="button">Accept</button>
     <button id="submit-btn" type="button">Request changes</button>
@@ -454,19 +456,32 @@ if (served) {
     b.appendChild(btn); b.style.display = 'block';
   }
 
+  const sc = document.getElementById('server-controls');
+  const setDisabled = (v) => sc.querySelectorAll('button').forEach((b) => { b.disabled = v; });
+  function markSent(action) {
+    dirty = false;             // a revision reload (if any) should auto-apply
+    sc.style.display = 'none';  // remove the buttons so the choice can't be re-clicked
+    document.getElementById('bar-hint').textContent = '';
+    const sent = document.getElementById('sent');
+    sent.textContent = action === 'finish'
+      ? '✓ Accepted — sent to Claude. You can close this tab.'
+      : '✓ Sent to Claude — revising. This tab refreshes with the next version (or reopen it later).';
+    sent.hidden = false;
+  }
+  let submitting = false;
   async function submit(action) {
+    if (submitting) return;     // one decision per render — no double-submit
+    submitting = true; setDisabled(true);
     try {
       const res = await fetch('/submit', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(buildPayload(action)) });
       const data = await res.json();
-      if (data.status === 'accepted') {
-        dirty = false; // submitted — let the next revision auto-reload us in
-        flash(action === 'finish' ? 'Review finished — return to Claude Code.' : 'Submitted — Claude is revising…');
-      } else {
-        flash('Server: ' + (data.status || 'rejected') + (data.unknown_card_ids ? (' ' + JSON.stringify(data.unknown_card_ids)) : ''));
-      }
+      if (data.status === 'accepted') { markSent(action); return; }
+      flash('Server: ' + (data.status || 'rejected') + (data.unknown_card_ids ? (' ' + JSON.stringify(data.unknown_card_ids)) : ''));
+      submitting = false; setDisabled(false);
     } catch (e) {
       flash('Submit failed — use “Copy response” instead.');
       document.getElementById('copy-fallback').scrollIntoView();
+      submitting = false; setDisabled(false);
     }
   }
   document.getElementById('submit-btn').addEventListener('click', () => submit('submit'));
