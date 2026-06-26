@@ -39,7 +39,7 @@ Each skill produces an artifact the next one reads. Run them in order; downstrea
 
 | Stage | Skill | Writes |
 |-------|-------|--------|
-| Entry | `/begin` | Routes to `/brainstorm`, `/debug`, `/work`, or implement fast path |
+| Entry | `/begin` | Routes `/debug` / `/work` / implement; for feature work **orchestrates the autonomous pipeline** (design → plan → review → build), pausing at two gates |
 | Think | `/bootstrap` | `PROJECT.md` (one-time per repo) |
 | Think | `/design-consultation` | `DESIGN.md` + self-contained HTML preview |
 | Think | `/brainstorm` | `~/.smriti/projects/<slug>/<branch>-design-<ts>.md` |

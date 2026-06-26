@@ -49,31 +49,47 @@ approvals state:
 smriti approvals get-json | jq -c .
 ```
 
-**Next stage = the first stage in table order whose status is `NOT_YET_RUN`**,
-skipping any `cond` stage whose condition does not hold (mark those `SKIPPED`
-first, below). Because the next stage is *computed from persisted state*, the
-walk is **resumable for free**: if this conversation dies mid-pipeline, re-running
-`/begin` recomputes the same next stage and continues — no separate resume state.
+**Walk the stage-table positionally**, top to bottom. For each row decide
+"already done?" by the stage's `kind` — `work` and the two gates are **not** in
+the approvals `SKILLS` array (`brainstorm plan plan-eng-review plan-design-review
+eng-review design-review ship`), so you cannot read their status from approvals;
+only the six review/doc stages have approvals entries.
 
-Resolve conditional stages up front, once, right after the design doc exists:
+| kind | "done?" signal |
+|------|----------------|
+| review/doc stage (`brainstorm`, `plan`, `plan-eng-review`, `plan-design-review`, `eng-review`, `design-review`) | approvals status is terminal-good (`APPROVED` / `CONDITIONAL` / `SKIPPED`) |
+| `work` | the implementation commits exist on the branch (`git log` shows the plan's units) — work is deliberately *not* an approvals gate |
+| gate (`approve-plan`, `ping`) | the human acted this session; on resume, inferred from downstream state (impl commits exist ⇒ the plan was approved) |
+
+The next stage is the first row that isn't yet done. **Resumability:** the six
+approvals-backed stages resume exactly from persisted state; `work` and the gates
+are *inferred* from git + conversation, so resume across those edges is
+best-effort, not exact.
+
+Resolve each conditional stage **at its own position**, not all up front — the
+two conditions become knowable at different times:
+
+- **`plan-design-review`** (before the plan gate): applies when the design has
+  **UI scope**. Judge that from the design doc / `DESIGN.md`; no diff exists yet.
+  No UI scope → stamp it `SKIPPED`.
+- **`design-review`** (after `work`): applies when the **diff** touches UI files.
+  Only now does a diff exist, so reuse the existing UI-diff rule rather than a
+  second detector (Tier 1d):
 
 ```bash
-# plan-design-review + design-review apply only to UI work.
-# 'smriti approvals required' already encodes the design-review UI-diff rule;
-# reuse it rather than inventing a second UI-detection path (Tier 1d).
-smriti approvals required        # prints "eng-review" plus "design-review" iff UI diff
+smriti approvals required        # post-work: prints "design-review" iff the diff has UI files
 ```
 
-If a conditional stage does not apply, stamp it `SKIPPED` so the walk steps over
-it and the approvals doc reads honestly:
+When a conditional stage does not apply, stamp it `SKIPPED` so the walk steps
+over it and the approvals doc reads honestly:
 
 ```bash
-smriti approvals set design-review SKIPPED --note "no UI files in scope"
+smriti approvals set design-review SKIPPED --note "no UI files in the diff"
 ```
 
 The loop, in prose:
 
-1. Compute the next stage from approvals state (above).
+1. Compute the next stage by walking the table positionally (above).
 2. If it's a **gate**, hand control to the human (see the gate sections) and
    stop advancing until they answer.
 3. Otherwise **re-ground** (below), run the stage's transition pre-check, invoke
@@ -102,15 +118,19 @@ Approvals state is necessary but **not sufficient** — a stage can finish with
 plausible prose yet leave state inconsistent. Guard every transition:
 
 **Pre-check (before invoking stage `S`):** every applicable stage *above* `S` in
-the table must be in a terminal-good status — `APPROVED`, `CONDITIONAL`, or
-`SKIPPED`. If any earlier stage is still `NOT_YET_RUN` or sits at `NEEDS_CHANGES`,
-the walk is out of order: **stop and escalate to the human**, don't invoke `S`.
+the table must be **done per its kind** (the done-signal table above) — terminal-
+good approvals for review/doc stages, implementation commits for `work`, the human
+having acted for gates. If an earlier stage isn't done, or a review stage sits at
+`NEEDS_CHANGES`, the walk is out of order: **stop and escalate to the human**,
+don't invoke `S`.
 
 **Post-check (after stage `S` returns):** accept `S` as complete **only if both**
 hold —
 
-1. its approvals status moved out of `NOT_YET_RUN` to a legal terminal status
-   (`APPROVED` / `CONDITIONAL` / `NEEDS_CHANGES` / `SKIPPED`); **and**
+1. its **done-signal fired** — for a review/doc stage, approvals moved out of
+   `NOT_YET_RUN` to a legal terminal status (`APPROVED` / `CONDITIONAL` /
+   `NEEDS_CHANGES` / `SKIPPED`); for `work`, the plan's unit commits now exist on
+   the branch; **and**
 2. `S` emitted its **completion block** (below) naming the stage and outcome.
 
 If either is missing, **do not advance** — stop and tell the user what's
@@ -122,7 +142,7 @@ After each non-gate stage, emit exactly this block. It's both the human-readable
 hand-off and the post-check's completion marker — keep the shape fixed:
 
 ```
-▸ stage: <stage-id> → <APPROVED|CONDITIONAL|NEEDS_CHANGES|SKIPPED>
+▸ stage: <stage-id> → <APPROVED|CONDITIONAL|NEEDS_CHANGES|SKIPPED|BUILT>
   objective:    <one line — what this stage was for>
   changed:      <files touched this stage, or "none (review/doc only)">
   open risks:   <one line, or "none">
