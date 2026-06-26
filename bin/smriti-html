@@ -265,6 +265,9 @@ function renderHtml(spec: Spec): string {
           const def = card.default_decision ?? 'accept';
           const radio = (value: Decision, label: string) =>
             `<label><input type="radio" name="dec-${escapeHtml(card.id)}" value="${value}"${def === value ? ' checked' : ''}> ${label}</label>`;
+          // One box per card; its prompt follows the decision (rewrite on Edit,
+          // reason on Reject, optional note otherwise). The JS updates it live.
+          const ph = def === 'edit' ? 'Rewrite the finding…' : def === 'reject' ? 'Why reject? (optional)' : 'Add a note (optional)';
           return `      <article class="card" data-card-id="${escapeHtml(card.id)}" data-status="${status}">
         <header>
           <span class="badge badge-${status}">${status}</span>
@@ -273,8 +276,7 @@ function renderHtml(spec: Spec): string {
         <div class="body">${mdLite(card.body_md)}</div>
         <div class="controls">
           <div class="decision">${radio('accept', 'Accept')} ${radio('reject', 'Reject')} ${radio('edit', 'Edit')}</div>
-          <textarea class="edited" placeholder="Revised finding text…"${def === 'edit' ? '' : ' hidden'}></textarea>
-          <textarea class="notes" placeholder="Notes for Claude (free-form — drives the next revision)…"></textarea>
+          <textarea class="cardtext" placeholder="${ph}"></textarea>
         </div>
       </article>`;
         })
@@ -352,6 +354,8 @@ ${cards}
     border-top:1px solid var(--hair);padding:13px 16px calc(13px + env(safe-area-inset-bottom));
     display:flex;gap:11px;justify-content:flex-end;align-items:center;flex-wrap:wrap;z-index:50}
   .bar .spacer{flex:1}
+  .bar-hint{font:500 11px/1.45 "JetBrains Mono",monospace;letter-spacing:.03em;color:var(--muted);max-width:48%}
+  @media(max-width:620px){.bar-hint{display:none}}
   .bar button{font:600 13px/1 "Hanken Grotesk",sans-serif;letter-spacing:.01em;padding:12px 22px;border-radius:10px;
     border:1px solid var(--hair);background:var(--paper-2);color:var(--soft);cursor:pointer;transition:.15s}
   .bar button:hover{background:#fff;border-color:var(--muted)}
@@ -382,10 +386,11 @@ ${sectionsHtml}
 </div>
 
 <div class="bar">
+  <span class="bar-hint" id="bar-hint"></span>
   <span class="spacer"></span>
   <div id="server-controls" hidden>
-    <button id="submit-btn" class="primary" type="button">Submit round</button>
-    <button id="finish-btn" type="button">Finish review</button>
+    <button id="submit-btn" type="button">Submit &amp; continue</button>
+    <button id="finish-btn" class="primary" type="button">Submit &amp; finish</button>
   </div>
 </div>
 
@@ -398,12 +403,10 @@ function buildPayload(action) {
     const picked = card.querySelector('input[type=radio]:checked');
     const decision = picked ? picked.value : 'accept';
     const d = { decision };
-    if (decision === 'edit') {
-      const t = card.querySelector('textarea.edited');
-      if (t && t.value.trim()) d.edited_text = t.value;
-    }
-    const n = card.querySelector('textarea.notes');
-    if (n && n.value.trim()) d.notes = n.value;
+    // One box: its text is the rewrite when Editing, otherwise a free-form note.
+    const t = card.querySelector('textarea.cardtext');
+    const text = t && t.value.trim() ? t.value : '';
+    if (text) { if (decision === 'edit') d.edited_text = text; else d.notes = text; }
     decisions[id] = d;
   });
   const payload = Object.assign({}, SESSION, { action: action, decisions: decisions });
@@ -411,12 +414,13 @@ function buildPayload(action) {
   if (gn && gn.value.trim()) payload.global_notes = gn.value;
   return payload;
 }
-// Edit-textarea visibility follows the radio selection.
+// The single per-card box re-prompts based on the chosen decision.
 document.querySelectorAll('article.card').forEach((card) => {
+  const box = card.querySelector('textarea.cardtext');
+  const prompt = (v) => v === 'edit' ? 'Rewrite the finding…' : v === 'reject' ? 'Why reject? (optional)' : 'Add a note (optional)';
   card.querySelectorAll('input[type=radio]').forEach((r) =>
     r.addEventListener('change', () => {
-      const edit = card.querySelector('textarea.edited');
-      if (edit) edit.hidden = card.querySelector('input[type=radio]:checked').value !== 'edit';
+      if (box) box.placeholder = prompt(card.querySelector('input[type=radio]:checked').value);
     })
   );
 });
@@ -434,6 +438,7 @@ document.getElementById('copy-btn').addEventListener('click', () => {
 const served = location.protocol === 'http:' || location.protocol === 'https:';
 if (served) {
   document.getElementById('server-controls').hidden = false;
+  document.getElementById('bar-hint').textContent = 'Continue → Claude revises & you review again   ·   Finish → apply & done';
 
   // Dirty-state guard (U2b): track unsaved edits so a live-reload never blows
   // away in-progress typing.
