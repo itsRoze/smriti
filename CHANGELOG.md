@@ -2,223 +2,134 @@
 
 ## 0.16.1 — 2026-06-30
 
-- docs(oss): U5 — README hero with logo + badges
-- feat(oss): U4 — add smriti logo (layered-cards mark + wordmark)
-- docs(oss): U3 — add CONTRIBUTING + CODE_OF_CONDUCT
-- chore(oss): U2 — gitignore .claude/settings.local.json
-- chore(oss): U1 — scrub private-tracker + personal refs from working tree
+### Added
+- Project logo and a README hero with status badges.
+- `CONTRIBUTING.md` and `CODE_OF_CONDUCT.md` for open-source readiness.
 
+### Changed
+- Scrubbed internal issue-tracker references from docs, comments, and tests; the institutional lessons they anchored are kept inline.
+- `.gitignore` now excludes machine-local Claude Code settings (`.claude/settings.local.json`).
 
 ## 0.16.0 — 2026-06-26
 
-- chore: apply /eng-review auto-fixes
-- test(pipeline): U4 — durable pipeline.bats + plan-spec fixture
-- feat(begin): U3 — wire {{PIPELINE}} into /begin, brainstorm drives the chain
-- feat(pipeline): U2 — gates, repair-loop cap, ping in pipeline.md
-- feat(pipeline): U1 — pipeline.md resolver (stage-table + walk + validator)
-
+### Added
+- `/begin` now orchestrates the whole pipeline for feature work — design → plan → review → build → review — pausing only at two human gates (plan approval and the pre-ship ping). Downstream skills stay unchanged; the orchestration is a layer on top.
 
 ## 0.15.0 — 2026-06-26
 
-- test(gate): U5 — lock the severity-gate contract in ask-user-format
-- feat(brainstorm): U3 — self-answer forcing questions, gate the Codex offer
-- feat(reviews): U2 — align review skills with the severity gate
-- feat(resolver): U1 — severity-gate + run-digest cadence in ask-user-format
-
+### Changed
+- Review skills now triage findings by stakes: low-stakes calls are auto-resolved with a one-line note, and only genuine forks become questions. Each run ends with a digest of what was decided for you, so you review in one pass instead of step by step.
 
 ## 0.14.0 — 2026-06-25
 
-- feat(html): lock the action bar after submit with a 'sent to Claude' state
-- fix(html): action buttons → Accept / Request changes
-- fix(html): one contextual box per card + clearer action labels
-- style(html): editorial render — frc-devbox-inspired aesthetic
-- fix(html): await survives long waits (Bun idleTimeout would kill the long-poll)
-- fix(html): eng-review — waiter drain, SSE client leak, pidfile-first ordering
-- docs(readme): U5 — document the interactive HTML specs flow
-- feat(plan-eng-review): U4 — HTML triage loop as the default presentation
-- feat(html): U3 — html-render resolver (invocation protocol skills follow)
-- fix(html): server is the authority for session_id
-- refactor(html): memoize slug + single projectViewsDir helper
-- feat(html): U2b — live-UX (SSE live-reload + dirty-guard + keep-alive)
-- feat(html): U2a — sessioned localhost transport (serve/await/render/stop)
-- feat(html): U1 — smriti-html renderer + canonical schema + finding-identity contract
-
+### Added
+- Interactive HTML review for plans and reviews — findings open in the browser as cards you accept, reject, or edit, instead of a long back-and-forth in the terminal. Falls back to the terminal when no browser is available.
 
 ## 0.13.0 — 2026-06-03
 
-- feat(begin): route execution intent to /work + refresh pipeline docs
-- feat(work): /work skill — smriti owns the build step
-- feat(plan): /plan skill + required gate between /brainstorm and /plan-eng-review
-- fix(doc-lookup): smriti latest-doc helper — repair every per-branch doc lookup
+### Added
+- `/plan` — turns a design doc into a unit-by-unit implementation plan that the build step executes against.
+- `/work` — executes the plan: builds each unit, tests as it goes, and commits incrementally.
 
+### Fixed
+- Per-branch design/plan/debug doc lookup, which had silently broken when the filename shape drifted from the lookup glob.
 
 ## 0.12.0 — 2026-06-02
 
-- feat(eng-review): multi-persona enrichment — fan out parallel per-principle persona reviewers for diffs above persona_threshold; merge with dedup + cross-persona confidence-gating
-- feat(config): add persona_threshold config key (default 400) — /eng-review single-agent vs parallel-persona dispatch cutoff, derived from this repo's PR-insertion distribution
-- feat(eng-review): new "Unsubstantiated thresholds / defaults" Pass-2 checklist category — flags judgment-encoding numbers (thresholds, limits, defaults) with no cited basis
-
+### Added
+- `/eng-review` fans out parallel per-principle reviewers on larger diffs, then merges and de-dupes the findings. The cutoff is configurable via the `persona_threshold` config key.
+- New review-checklist category flags judgment-encoding numbers (thresholds, limits, defaults) that ship with no cited basis.
 
 ## 0.11.0 — 2026-05-24
 
-- docs(README): add /begin to pipeline diagram and skill table
-- feat(begin): /begin skill — triage entry point for smriti pipeline
-
+### Added
+- `/begin` — a triage entry point that classifies your request and routes it to the right skill.
 
 ## 0.10.1 — 2026-05-22
 
-- feat(brainstorm): read debug docs as cross-skill artifact bridge
-
+### Added
+- `/brainstorm` reads prior `/debug` investigations on the branch as context.
 
 ## 0.10.0 — 2026-05-20
 
-- feat(slug-cache): store SOURCE_PATH alongside SLUG in cache files; lazy-upgrade legacy single-line format
-- feat(project): add PATH column to 'smriti project list' showing source repo location
-- feat(project): add 'smriti project rename <old> <new>' subcommand for renaming tracked projects
-- feat(slug): detect when path-* slug has a remote available; print migration notice to stderr
+### Added
+- `smriti project rename <old> <new>` for renaming a tracked project.
+- `smriti project list` now shows each project's source repo path.
 
+### Changed
+- The slug cache records the source repo path, and a path-only slug prints a migration notice once a remote is available.
 
 ## 0.9.1 — 2026-05-20
 
-- fix(approvals): fail loud on malformed state file and broken smriti-slug
-
+### Fixed
+- `/ship` now fails loudly on a malformed approvals state file or a broken slug lookup, instead of proceeding silently.
 
 ## 0.9.0 — 2026-05-20
 
-- feat(cli): umbrella dispatcher replaces per-helper PATH symlinks
-
+### Changed
+- A single `smriti` umbrella command replaces the per-helper PATH symlinks — all CLI helpers are now reached via `smriti <command>`.
 
 ## 0.8.0 — 2026-05-19
 
 ### Added
-- `/clean` skill — post-merge tidy: checkout default branch, pull, delete the merged feature branch, prune. Composes with the smriti pipeline (`/ship` → GitHub merge → `/clean` → next ticket). Issues a decision-brief AskUserQuestion before any deletion; lists candidate branches inline (no blind approval).- `bin/smriti-clean` — non-interactive script the skill wraps. Modes: `--plan` (emits one JSON action object: `{action: single|batch|noop|refuse, detection: gh|git-fallback, current_branch, candidates, refusal_reason}`), `--list-merged` (JSONL projection of the same internal candidate model), `--branch <name>` (single-branch tidy), `--all` (batch tidy). Modifiers: `--force` (override branch-local safety guards — unmerged, no-upstream, ahead-of-upstream; does NOT override global preconditions), `--default-branch <name>` (internal/test-only). Stable exit-code contract: `0` success, `2` dirty tree, `3` denylist, `4` unmerged, `5` branch-local soft refusal, `6` detached HEAD / unborn, `8` state-changed mismatch between `--plan` and execute, `64` usage. Revalidates on execute so a branch switch / new commit between `--plan` and `--branch` fails closed instead of deleting the wrong thing.
-- `bin/smriti-default-branch` — single source of truth for default-branch detection. Detection order: `origin/HEAD` → existence of `main` / `master` / `develop` → `init.defaultBranch` → literal `main`. Replaces the inline bash that previously lived only in `lib/resolvers/base-branch-detect.md`; both skill templates (via the resolver) and `bin/` scripts now share one path. Tier 1d — one obvious pattern per task.
-- `scripts/test/smriti-clean.bats` — 34 bats cases. Every `--plan` action dispatch, every exit-code path (including state-changed exit 8 and the squash-merge production happy-path that `git branch -d` reaches via "merged into upstream tip" rather than "merged into HEAD"), `gh` detection (mocked) + `git-fallback`, `--all` skip-with-note for branch-local refusals + hard-stop for global preconditions. Plus a regression assertion for the `Next: /clean` line in the rendered `ship/SKILL.md`.
-- `scripts/test/base-branch.bats` — 6 cases covering the four detection paths plus the outside-a-git-repo fallback.
-
-### Changed
-- `/ship` success path ends with `Next: /clean (after the PR merges — checkout default, pull, delete this branch, prune)`, replacing the prior "After merge: pull main, delete the local branch" prose. Locked under the `Next: /clean` grep assertion in `scripts/test/smriti-clean.bats` so the next refactor of `/ship`'s tail end can't silently drop the discovery hint.
-- `lib/resolvers/base-branch-detect.md` — fenced bash block shrunk from 12 lines to one line (`BASE_BRANCH=$(smriti-default-branch)`). Detection logic now lives in the new `bin/` helper. Regenerated `ship/SKILL.md`, `eng-review/SKILL.md`, `debug/SKILL.md`, `design-review/SKILL.md` consume the shorter form via `bun run gen:skill-docs`.
-- `README.md` — adds `/clean` to the skill table (under a new `Tidy` stage) and extends the pipeline diagram to `... /ship → (merge) → /clean`.
-
-### Why
-
-Today the post-merge tidy is four lines of git the user types after every merged PR (`git checkout main && git pull && git branch -d <branch> && git fetch --prune`). It composes with the smriti pipeline but had no first-class shape, so it relied on muscle memory and silently failed in non-obvious cases: squash-merged branches don't appear in `git branch --merged` at all (branch tip is orphaned post-squash), `git branch -d` refuses on unmerged tips, and `--force` can delete unpushed local work without warning. `/clean` makes each of those refusals explicit, asks once with the candidate list inline before any destructive action, and revalidates state at execute time so the prompt and the action see the same repo.
-
+- `/clean` — post-merge tidy: checkout the default branch, pull, delete the merged feature branch, and prune stale remote refs. Shows the candidate branches and asks once before any deletion, and refuses safely on a dirty tree, unmerged work, or a detached HEAD.
 
 ## 0.7.1 — 2026-05-19
 
 ### Fixed
-- `setup` now discovers skills from the filesystem (every dir-with-SKILL.md) instead of a hardcoded `SKILL_NAMES` array. v0.6.0 renamed `/office-hours` → `/brainstorm` and added `/debug` in the repo but the array was never updated, so re-running setup silently skipped both new skills — they shipped to users without being installed. The array is gone; adding or renaming a skill no longer requires also editing setup.
-- `setup` now cleans up stale smriti-managed symlinks — entries in `~/.claude/skills/` whose target prefix is the smriti install path but whose source dir no longer exists. Catches the `/office-hours` symlink left dangling after the rename. Foreign symlinks (target outside the smriti install) are never touched.
-
-### Added
-- `scripts/test/setup.bats` — 7-scenario regression suite for the registration contract: registers every dir-with-SKILL.md, skips dirs without one, removes stale symlinks (the office-hours bug), leaves foreign symlinks alone, idempotent on re-run, refuses to clobber non-symlinks at the target path, lint-style guard that no hardcoded `SKILL_NAMES=` array can be reintroduced.
+- `setup` discovers skills from the filesystem instead of a hardcoded list, so newly added or renamed skills are always installed. It also removes stale smriti-managed symlinks while leaving foreign symlinks untouched.
 
 ## 0.7.0 — 2026-05-18
 
 ### Added
-- `bin/smriti-project` — CLI for managing the *set* of smriti-tracked projects under `~/.smriti/projects/`. Three subcommands in v1: `list` (slug, last-used, learnings count, designs count per project; excludes `_archive/`), `current` (prints the same slug as the preamble's `SLUG`, wrapping `smriti-slug --print`), and `forget <slug> [--yes]` (destructive — deletes both the project dir AND every slug-cache file pointing at it, so the next `cd` into the repo doesn't resurrect the same slug; interactive confirm unless `--yes`; refuses without `--yes` in non-interactive shells). Prints a reminder after `forget` that in-repo `PROJECT.md` / `DESIGN.md` are git-tracked and untouched.- `scripts/test/project.bats` — 12-scenario suite: empty-state listing, design/learning counts, `_archive` exclusion, slug-cache reverse-lookup deletes every matching cache file while leaving unrelated entries intact, path-traversal guard, non-interactive refuses without `--yes`, unknown slug exits non-zero, usage/help exit codes. Invokes the CLI through a fake PATH symlink so sibling-resolution of `smriti-slug` from `current` is exercised in the production install shape.
+- `smriti project` — manage the set of tracked projects: `list`, `current`, and `forget <slug>` (with a confirmation before deleting project state).
 
 ### Security
-- `bin/smriti-project` rejects slugs containing `/` or starting with `.` before `rm -rf`. Without this guard, `forget ../slug-cache --yes` would resolve to `~/.smriti/slug-cache` (the cache dir exists, so the `[ -d ]` check would pass) and nuke every repo's path→slug mapping. Surfaced during /eng-review on this PR.
-
-### Changed
-- `README.md` — new "Managing tracked projects" section + TOC entry; architecture diagram's bin enumeration adds `project`.
+- `smriti project forget` rejects slugs containing `/` or starting with `.` before deleting, closing a path-traversal hole.
 
 ## 0.6.1 — 2026-05-18
 
-- docs: add smriti-changelog-insert to README bin enumeration
-- fix(ship): smriti-changelog-insert helper to bypass BSD awk multi-line -v
-
+### Fixed
+- CHANGELOG insertion on macOS — multi-commit entry lists no longer drop the new section under BSD awk.
 
 ## 0.6.0 — 2026-05-14
 
-- refactor(brainstorm): rename /office-hours → /brainstorm
-- feat(debug): add /debug skill for systematic root-cause investigation
-- chore: apply /eng-review fixes from Codex second opinion
-- fix(codex-second-opinion): drop obsolete --model-reasoning-effort flag
+### Added
+- `/debug` — systematic root-cause investigation skill.
+
+### Changed
+- Renamed `/office-hours` → `/brainstorm`.
 
 ## 0.5.0 — 2026-05-07
 
 ### Added
-- `eng-review/checklist.md` Pass 2 — new "CLI binary symlink coverage" item flags new or modified `bin/` scripts that derive their install location from `$0` / `$BASH_SOURCE` / `dirname` but lack a symlink-invocation test. Production invocations through `~/.local/bin/` are symlinks; absolute-path tests miss path-resolution bugs (this class of bug).
-- `ship/SKILL.md.tmpl` Step 5b — smoke-test new CLIs via the PATH symlink before opening the PR. Sits between Step 5 (tests) and Step 6 (coverage audit); detects changed `bin/smriti-*` scripts and exercises each through the production install path, sandboxing destructive CLIs via `mktemp -d`. Calls out explicitly that `--help` alone is insufficient — early-exit help short-circuits before path resolution, exactly the gap that let this bug class ship.
-
-### Changed
-- `ship/SKILL.md.tmpl` intro — pre-existing "12 steps" undercount corrected to "13 steps (plus sub-step 5b)" to match the actual numbered steps.
-
-### Why
-
-This bug shipped with green tests because the suite invoked the binary by absolute repo path while production invokes via `~/.local/bin/` symlink — `$0` differs between the two. Filing a permanent checklist item + smoke step is the durable fix for that bug class; "remember to test it manually" is not.
+- `/ship` smoke-tests new or changed `bin/` CLIs through their installed PATH symlink before opening a PR, catching path-resolution bugs that pass the test suite but break the installed command.
+- Review checklist flags `bin/` scripts that derive their install path from `$0`/`$BASH_SOURCE`/`dirname` but lack a symlink-invocation test.
 
 ## 0.4.1 — 2026-05-07
 
 ### Fixed
-- `bin/smriti-principles-install` resolved its install path from `$0` directly, but `$0` is the symlink path when invoked via PATH (`~/.local/bin/smriti-principles-install` → repo's `bin/`). `pwd -P` resolves the *directory's* symlinks, never the script's own — so `smriti_root` derived from the symlink's parent (`~/.local`) instead of the actual repo. Result: every project that ran `smriti-principles-install` got an `@`-line pointing at `~/.local/lib/resolvers/principles.md` (a non-existent path), Claude Code silently failed to load the principles, and the preamble's `HAS_PRINCIPLES=yes` check passed (it only verified marker + adjacent `@`-line *shape*, not that the referenced file existed) — so no nudge fired either.- Fix: dereference `$0` via the existing `resolve_symlink_one_level` helper before deriving `bin_dir`. One-hop resolution is sufficient for the documented install shape (PATH symlink → repo file). Multi-hop is acknowledged as out of scope in the helper's comment.
-- **Migration:** users with existing installs re-run `smriti-principles-install` once per affected repo. The CLI's marker-update path detects the smriti-shaped `@`-line at the wrong path and replaces it. Idempotent; preserves user content.
-
-### Added
-- `scripts/test/principles.bats` Story 14 — regression test that invokes the CLI via a symlink in a sibling dir and asserts the resulting `@`-line matches the canonical line from a direct invocation. Closes the test-coverage gap that let the bug ship.
-
-### Process
-- `.gitignore` adds `/CLAUDE.md` (anchored to repo root) so smriti's own dev clone — where the CLI resolves the `@`-line to a machine-specific path like `~/dev/smriti/lib/resolvers/principles.md` — doesn't accidentally commit a non-portable CLAUDE.md. Anchored pattern prevents accidentally ignoring fixture or sub-dir CLAUDE.md files.
-- Added a Pass-2 checklist item to `eng-review/checklist.md` ("CLI binary symlink coverage") and a `/ship` smoke step that invokes new `bin/*` scripts via PATH symlink before opening the PR. Permanent guardrail for the class of path-resolution bug where tests pass but the installed CLI breaks.
+- `smriti-principles-install` resolved the wrong install path when run via its PATH symlink, so the coding principles silently failed to load. Re-run `smriti-principles-install` once per affected repo to repair the import.
 
 ## 0.4.0 — 2026-05-07
 
 ### Added
-- `lib/resolvers/principles.md` — single-source-of-truth coding-principles file shared across every project that opts in. Tier 1 (hard gates) operationalizes "optimize for AI" as four behaviors: searchability, locality, explicitness, consistency. Tier 2 captures user preferences (small functions, descriptive names, comments-for-WHY, facade-only-on-second-consumer, etc.). Tier 2b operationalizes "leave the garden better" as a review-effort budget. Tier 3 is a narrative tie-breaker. Smell appendix names rigidity / fragility / immobility / opacity for cite-ability — diagnoses, not rules. Conflict ladder: lower-numbered tier wins.- `bin/smriti-principles-install` — idempotent CLI that adds (or updates) a sentinel-marker block in the project's `CLAUDE.md`:
-  ```
-  # smriti:principles
-  @~/.claude/skills/smriti/lib/resolvers/principles.md
-  ```
-  Repo-root resolution via `git rev-parse --show-toplevel` (pwd fallback for non-git). Atomic temp-write + `mv` (portable across BSD/GNU). Strips CR for line comparison; normalizes CRLF to LF on rewrite. Five behaviors: create-if-missing / append-if-marker-absent / no-op-if-already-installed / migrate-on-path-change / **fail-loud** if marker present but the line below is unrelated user content (zero silent overwrites). One-level symlink resolution so the underlying target file is mutated, not the symlink replaced. Prints reload notice so the user knows to restart Claude Code to pick up the new `@`-import.
-- `{{PRINCIPLES}}` resolver injected into `eng-review/SKILL.md.tmpl` (new Phase 1b + Pass 3) and `plan-eng-review/SKILL.md.tmpl` (new "Principles" section). Reviews now cite findings by tier and rule (`Tier 1b (locality)`, `Tier 2.7 (premature facade)`).
-- `bootstrap/SKILL.md.tmpl` — Phase 3d calls `smriti-principles-install` after `PROJECT.md` write so new repos get the @-import automatically. Documents fail-loud behavior so /bootstrap doesn't paper over a non-zero exit.
-- `lib/resolvers/preamble.md` — `HAS_PRINCIPLES` check verifies BOTH the marker line AND the adjacent `@`-line (matches the install contract; broken-install states correctly trigger the nudge instead of being suppressed). Soft auto-nudge fires early in skill output: *"NOTE: principles not installed in this repo. Run 'smriti-principles-install' to enable cross-project coding principles."*
-- `scripts/test/principles.bats` — 14-scenario suite: self-contained lint (rejects relative paths AND `{{...}}` placeholders), CLI idempotency, fresh-create, preserve-existing user content, marker-update on path migration, fail-loud on adjacency violation, fail-loud when marker is the last line, subdirectory cwd resolution, empty CLAUDE.md, CRLF input detection, symlinked CLAUDE.md (mutates target, preserves symlink), byte-exact `@`-line assertion via reference install, non-git pwd fallback. Total test count: 64 bats + 4 bun.
-
-### Changed
-- `README.md` — new "Principles" section documents the file's role, install command, soft-nudge rollout, and v1 trade-offs accepted (path portability, no cite-by-ID, mid-session reload). TOC + architecture diagram + bin/ list updated.
-
-### Cross-project propagation
-
-Editing `lib/resolvers/principles.md` in this repo propagates to every project that has run `smriti-principles-install` — the @-import points at the smriti install path, so the next Claude Code session in any installed repo picks up the new content. No per-project sync.
-
-### Follow-up
-
-- v2 (structured + `smriti-principles` CLI with cite-by-ID and schema validation) tracked as a follow-up.
+- Shared coding-principles file (`lib/resolvers/principles.md`) with tiered rules, plus `smriti-principles-install` to import it into a project's `CLAUDE.md`. `/eng-review` and `/plan-eng-review` now cite findings by principle tier and rule, and `/bootstrap` installs the import automatically for new repos.
 
 ## 0.3.0 — 2026-05-02
 
 ### Added
-- `bin/smriti-browse` — localhost-only browser audit CLI for `/design-review` v2. Subcommands: `audit` (multi-URL screenshots + ARIA snapshot + console capture), `login` (headed Chromium → save Playwright `storageState`), `install` (download Chromium on demand), `update` (bump npm package + refresh binary in lockstep). Strict URL gate (parsed-URL host allowlist: `localhost` / `127.0.0.1` / `::1` / `*.localhost`); `--allow-remote` is the deliberate escape hatch.
-- `/design-review` v2 — gated on `browse_enabled=true`. Reads `~/.smriti/projects/<slug>/audit-urls.txt` (or first-run prompt — file lives in smriti state, never in the project repo). Runs `smriti-browse audit`, ingests `audit.json`, emits rendered findings alongside the static pass. Multi-URL approval collapse: any `page-error` / `console-error` / stale-auth → `NEEDS_CHANGES`.
-- `browse_enabled` config key — `smriti-config set browse_enabled true|false`. Asked once at `./setup`; persisted; respected on subsequent runs. `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1` is set when disabled, so non-UI users pay zero install-time cost.
-- Audit-time isolation invariants: ephemeral `BrowserContext` per URL, no persistent profile, no shared cookies/storage, downloads disabled, permissions denied, animations + transitions disabled via `addInitScript`. `auth-state.json` written with file mode `0600`.
-- Untrusted-data discipline: all page-derived strings (`page-title`, `console-*`, `page-error`, `final-url`, `nav-error`, `aria-error`, `screenshot-error`) wrapped as `{id, kind, value}` in `untrusted_observations[]`. The wrapper is provenance/labeling — `/design-review` never JSON.stringifies the audit and feeds it to an LLM; trusted findings reference observations by `id`.
-- Stale-auth heuristic: page navigated to a `/(sign[-_ ]?in|log[-_ ]?in|auth)/i` path from a non-login starting URL → exit `3`, no lying screenshots captured.
-- Test infrastructure: `scripts/run-tests.sh` unifies bats (CLI contract + URL-gate regression — 18 new tests) and `bun test` (live Playwright integration: ARIA capture, dev-server-missing, stale-auth detection, multi-URL worst-of exit code). Tests skip cleanly when Chromium isn't installed.
+- `/design-review` v2 — an optional localhost browser audit (screenshots, ARIA snapshot, console capture) via the new `smriti browse` CLI, gated on a `browse_enabled` config key and restricted to localhost URLs by default.
 
 ### Changed
-- `setup` interactively prompts on first run for browser-audit support; persists to `~/.smriti/config`. Tolerates EOF (Ctrl-D) under `set -e`.
-- `bin/smriti-config` known-keys list extended with `browse_enabled`.
-- `ship/SKILL.md.tmpl` Step 5 dropped the `npm test` fallback — bun is required, pnpm is the legitimate fallback. (Honors the never-npm invariant smriti has had implicitly since v0.1.)
-- `package.json` — `playwright@1.59.1` is the first runtime dependency. Pinned. `smriti-browse update` bumps the npm package + reinstalls the Chromium binary in one step (avoids version drift between the two).
-- `README.md` — new "Browser audit" section, updated config table + per-project state-dir layout, deferred-list line about "browser daemon" removed (shipped, no daemon).
-
-### Removed
-- `scripts/test-version-bump.sh` — superseded by `scripts/run-tests.sh` (which runs bats AND bun test).
+- `setup` asks once whether to enable browser-audit support; non-UI users pay no browser-download cost.
 
 ## 0.2.0 — 2026-05-01
 
-### Fixed
-- `/ship` Step 9 now correctly detects when `VERSION` and `package.json` drift apart on a bumped branch. Previously, a single-file diff against base classified as "already bumped" and silently left the other file stale. New 4-state classifier (`FRESH` / `ALREADY_BUMPED` / `DRIFT_STALE_PKG` / `DRIFT_UNEXPECTED`) repairs the stale file without re-bumping.- `bin/smriti-approvals` now sanitizes branch names containing `/` (e.g., `feature/foo-...`) when building state-file paths. Existing slash-named state files are migrated on first run.
-- Five `SKILL.md.tmpl` files (`office-hours`, `plan-eng-review`, `plan-design-review`, `design-consultation`, `ship`) had the same latent slash-in-path bug — fixed via a new `BRANCH_SLUG` var in the shared preamble.
-
 ### Added
-- `bin/smriti-version-bump` — VERSION ↔ package.json classifier and apply/repair tool. CRLF stripping, semver validation, jq-only writes.
-- `bin/smriti-pr-title-rewrite` — idempotent helper that prefixes PR titles with `v<VERSION>`. Defends against glob metacharacters via literal regex matching.
-- `/ship` Step 12 now passes the chosen PR title through `smriti-pr-title-rewrite`, so PR titles deterministically start with `v<VERSION> ` (idempotent on re-runs after a version bump).
-- First test infrastructure: `scripts/test-version-bump.sh` runner + 32 bats tests (`scripts/test/*.bats`) covering all classifier states, hardening edge cases, and the title rewriter. Wired into `bun run test`. Requires [bats-core](https://github.com/bats-core/bats-core).
+- `smriti version-bump` and `smriti pr-title-rewrite` helpers, wired into `/ship`.
+- First test suite (bats + bun), run via `bun run test`.
+
+### Fixed
+- `/ship` detects when `VERSION` and `package.json` drift apart and repairs the stale file without re-bumping.
+- Branch names containing `/` are sanitized when building approvals state-file paths.
