@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.16.1 — 2026-06-30
+
+- docs(oss): U5 — README hero with logo + badges
+- feat(oss): U4 — add smriti logo (layered-cards mark + wordmark)
+- docs(oss): U3 — add CONTRIBUTING + CODE_OF_CONDUCT
+- chore(oss): U2 — gitignore .claude/settings.local.json
+- chore(oss): U1 — scrub private-tracker + personal refs from working tree
+
+
 ## 0.16.0 — 2026-06-26
 
 - chore: apply /eng-review auto-fixes
