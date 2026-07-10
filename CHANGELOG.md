@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.0.0 — 2026-07-09
+
+A ground-up simplification. smriti was a multi-stage pipeline of a dozen skills coordinated by an approvals state machine; it's now a single command.
+
+### Changed
+- **`/begin` is the whole flow.** One straight line — explore (parallel agents) → plan → Codex review → approve (interactive HTML) → implement → `/code-review` → verify (Playwright screenshots) → finish — stopping for you at exactly three gates: a genuine question, plan approval, and final review. Shipping stays in your hands: `/ship` opens a PR or pushes to main only when you say so.
+- **`/ship` is now light.** Tests, sync base, commit, and open a PR (or push to main) — no version bumps, no CHANGELOG generation, no inline review.
+- **`/clean` now garbage-collects.** When it deletes a merged branch, it also purges that branch's out-of-repo scratch (plan/design/debug docs + browser audits), so runtime state no longer accumulates forever.
+
+### Removed
+- The `/brainstorm`, `/plan`, and `/work` skills — folded into `/begin`.
+- The `/eng-review` and `/design-review` skills — replaced by the native `/code-review` skill and the `frontend-design` skill for UI.
+- The `/plan-eng-review` and `/plan-design-review` skills — Codex now reviews the plan instead.
+- The `/learn` skill and the per-project learnings store.
+- The approvals state machine and per-branch approvals file, and the `smriti approvals`, `smriti learnings-log`, `smriti learnings-search`, `smriti version-bump`, and `smriti changelog-insert` helpers.
+
+### Kept
+- `/bootstrap`, `/design-consultation`, `/debug`, `/clean`, the shared coding principles, the interactive HTML plan view, and the `smriti browse` Playwright audit.
+
 ## 0.16.1 — 2026-06-30
 
 ### Added

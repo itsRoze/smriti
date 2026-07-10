@@ -1,7 +1,7 @@
 {
   "name": "smriti",
-  "version": "0.16.1",
-  "description": "Personal Claude Code skill stack — opinionated, learns across sessions.",
+  "version": "1.0.0",
+  "description": "Personal Claude Code skill stack — one /begin flow from idea to reviewed, tested change.",
   "license": "MIT",
   "type": "module",
   "scripts": {

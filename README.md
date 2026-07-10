@@ -8,8 +8,8 @@
 <p><em>स्मृति — Sanskrit for memory; that which is remembered.</em></p>
 
 <p>
-  A personal Claude Code skill stack — opinionated, learns across sessions,<br>
-  gets smarter on each codebase over time.
+  A personal Claude Code skill stack — opinionated, one command from<br>
+  idea to a reviewed, tested result, with the human in the loop at three gates.
 </p>
 
 <p>
@@ -26,78 +26,64 @@ Inspired by [gstack](https://github.com/garrytan/gstack), slimmed down for solo 
 
 ## Contents
 
-- [The pipeline](#the-pipeline)
-- [Approval gates](#approval-gates)
+- [The flow](#the-flow)
+- [The skills](#the-skills)
 - [Install](#install)
-- [What a session looks like](#what-a-session-looks-like)
+- [What a run looks like](#what-a-run-looks-like)
 - [Architecture](#architecture)
 - [Configuration](#configuration)
 - [Managing tracked projects](#managing-tracked-projects)
 - [Principles](#principles)
-- [Browser audit](#browser-audit-design-review-v2)
+- [Browser verification](#browser-verification)
 - [Interactive HTML specs](#interactive-html-specs)
-- [What's deferred (v0.2 / later)](#whats-deferred-v02--later)
+- [What changed in v1.0](#what-changed-in-v10)
 - [Acknowledgments](#acknowledgments)
 - [License](#license)
 
-## The pipeline
+## The flow
 
-Each skill produces an artifact the next one reads. Run them in order; downstream skills know what came before.
-
-```
-   ENTRY        THINK            PLAN                              BUILD       REVIEW                   SHIP
-   ─────        ─────            ─────                             ─────       ─────                    ────
-                                        ┌─ /plan-eng-review     ─┐              ┌─ /eng-review     ─┐
-/begin → /bootstrap → /brainstorm → /plan →                     →  /work →                          → /ship → (merge) → /clean
-           │                            └─ /plan-design-review  ─┘              └─ /design-review  ─┘
-           ├─ /debug
-           ├─ /work  (when a plan exists)
-           └─ (implement)      /design-consultation                          /learn  (anytime)
-```
-
-| Stage | Skill | Writes |
-|-------|-------|--------|
-| Entry | `/begin` | Routes `/debug` / `/work` / implement; for feature work **orchestrates the autonomous pipeline** (design → plan → review → build), pausing at two gates |
-| Think | `/bootstrap` | `PROJECT.md` (one-time per repo) |
-| Think | `/design-consultation` | `DESIGN.md` + self-contained HTML preview |
-| Think | `/brainstorm` | `~/.smriti/projects/<slug>/<branch>-design-<ts>.md` |
-| Plan | `/plan` | `~/.smriti/projects/<slug>/<branch>-plan-<ts>.md` (unit-by-unit) |
-| Plan | `/plan-eng-review` | Engineering Review Decisions section in plan doc (findings as an [interactive HTML triage loop](#interactive-html-specs)) |
-| Plan | `/plan-design-review` | Design Review Decisions section + 0–10 scores |
-| Build | `/work` | The code — incremental per-unit commits |
-| Review | `/eng-review` | Auto-fixes + entries in `reviews.jsonl` |
-| Review | `/design-review` | Atomic `style(design):` commits + audit report (+ optional rendered audit via `smriti browse`) |
-| Ship | `/ship` | Tests, version, CHANGELOG, bisectable commits, PR |
-| Tidy | `/clean` | Post-merge: checkout default, pull, delete merged branch(es), prune |
-| Debug | `/debug` | `~/.smriti/projects/<slug>/<branch>-debug-<ts>.md` |
-| Memory | `/learn` | `~/.smriti/projects/<slug>/learnings.jsonl` |
-
-## Approval gates
-
-Each review skill stamps its verdict at the top of the design doc. `/ship` reads the stamps and warns when required gates are missing.
+One command — **`/begin`** — takes a change from idea to a reviewed, tested result in a single straight line. No pipeline, no state machine, no artifacts to hand between skills. It stops for you at exactly **three gates** (marked ★); everything else runs on its own.
 
 ```
-## Approvals
-
-- ✅ /brainstorm       — 2026-04-26 — mode: users; rec: Option 2
-- ✅ /plan              — 2026-04-26 — 5 units; 2 parallel groups
-- ✅ /plan-eng-review    — 2026-04-26 — lean: senior; 0 unresolved
-- ⚠️ /plan-design-review — 2026-04-26 — avg 8.2/10; 1 deferred
-- ✅ /eng-review         — 2026-04-26 — 3 findings; 2 auto-fixed
-- ➖ /design-review      — 2026-04-26 — no UI files in diff
-- ⏸ /ship               — not yet run
+  /begin
+    │
+    0  Ground        read PROJECT.md / DESIGN.md + git state
+    1  Understand    parallel Explore agents map the blast radius
+    2 ★ Gate 1        Clarify — ask only if there's a genuine fork
+    3  Plan          write plan doc to ~/.smriti/… (out of your repo)
+    4  Codex review  independent pass critiques the plan (gated)
+    5 ★ Gate 2        Approve — review the plan as interactive HTML; loop till approved
+    6  Implement      build the plan, test as you go, incremental commits
+    7  Review         native /code-review on the diff; fix real bugs
+    8  Verify         Playwright audit (web) or test suite / CLI checks
+    9 ★ Gate 3        Finish — summarize, then STOP. You say the word to ship.
 ```
 
-| Icon | Status | Meaning |
-|------|--------|---------|
-| ✅ | APPROVED | gate passed cleanly |
-| ⚠️ | CONDITIONAL | passed with deferred items (debt accepted) |
-| ❌ | NEEDS_CHANGES | blocking issues — must revise |
-| ➖ | SKIPPED | not applicable (e.g., no UI scope) |
-| 🔄 | STALE | approved, plan changed since (manual for v0.1) |
-| ⏸ | NOT_YET_RUN | gate hasn't fired |
+Read the steps top to bottom, that's the whole thing:
 
-`/ship` requires `eng-review` always; `design-review` when UI files are in the diff. The rest are recommended, not required. State at `~/.smriti/projects/<slug>/<branch>-approvals.json`.
+0. **Ground** — read `PROJECT.md` / `DESIGN.md` and the git state. No `PROJECT.md`? It stops and tells you to run `/bootstrap` first.
+1. **Understand** — fans out parallel `Explore` subagents to map the blast radius, existing patterns, integration points, and test coverage. UI scope pulls in the `frontend-design` skill.
+2. ★ **Gate 1 · Clarify** — asks a tight set of questions *only* when there's a real fork it can't resolve from the code, `PROJECT.md`, or sensible defaults. Skips otherwise.
+3. **Plan** — writes a plan doc to `~/.smriti/projects/<slug>/<branch>-plan-<ts>.md`, out of your repo. A sizable UI change also builds mockups via `frontend-design` so you *see* it at Gate 2.
+4. **Codex review** — an independent Codex pass critiques the plan; real gaps get folded in. Availability-gated — skipped silently if Codex isn't installed.
+5. ★ **Gate 2 · Approve** — serves the plan as an [interactive HTML view](#interactive-html-specs) (`smriti html serve`) you approve or request changes on. Loops until approved.
+6. **Implement** — builds the plan, tests as it goes, makes incremental commits.
+7. **Review** — runs smriti's native `/code-review` on the diff and fixes real bugs.
+8. **Verify** — Playwright screenshots + ARIA + console errors via `smriti browse audit` for web work; test suite / CLI checks for non-web.
+9. ★ **Gate 3 · Finish** — summarizes the change (with screenshots) and then **stops**. Shipping is explicit: you say the word and it invokes `/ship`.
+
+## The skills
+
+Six skills. `/begin` is the spine; the rest are the setup and teardown around it.
+
+| Skill | What it does | Writes |
+|-------|--------------|--------|
+| `/begin` | The whole flow — idea to reviewed, tested result, three human gates. Manual-only. | `~/.smriti/projects/<slug>/<branch>-plan-<ts>.md` |
+| `/bootstrap` | One-time repo init. Installs the coding principles into the repo's `CLAUDE.md`. | `PROJECT.md` |
+| `/design-consultation` | Build a design system from scratch — the greenfield "establish the vibe" step. | `DESIGN.md` + self-contained HTML preview |
+| `/debug` | Standalone root-cause investigator. | `~/.smriti/projects/<slug>/<branch>-debug-<ts>.md` |
+| `/ship` | Get the branch out on your explicit word — open a PR or push straight to main. Deliberately light: no version bumps, no CHANGELOG, no inline review. | — |
+| `/clean` | Post-merge tidy — checkout base, pull, delete the merged branch, prune. Also purges that branch's out-of-repo scratch (plan/design/debug docs + audits), since the work has shipped. | — |
 
 ## Install
 
@@ -111,48 +97,45 @@ cd ~/.claude/skills/smriti
 
 `setup` symlinks each skill into `~/.claude/skills/<name>/` and the `smriti` umbrella dispatcher into `~/.local/bin/smriti`. All CLI helpers are accessed via `smriti <command>`. To update later: `git pull && ./setup`.
 
-## What a session looks like
+## What a run looks like
 
 ```
-You:    /bootstrap
+You:    /begin  add a "copy link" button to the share sheet
 
-Claude: SLUG: acme-myapp        BRANCH: main     IS_FIRST_TIME: yes
-        Pre-filling from package.json + README + git log...
+Claude: Ground   — PROJECT.md + DESIGN.md loaded; branch: share-copy-link
+        Understand — 4 Explore agents: share sheet lives in one component;
+                     no existing clipboard util; DESIGN.md covers icon buttons.
 
-        [single bundled AskUserQuestion: project type / target user /
-         lean / tech stack / deploy target / design priority]
+        ★ Gate 1 · Clarify
+        Only fork worth surfacing: toast on copy, or silent? [toast / silent]
+You:    toast
 
-        Wrote PROJECT.md. Logged 1 architecture learning.
-        Recommend /design-consultation next (design priority = high).
+Claude: Plan    — wrote share-copy-link-plan-…md; mockup built (UI change).
+        Codex   — independent pass: flagged a missing aria-live region. Folded in.
 
-You:    /brainstorm
+        ★ Gate 2 · Approve
+        Serving plan at http://127.0.0.1:53318 — approve or request changes.
+You:    [clicks Approve in the browser]
 
-Claude: Phase 1 — context loaded.
-        Phase 2 — goal inferred from PROJECT.md (Users section): users.
-        Phase 3 — forcing questions self-answered from context; nothing
-        un-inferable to surface, so no blocking questions.
-        Phase 5 — Three options:
-          Option 1 (minimal viable): human ~6h / Claude ~25min, Completeness 6/10
-          Option 2 (ideal):          human ~3d / Claude ~2h,    Completeness 9/10
-          Option 3 (lateral):        human ~1w / Claude ~4h,    Completeness 9/10
+Claude: Implement — button + clipboard util + toast; 3 commits, tests green.
+        Review    — /code-review: 2 findings, both fixed.
+        Verify    — smriti browse audit: screenshots + ARIA clean, no console errors.
 
-        Recommendation: Option 2 — your evidence is strong enough to
-        justify the bigger build, and lean=senior says don't ship the
-        shortcut.
+        ★ Gate 3 · Finish
+        Done. Share sheet now has a copy-link button (screenshots above).
+        Say the word to ship.
+You:    ship it
 
-        Phase 6 — Get an independent Codex second opinion? [Y/skip]
-
-[...design doc written; approval stamped; handoff to /plan]
+Claude: /ship → PR opened.
 ```
 
 ## Architecture
 
 ```
 ~/.claude/skills/smriti/                   ← code (this repo)
-├── bin/                                     # smriti (umbrella dispatcher) + smriti-{slug,config,project,learnings-*,codex-probe,update-check,approvals,version-bump,pr-title-rewrite,browse,principles-install,changelog-insert,latest-doc}
-├── lib/resolvers/                           # {{PLACEHOLDER}} content (preamble, rubric, hard-rules, principles, etc.)
+├── bin/                                     # smriti (umbrella dispatcher) + smriti-{slug,config,project,codex-probe,update-check,pr-title-rewrite,browse,clean,default-branch,principles-install,html,latest-doc}
+├── lib/resolvers/                           # {{PLACEHOLDER}} content (preamble, principles, design rules, etc.)
 ├── scripts/                                 # gen-skill-docs.ts, skill-check.ts, run-tests.sh + test/*.bats + test/*.test.ts
-├── eng-review/checklist.md                  # the artifact /eng-review reads
 └── <skill>/SKILL.md.tmpl                    # one per skill (generated SKILL.md is gitignored)
 
 ~/.local/bin/smriti                        ← umbrella dispatcher (symlink → bin/smriti)
@@ -160,23 +143,18 @@ Claude: Phase 1 — context loaded.
 ~/.smriti/                                 ← runtime state (never versioned)
 ├── config                                   # global k=v: lean, codex_default, …
 ├── slug-cache/<sha>                         # path → slug mapping (absence = "first-time" trigger)
-└── projects/<slug>/
-    ├── learnings.jsonl                        # append-only, decay-aware
-    ├── reviews.jsonl                          # one entry per review run
-    ├── <branch>-approvals.json                # per-branch approval state
-    ├── <branch>-design-<ts>.md                # design docs (one per /brainstorm run)
-    ├── <branch>-plan-<ts>.md                  # implementation plans (one per /plan run)
-    ├── <branch>-debug-<ts>.md                 # debug summaries (one per /debug run)
-    ├── audit-urls.txt                         # /design-review v2 — URLs to audit (in smriti state, not project repo)
-    ├── auth-state.json                        # /design-review v2 — Playwright storageState (mode 0600, never committed)
-    ├── audits/<branch>-<ts>/                  # /design-review v2 — screenshots, ARIA snapshots, audit.json per URL
-    └── design-audit-<ts>.md                   # /design-review reports
+└── projects/<slug>/                         # a branch's plan/design/debug docs + audits are
+    │                                         #   purged by /clean when that branch is deleted
+    ├── <branch>-plan-<ts>.md                 # implementation plans (one per /begin run)
+    ├── <branch>-debug-<ts>.md                # debug summaries (one per /debug run)
+    ├── views/                                # generated HTML views for Gate 2 (never committed)
+    ├── auth-state.json                       # Playwright storageState for verify (mode 0600, never committed)
+    └── audits/<branch>-<ts>/                 # verify — screenshots, ARIA snapshots, audit.json per URL
 
 <your-repo>/
 ├── PROJECT.md                              # /bootstrap output (committed)
 ├── DESIGN.md                               # /design-consultation output (committed)
-├── CLAUDE.md                               # @-imports lib/resolvers/principles.md from smriti install
-└── TODOS.md                                # cross-referenced by every review skill
+└── CLAUDE.md                               # @-imports lib/resolvers/principles.md from smriti install
 ```
 
 ## Configuration
@@ -186,20 +164,19 @@ Claude: Phase 1 — context loaded.
 | Key | Values | Default | Effect |
 |-----|--------|---------|--------|
 | `lean` | `senior` / `prototype` | `senior` | review depth — `senior` insists on failure-mode coverage; `prototype` ships rough |
-| `codex_default` | `on` / `ask` / `off` | `ask` | whether `/brainstorm` and `/plan-eng-review` auto-prompt for a Codex second opinion |
-| `browse_enabled` | `true` / `false` | (asked at `./setup`) | enables `/design-review` v2 rendered-audit step via `smriti browse` (Playwright) |
+| `codex_default` | `on` / `ask` / `off` | `ask` | whether `/begin`'s Codex plan review fires automatically |
+| `browse_enabled` | `true` / `false` | (asked at `./setup`) | enables `/begin`'s verify browser step via `smriti browse` (Playwright) |
 | `proactive` | `true` / `false` | `true` | reserved (proactive skill suggestions) |
 | `explain_level` | `default` / `terse` | `default` | reserved (output verbosity) |
-| `persona_threshold` | `<int>` (insertions) | `400` | `/eng-review` fans out parallel persona reviewers when a diff's insertions exceed this; smaller diffs use the single-agent pass |
 
 ## Managing tracked projects
 
-`smriti project` owns the *set* of projects under `~/.smriti/projects/` — per-project content (learnings, approvals, designs) is managed by the skills themselves.
+`smriti project` owns the *set* of projects under `~/.smriti/projects/` — per-project content (plans, debug docs, designs) is managed by the skills themselves.
 
 | Command | Purpose |
 |---------|---------|
 | `smriti project new <name>` | scaffold a new project directory with `git init`; print next-step guidance |
-| `smriti project list` | every tracked project: slug, last-used, learnings count, designs count, source path |
+| `smriti project list` | every tracked project: slug, last-used, designs count, source path |
 | `smriti project current` | slug for `$PWD` (same value the preamble exposes as `SLUG`) |
 | `smriti project forget <slug> [--yes]` | delete the project dir AND every slug-cache file pointing at it — interactive confirm unless `--yes`. In-repo `PROJECT.md` / `DESIGN.md` are git-tracked and not touched. |
 | `smriti project rename <old> <new>` | rename a project slug — moves state dir + updates all slug-cache entries pointing at the old slug |
@@ -213,7 +190,7 @@ Claude: Phase 1 — context loaded.
 **Two consumers, one source of truth:**
 
 - **Write-time:** the project's `CLAUDE.md` `@`-imports the file, so Claude Code auto-loads the principles at session start in any repo that's installed.
-- **Review-time:** `/eng-review` and `/plan-eng-review` inject `{{PRINCIPLES}}` directly into their generated `SKILL.md`, treating the principles as explicit criteria — every finding cites a tier and rule.
+- **Review-time:** `/begin`'s `/code-review` step reads the same principles as explicit criteria — every finding cites a tier and rule.
 
 When you edit `lib/resolvers/principles.md`, every project that imports it picks up the change on the next Claude Code session. No per-project sync.
 
@@ -242,20 +219,20 @@ NOTE: principles not installed in this repo. Run 'smriti principles-install' to 
 
 That's the rollout signal — opt in when you see it. No interactive prompts; ignored skills get noticed eventually because the nudge is persistent.
 
-### Trade-offs accepted in v1
+### Trade-offs accepted
 
 - **Path portability.** The `@`-import uses the smriti install path (`~/.claude/skills/smriti/`). On machines where smriti lives elsewhere, the import won't resolve until the user updates the path. Acceptable trade-off in solo / intrapreneur use.
-- **No cite-by-ID.** Reviews say `Tier 1b (locality)` rather than `violates p1-locality`. Structured frontmatter + a `smriti-principles` CLI is tracked as a v2 follow-up.
+- **No cite-by-ID.** Reviews say `Tier 1b (locality)` rather than `violates p1-locality`.
 - **Mid-session reload.** Adding the `@`-import in an already-running Claude Code session won't auto-load until the session restarts — the CLI prints a one-line reminder.
 
-## Browser audit (`/design-review` v2)
+## Browser verification
 
-`/design-review` v1 catches code-level drift (token misuse, AI-slop patterns, hierarchy mistakes) by reading the diff. v2 adds a **rendered audit** via `smriti browse` — a thin Playwright wrapper that captures screenshots at multiple viewports, the ARIA snapshot, and console errors per URL.
+`/begin`'s **verify** step (Step 8) uses `smriti browse` — a thin Playwright wrapper that captures screenshots at multiple viewports, the ARIA snapshot, and console errors per URL, so a web change is checked as *rendered*, not just as a diff.
 
 **Scope is deliberately narrow:**
 
 - **Localhost only.** URLs must parse to `localhost`, `127.0.0.1`, `::1`, or `*.localhost`. `--allow-remote` is the deliberate escape hatch for public pages, off by default.
-- **Audit-only.** Read-only navigation; no clicks, no form fills, no agent-drivable interactive surface. (Out of scope for v0.2; revisit when a second consumer earns it.)
+- **Audit-only.** Read-only navigation; no clicks, no form fills, no agent-drivable interactive surface.
 - **Ephemeral context per URL.** Fresh Playwright context every audit; no persistent profile; no shared cookies/storage; downloads disabled; permissions denied. CSS animations + transitions disabled for stable screenshots.
 
 **Auth on localhost** is handled via Playwright's `storageState` pattern:
@@ -266,9 +243,9 @@ smriti browse login http://localhost:3000 --storage ~/.smriti/projects/<slug>/au
 # State saved to auth-state.json (mode 0600).
 ```
 
-Subsequent audits reuse it: `smriti browse audit ... --storage <path>`. If the session expires, `smriti browse` exits with code 3 (auth_stale) and `/design-review` prompts to re-login.
+Subsequent audits reuse it: `smriti browse audit ... --storage <path>`. If the session expires, `smriti browse` exits with code 3 (auth_stale) and prompts to re-login.
 
-**Output:** the agent gets a structured `audit.json` per URL with all page-derived strings wrapped as `{untrusted: true, kind, value}` observations. **The wrapper is provenance, not enforcement** — `/design-review` never feeds the raw audit to an LLM; trusted findings reference observation IDs from `untrusted_observations[]` instead of embedding page text.
+**Output:** the agent gets a structured `audit.json` per URL with all page-derived strings wrapped as `{untrusted: true, kind, value}` observations. **The wrapper is provenance, not enforcement** — the raw audit is never fed to an LLM; trusted findings reference observation IDs from `untrusted_observations[]` instead of embedding page text.
 
 **Exit codes:** `0` ok · `1` usage · `2` browser/runtime · `3` auth-stale · `4` URL gate violation.
 
@@ -276,31 +253,28 @@ Subsequent audits reuse it: `smriti browse audit ... --storage <path>`. If the s
 
 ## Interactive HTML specs
 
-Long markdown review reports get skimmed. When a review skill has **several
-findings**, `smriti html` renders them as one interactive page you triage in the
-browser — accept / reject / edit each finding, add free-form notes — then round-
-trips your decisions back into the skill in an **iterative loop**: submit → Claude
-revises → the tab live-reloads → react again, until you finish. `/plan-eng-review`
-is the first consumer; `/eng-review` and `/plan-design-review` are next.
+Long markdown plans get skimmed. At **Gate 2**, `/begin` renders the plan as one
+interactive page you review in the browser — approve, or request changes with
+free-form notes — then round-trips your decision back into the skill in an
+**iterative loop**: submit → Claude revises → the tab live-reloads → react again,
+until you approve.
 
-**Markdown stays the source of truth.** The HTML is a *generated view* of the
-findings, written to `~/.smriti/projects/<slug>/views/` (runtime state, never
-committed) — so grep-ability is preserved and nothing in-repo gains markup noise.
+**Markdown stays the source of truth.** The HTML is a *generated view* of the plan,
+written to `~/.smriti/projects/<slug>/views/` (runtime state, never committed) — so
+grep-ability is preserved and nothing in-repo gains markup noise.
 
 **Sessioned local app, not a dumb transport:**
 
 - **Localhost only.** The server binds `127.0.0.1` on an ephemeral port; nothing
   is exposed off-machine.
-- **Revision-scoped.** Each review run gets a `session_id`, each render a
-  `revision_id`. A submit is accepted only when both match the latest open
-  revision — an old browser tab or a second concurrent review can't cross streams
-  (`stale_revision` / `unknown_session`). Decisions key off **stable finding ids**,
-  so a stale submit is never misapplied to the wrong card.
+- **Revision-scoped.** Each run gets a `session_id`, each render a `revision_id`.
+  A submit is accepted only when both match the latest open revision — an old
+  browser tab can't cross streams (`stale_revision` / `unknown_session`).
 - **Self-cleaning.** An idle server self-terminates and stale state is swept on
   the next `serve`, so a skill that dies mid-loop never orphans a process.
 - **Never hard-stuck.** The page always offers a **copy-paste** payload block if
-  the server is gone, and the skill falls back to one AskUserQuestion per genuine fork
-  if you'd rather not open a browser.
+  the server is gone, and the skill falls back to one AskUserQuestion per genuine
+  fork if you'd rather not open a browser.
 
 ```
 smriti html serve <spec.json>          # start the server, print {session_id,port,url}
@@ -311,14 +285,19 @@ smriti html stop  --session <id>       # tear down (idempotent)
 
 **Exit codes:** `0` ok · `1` usage · `2` runtime · `3` invalid spec/payload · `5` await-timeout · `6` no-server.
 
-## What's deferred (v0.2 / later)
+## What changed in v1.0
 
-- **`STALE` approval auto-detection** — currently manual; v0.2 hashes plan content and auto-invalidates approvals when the plan changes underneath them.
-- **Cross-machine memory sync** — runtime state in `~/.smriti/` is local-only; no sync layer.
+smriti was a multi-stage pipeline — a dozen skills, each producing an artifact the next one read, with an approvals state machine gating the handoffs. v1.0 tears that down to **one linear flow**.
+
+- **Brainstorm, plan, and build are folded into `/begin`.** No more `/brainstorm`, `/plan`, `/work` — it's all the one flow now.
+- **Review is native, not a skill stack.** `/eng-review` and `/design-review` are gone; correctness review is Claude Code's own `/code-review`, and design correctness is carried by the `frontend-design` skill during planning.
+- **The plan is reviewed by Codex, not by plan-review skills.** `/plan-eng-review` and `/plan-design-review` are dropped — Codex critiques the plan at Step 4.
+- **No approvals state machine.** No `approvals.json`, no verdict stamps — three human gates in the flow replace the whole thing.
+- **No learnings store.** `/learn` and the append-only `learnings.jsonl` are gone entirely.
 
 ## Acknowledgments
 
-- [**gstack**](https://github.com/garrytan/gstack) by Garry Tan — the architecture this is forked from. Most of the structural ideas (per-skill SKILL.md.tmpl, shared preamble, learnings JSONL, slug cache, approvals concept) come from there.
+- [**gstack**](https://github.com/garrytan/gstack) by Garry Tan — the architecture this is forked from. Most of the structural ideas (per-skill SKILL.md.tmpl, shared preamble, slug cache) come from there.
 - [**`frontend-design`**](https://github.com/anthropics/claude-plugins-official/tree/main/plugins/frontend-design) plugin — source of several entries in our AI-slop blacklist (`lib/resolvers/design-hard-rules.md`).
 - [**Anthropic Cookbooks**](https://github.com/anthropics/claude-cookbooks) — frontend aesthetics patterns.
 
