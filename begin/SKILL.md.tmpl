@@ -1,11 +1,14 @@
 ---
 name: begin
 description: |
-  Triage entry point for the smriti pipeline. Classifies work into three modes
-  (brainstorm, debug, implement) and invokes the right skill via the Skill tool.
-  Manual-only — user must type /begin explicitly; does not compete with existing
-  proactive skills (/brainstorm, /debug).
-  Use when starting a new work session: "/begin <describe your work>".
+  The smriti flow. One command that takes a change from idea to reviewed,
+  tested code: explores the codebase with parallel agents, drafts a plan, gets
+  a Codex second opinion, serves it as an interactive HTML plan you approve or
+  revise, then implements, runs /code-review, and verifies with Playwright
+  screenshots. Stops for you at exactly three moments — a genuine question,
+  plan approval, and final review — and moves on its own in between.
+  Manual-only — type /begin explicitly.
+  Use when starting any feature or change: "/begin <what you want to build>".
 disable-model-invocation: true
 allowed-tools:
   - Bash
@@ -20,149 +23,207 @@ allowed-tools:
 
 {{PREAMBLE}}
 
-# /begin — triage entry point
+# /begin — the smriti flow
 
-Classify the user's work and route to the right smriti skill. Thin router — classify, route, done.
+One straight line from idea to a reviewed, tested change. You own three gates;
+smriti drives everything between them.
 
 <user_prompt> #$ARGUMENTS </user_prompt>
 
+## The three gates (where you stop for the human)
+
+| Gate | When | What you ask for |
+|------|------|------------------|
+| **1 · Clarify** | after understanding, *only if* there's a genuine fork | a tight set of questions |
+| **2 · Approve** | after the plan + Codex pass | approve, or request changes (interactive HTML) |
+| **3 · Review** | after implement + review + verify | you test; you decide PR vs. main |
+
+Between gates, keep moving — don't stop to narrate or ask permission.
+
 ## Hard rules
 
-1. For **debug/work** modes: classify, invoke the downstream skill, stop. Do NOT write code (the downstream skill does).
-2. For **brainstorm** mode: engage the autonomous pipeline (see *Autonomous pipeline* below) — classify, then drive the chain stage by stage. Do NOT write code yourself; each downstream skill does its own part.
-3. For implement mode: classify, load context, then proceed directly with the implementation.
-4. Never re-invoke /begin. Debug/implement route once; the brainstorm pipeline drives a sequence of downstream skills, but the orchestration loop lives here — it does not re-enter /begin.
-5. Preserve the user's original prompt verbatim when invoking downstream skills.
+1. **Never re-invoke /begin.** This skill runs the whole flow itself.
+2. **Stop only at the three gates.** No manufactured questions, no mid-flow
+   "should I proceed?" checkpoints.
+3. **Preserve the user's original request verbatim** when handing to a subskill
+   (`code-review`, `ship`, `frontend-design`, `bootstrap`).
+4. **No `PROJECT.md` → stop and recommend `/bootstrap` first.** begin reads it
+   for context and won't proceed without it.
+5. **Full flow, always.** Even a one-line change runs plan → approve → verify.
+   There is no trivial-edit fast path — the gates are cheap and the discipline
+   is the point.
 
-## Phase 1: Context gathering (silent)
+---
 
-Read silently — do not echo to the user:
+## Step 0 · Ground (silent)
+
+The preamble already ran. Now read context silently — do not echo:
 
 ```bash
 [ -f PROJECT.md ] && cat PROJECT.md
+[ -f DESIGN.md ]  && cat DESIGN.md
 git log --oneline -10 2>/dev/null
 git status --short 2>/dev/null
-
-# Is there a plan (and design) on this branch? Drives work-mode routing and the
-# implement fast-path plan-guard below.
-PLAN_DOC=$(smriti latest-doc --type plan 2>/dev/null)
-DESIGN_DOC=$(smriti latest-doc --type design 2>/dev/null)
 ```
 
-If `PROJECT.md` is missing, **stop** and recommend `/bootstrap` first. Don't proceed without it.
+If `HAS_PROJECT_DOC=no`, stop: *"No PROJECT.md — run /bootstrap first so I have
+project context."* Do not continue.
 
-## Phase 2: Classify
+Note whether the request has **UI scope** (a new screen/component, a visible
+surface change). It gates the `frontend-design` consults below.
 
-Read the user's prompt in `<user_prompt>` and classify into one of five internal states:
+## Step 1 · Understand — agents running
 
-| Signal | Mode |
-|--------|------|
-| New feature, design question, "I have an idea," "help me think through," exploring options, wants alternatives | **brainstorm** |
-| Bug, error, stack trace, "why is this failing," "fix this," broken behavior, test failure, regression | **debug** |
-| Execution intent — "build it," "implement the plan," "start working," "let's build/ship it" — **especially when `PLAN_DOC` is non-empty** (a plan exists on this branch) | **work** |
-| Small concrete edit, config change, "add X to Y," rename, update dependency, typo fix, one-file refactor | **implement** |
-| Mixed intent, vague, could be multiple modes | **unclear** |
+Map the change and its blast radius with **parallel `Explore` agents** rather
+than reading serially. Dispatch 2–4 in **one message**, each on a distinct
+facet, then synthesize their findings:
 
-**Do not ask the user which mode.** Read their prompt and classify silently. The value of /begin is that the user describes work in natural language and the system figures out the mode.
+- **Relevant files** — where this change lands and what it touches.
+- **Existing patterns** — how similar things are already done here (so the plan
+  reuses one obvious pattern, not a fourth blend — Tier 1d).
+- **Integration points & edges** — callers, data flow, config, migrations.
+- **Tests** — the suite shape and how this area is currently covered.
 
-### Unclear path
+Scope each agent tightly ("very thorough" only when the surface is genuinely
+wide). The agents locate; you synthesize and decide.
 
-If the classification is genuinely ambiguous — the prompt could reasonably be two different modes, or the scope is unknowable from the description — ask **one** AskUserQuestion:
-
-> *"I want to make sure I route this correctly. Is this closer to:"*
-
-Options should be the two or three candidate modes with short descriptions of what each path does. After the user answers, proceed with the selected mode. The user's clarification answer stays in the conversation transcript and will be visible to the downstream skill.
-
-## Phase 3: Route
-
-### Mode: brainstorm → engage the autonomous pipeline
-
-State one line: *"Feature work — engaging the autonomous pipeline. I'll drive design → plan → review → build, and stop for your plan approval."*
-
-Then follow the **Autonomous pipeline** section below. It begins with
-`Skill(skill="brainstorm", args="<user's original prompt, verbatim>")` and walks
-the stage-table from there. Unlike debug/implement, /begin does **not** hand off
-and stop here — it orchestrates the chain, pausing only at the two human gates.
-
-(Opt-out: if the user only wants to think out loud — "just brainstorm", or
-`Mode = explore` — do the single `Skill(brainstorm)` handoff and stop, per the
-pipeline's opt-out note.)
-
-### Mode: debug
-
-State one line: *"This looks like a bug to investigate. Invoking /debug."*
-
-Then invoke the Skill tool:
+**UI scope →** consult the `frontend-design` skill now so the plan reflects a
+polished, on-brand result rather than a generic one:
 
 ```
-Skill(skill="debug", args="<user's original prompt from <user_prompt>, verbatim>")
+Skill(skill="frontend-design", args="<the UI change, with what you learned about the app's existing look>")
 ```
 
-/begin is done. The debug skill takes over entirely.
+## Step 2 · Clarify — **Gate 1** (only if needed)
 
-### Mode: work
+If understanding surfaced **genuine forks** — a real design decision, or an
+ambiguity you can't resolve from the code, PROJECT.md, or sensible defaults —
+ask a tight set of `AskUserQuestion`s and stop for the answer.
 
-This is plan execution — the branch has a plan and the user wants it built.
+If the request is unambiguous, **skip this gate entirely**. Don't manufacture
+questions — a forced question is worse than none.
 
-State one line: *"This looks like plan execution. Invoking /work."*
+## Step 3 · Draft the plan
 
-Then invoke the Skill tool:
+Write the plan **out of the repo**, following the smriti filename contract so
+`smriti latest-doc --type plan` finds it:
 
-```
-Skill(skill="work", args="<user's original prompt from <user_prompt>, verbatim>")
-```
-
-/begin is done. The work skill takes over entirely.
-
-**Edge — execution intent but no plan (`PLAN_DOC` empty):** don't route to /work
-(it has nothing to execute). If a design doc exists, say *"There's a design but
-no plan yet — run /plan first, then /work."* If neither exists and the work is
-genuinely small, fall through to the implement fast path. If it sounds like a
-feature, route to /brainstorm.
-
-### Mode: implement
-
-**Plan guard first.** If `PLAN_DOC` is non-empty, this branch already has a plan
-— ad-hoc inline editing would step on `/work`, which owns plan execution. State
-*"There's a plan on this branch — routing to /work to execute it instead of
-editing inline."* and invoke `Skill(skill="work", args="<verbatim prompt>")`.
-Only continue the fast path below when there is **no** plan on the branch.
-
-**Complexity check next.** Before entering implement mode, assess whether the work is actually small:
-
-- Will this likely touch 4+ files or introduce new modules/classes/interfaces?
-- Is this architecturally significant (new data flow, new dependency, new API surface)?
-- Does the description sound like a feature rather than an edit?
-
-If any answer is yes: state *"This looks bigger than a small edit — routing to /brainstorm to think it through first."* Then invoke brainstorm instead.
-
-If the work is genuinely small, proceed with the implement fast path:
-
-1. Load relevant learnings:
 ```bash
-smriti learnings-search --limit 5 --format text 2>/dev/null || true
+TS=$(date -u +%Y-%m-%dT%H-%M-%SZ)
+PLAN_DIR="${SMRITI_HOME:-$HOME/.smriti}/projects/$SLUG"
+mkdir -p "$PLAN_DIR"
+PLAN_FILE="$PLAN_DIR/$BRANCH_SLUG-plan-$TS.md"
 ```
 
-2. Check for a prior design doc on this branch:
+The plan is concrete and strictly scoped to this request:
+
+- **Problem** — the actual problem, restated.
+- **Approach** — the recommended direction, named, with *why*. If there's a real
+  fork, present 2–3 options with trade-offs and mark your recommendation.
+- **Files** — each path with Create / Modify / Test and *why* it changes.
+- **Edge cases** — what to watch for.
+- **Test plan** — how "done" is verified (the checks Step 8 will run).
+- **Risks / open questions** — only real ones.
+
+**Sizable UI change →** build **mockups** so the user *sees* the change at Gate 2
+rather than reading prose. Use the `frontend-design` skill and what Step 1 learned
+about the app's real look, and write a self-contained HTML fragment beside the
+plan for the approval view to embed. Skip mockups for trivial UI (copy, one field,
+a spacing nudge) and backend-only work.
+
+## Step 4 · Codex second opinion on the plan
+
+Get an independent review of the plan before spending the user's approval on it.
+Run the Codex pass **against `$PLAN_FILE`** per the *Codex second opinion* section
+below (availability-gated, filesystem-boundary-prefixed, output rendered
+verbatim). Fold real gaps into the plan; append a short **`## Codex review`**
+note on what you changed — and anything you deliberately rejected, with the reason.
+
+## Step 5 · Approve the plan — **Gate 2** (interactive HTML)
+
+Present the plan as the interactive HTML view the user approves or revises, per
+the *Interactive HTML review loop* section below. The markdown plan stays the
+source of truth; the spec is a generated view of it.
+
+Map the plan to the spec:
+
+- **One card per plan section** (or per Implementation Unit if the plan is
+  unit-shaped). Card `id`s are stable across re-renders so edits round-trip.
+- Each `body_md` is that section's essence — the approach + why, in brief.
+- `source_hash` over `$PLAN_FILE`; set `global_notes_prompt` to invite overall
+  direction ("Approve, or tell me what to change?").
+- If you built UI mockups, include them as a **Design** section/card so the user
+  sees the change.
+
+The loop: `serve` → `await` → apply the payload. A card `reject`/`edit` or
+`global_notes` → revise the **plan markdown**, bump `revision_id`, `render`, and
+re-await. `action: finish` → the plan is approved; `stop` the session and advance
+to Step 6. Fall back to a single AskUserQuestion (*approve / request changes*) if
+the browser is unreachable — the gate is never a hard stop.
+
+## Step 6 · Implement
+
+Build the approved plan end to end:
+
+- Follow the plan's approach and the codebase's existing patterns.
+- **Test as you go** — don't batch all testing to the end.
+- Commit incrementally with clear messages (co-author trailer per the project's
+  convention). Honor `LEAN`.
+
+No sub-review skills, no state ledger, no completion blocks — just the work.
+
+## Step 7 · Review
+
+Run smriti's native code review on the diff:
+
+```
+Skill(skill="code-review", args="<the original request, for context>")
+```
+
+Fix the **real correctness bugs** it surfaces; apply judgment on nits and style.
+Design correctness is already carried by the `frontend-design` consults, so there
+is no separate design-review pass. Re-run the project's checks after fixing.
+
+## Step 8 · Verify — Playwright + screenshots
+
+Prove the change actually works before handing back.
+
+**Web work (a localhost dev server exists):** capture rendered evidence with the
+browser CLI — screenshots, ARIA snapshot, and console errors across viewports:
+
 ```bash
-smriti latest-doc --type design
+smriti browse audit http://localhost:<port>/<changed-route> [<more routes>]
 ```
-If one exists, read its recommended approach section for context.
 
-3. State: *"Small implementation — starting work."*
+(Run `smriti browse install` once if Chromium isn't present.) Surface the
+screenshots and flag any console errors in the finish summary.
 
-4. Proceed directly with the user's request. Implement the change.
+**Non-web work (CLI, library, backend):** run the test suite and any relevant
+CLI checks from the plan's test plan. Screenshots don't apply — say so.
 
-5. When the implementation is complete, state: *"Done. Run `/eng-review` to review changes, then `/ship` to ship."*
+If verification fails, fix and re-verify before Step 9. Don't hand back red.
+
+## Step 9 · Finish & ship — **Gate 3**
+
+Summarize and **stop for the human**:
+
+```
+✅ /begin complete on <branch>
+   built:    <one line — what landed>
+   review:   <code-review outcome — bugs fixed / clean>
+   verify:   <screenshots captured / tests green>  [attach screenshots for web]
+   next (you): test it, then say the word to ship.
+```
+
+Then **stop**. The user tests. **Shipping is explicit and on their word** — this
+flow never opens a PR or pushes on its own:
+
+- User says "open a PR" / "ship it" / "push to main" → invoke `Skill(skill="ship",
+  args="<PR or main, per what they said>")`.
+- Until they say so, you're done. Do not auto-invoke `/ship`.
 
 ---
 
-{{PIPELINE}}
+{{CODEX_SECOND_OPINION}}
 
----
-
-{{LEARNINGS_LOG}}
-
-When logging from this skill, prefer keys like:
-- `classification-<topic>` for classification patterns worth remembering
-- `misroute-<mode>` for cases where the initial classification was wrong
+{{HTML_RENDER}}

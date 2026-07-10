@@ -57,16 +57,6 @@ echo "DOCS: project=$HAS_PROJECT_DOC design=$HAS_DESIGN_DOC todos=$HAS_TODOS pri
 if [ "$HAS_PRINCIPLES" = "no" ]; then
   echo "NOTE: principles not installed in this repo. Run 'smriti principles-install' to enable cross-project coding principles."
 fi
-
-# Surface top relevant prior learnings (if any)
-LEARNINGS_FILE="${SMRITI_HOME:-$HOME/.smriti}/projects/$SLUG/learnings.jsonl"
-if [ -f "$LEARNINGS_FILE" ]; then
-  COUNT=$(wc -l < "$LEARNINGS_FILE" | tr -d ' ')
-  echo "LEARNINGS: $COUNT entries"
-  [ "$COUNT" -gt 0 ] && smriti learnings-search --limit 3 --format text 2>/dev/null || true
-else
-  echo "LEARNINGS: 0"
-fi
 ```
 
 **After the preamble runs, every skill body has these vars available:**
