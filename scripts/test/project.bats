@@ -40,16 +40,18 @@ teardown() {
   [[ "$output" == *"(none"* ]]
 }
 
-@test "list: counts learnings and designs per project, skips _archive" {
+@test "list: counts plans and designs per project, skips _archive" {
   mkdir -p "$SMRITI_HOME/projects/alpha" "$SMRITI_HOME/projects/_archive/old-proj"
-  printf '{}\n{}\n{}\n' > "$SMRITI_HOME/projects/alpha/learnings.jsonl"
+  touch "$SMRITI_HOME/projects/alpha/main-plan-2026-05-01T00-00-00Z.md"
+  touch "$SMRITI_HOME/projects/alpha/main-plan-2026-05-02T00-00-00Z.md"
+  touch "$SMRITI_HOME/projects/alpha/feat-x-plan-2026-05-03T00-00-00Z.md"
   touch "$SMRITI_HOME/projects/alpha/main-design-2026-05-01T00-00-00Z.md"
   touch "$SMRITI_HOME/projects/alpha/feat-x-design-2026-05-02T00-00-00Z.md"
 
   run "$CLI" list
   [ "$status" -eq 0 ]
   [[ "$output" == *"alpha"* ]]
-  # 3 learnings, 2 designs in the alpha row (PATH column follows).
+  # 3 plans, 2 designs in the alpha row (PATH column follows).
   echo "$output" | grep -E '^alpha[[:space:]].+[[:space:]]3[[:space:]]+2'
   # _archive is excluded from the listing.
   ! [[ "$output" == *"_archive"* ]]
@@ -67,7 +69,7 @@ teardown() {
 @test "forget: --yes removes project dir AND every slug-cache file pointing at it" {
   # Two cache files map to the same slug (same repo, two clones). Both must go.
   mkdir -p "$SMRITI_HOME/projects/doomed"
-  printf '{}\n' > "$SMRITI_HOME/projects/doomed/learnings.jsonl"
+  touch "$SMRITI_HOME/projects/doomed/main-plan-2026-05-01T00-00-00Z.md"
   printf 'doomed' > "$SMRITI_HOME/slug-cache/aaaaaaaaaaaaaaaa"
   printf 'doomed' > "$SMRITI_HOME/slug-cache/bbbbbbbbbbbbbbbb"
   # A cache entry for an unrelated slug must survive.
@@ -210,7 +212,7 @@ teardown() {
 
 @test "rename: moves project dir and updates cache files" {
   mkdir -p "$SMRITI_HOME/projects/old-name"
-  printf '{}\n' > "$SMRITI_HOME/projects/old-name/learnings.jsonl"
+  touch "$SMRITI_HOME/projects/old-name/main-plan-2026-05-01T00-00-00Z.md"
   printf 'SLUG=old-name\nSOURCE_PATH=/tmp/my-repo\n' > "$SMRITI_HOME/slug-cache/aaaaaaaaaaaaaaaa"
   printf 'SLUG=old-name\nSOURCE_PATH=/tmp/my-repo-clone\n' > "$SMRITI_HOME/slug-cache/bbbbbbbbbbbbbbbb"
   # Unrelated cache entry must not be touched.
@@ -223,7 +225,7 @@ teardown() {
 
   [ ! -d "$SMRITI_HOME/projects/old-name" ]
   [ -d "$SMRITI_HOME/projects/new-name" ]
-  [ -f "$SMRITI_HOME/projects/new-name/learnings.jsonl" ]
+  [ -f "$SMRITI_HOME/projects/new-name/main-plan-2026-05-01T00-00-00Z.md" ]
 
   # Cache files rewritten with new slug.
   grep -q '^SLUG=new-name$' "$SMRITI_HOME/slug-cache/aaaaaaaaaaaaaaaa"

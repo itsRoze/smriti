@@ -4,14 +4,14 @@
 #
 # Subcommands:
 #   smriti project new <name>                 scaffold a new project dir + git init
-#   smriti project list                       columns: slug, last-used, learnings, designs, path
+#   smriti project list                       columns: slug, last-used, plans, designs, path
 #   smriti project current                    slug for the current repo (wraps smriti-slug --print)
 #   smriti project forget <slug> [--yes]      rm -rf project dir + slug-cache entries (destructive)
 #   smriti project rename <old> <new>         rename a project slug (moves state + updates cache)
 #
-# Per-project state — `/learn`, `/eng-review`, `/design-review`, approvals — already has
-# its own helpers. This one owns the *set*: stop tracking, list what's tracked, resolve
-# the current repo's slug. Direct user action, no Claude reasoning.
+# Per-project state (design/plan/debug docs under ~/.smriti/projects/<slug>/) is
+# written by the skills themselves. This one owns the *set*: stop tracking, list
+# what's tracked, resolve the current repo's slug. Direct user action, no Claude reasoning.
 set -e
 
 SMRITI_HOME="${SMRITI_HOME:-$HOME/.smriti}"
@@ -30,16 +30,11 @@ USAGE
   exit 2
 }
 
-count_lines() {
-  if [ -f "$1" ]; then
-    wc -l < "$1" | tr -d ' '
-  else
-    echo 0
-  fi
-}
-
 count_designs() {
   find "$1" -maxdepth 1 -type f -name '*-design-*.md' 2>/dev/null | wc -l | tr -d ' '
+}
+count_plans() {
+  find "$1" -maxdepth 1 -type f -name '*-plan-*.md' 2>/dev/null | wc -l | tr -d ' '
 }
 
 last_used() {
@@ -116,7 +111,7 @@ cmd_list() {
   local slug_paths
   slug_paths=$(build_slug_path_map)
 
-  printf '%-40s  %-10s  %9s  %7s  %s\n' "SLUG" "LAST-USED" "LEARNINGS" "DESIGNS" "PATH"
+  printf '%-40s  %-10s  %9s  %7s  %s\n' "SLUG" "LAST-USED" "PLANS" "DESIGNS" "PATH"
   local any=0
   for dir in "$PROJECTS_DIR"/*/; do
     [ -d "$dir" ] || continue
@@ -151,7 +146,7 @@ cmd_list() {
     printf '%-40s  %-10s  %9s  %7s  %s\n' \
       "$slug" \
       "$(last_used "$dir")" \
-      "$(count_lines "$dir/learnings.jsonl")" \
+      "$(count_plans "$dir")" \
       "$(count_designs "$dir")" \
       "$path_display"
   done
@@ -191,7 +186,7 @@ cmd_new() {
   echo "  cd $name"
   echo "  claude                    # open Claude Code"
   echo "  /bootstrap                # set up PROJECT.md + coding principles"
-  echo "  /brainstorm               # design your first feature"
+  echo "  /begin                    # build your first feature end to end"
 }
 
 cmd_forget() {
@@ -214,10 +209,9 @@ cmd_forget() {
     exit 1
   fi
 
-  local learnings designs reviews
-  learnings=$(count_lines "$dir/learnings.jsonl")
+  local plans designs
+  plans=$(count_plans "$dir")
   designs=$(count_designs "$dir")
-  reviews=$(count_lines "$dir/reviews.jsonl")
 
   local cache_files cache_count
   cache_files=$(cache_files_for_slug "$slug")
@@ -230,7 +224,7 @@ cmd_forget() {
     fi
     echo "About to delete:"
     echo "  $dir"
-    echo "    $learnings learnings, $designs designs, $reviews reviews"
+    echo "    $plans plans, $designs designs"
     echo "  $cache_count slug-cache file(s)"
     printf "Delete? [y/N] "
     read -r ans || ans=""
