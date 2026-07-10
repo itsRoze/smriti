@@ -13,6 +13,11 @@
 #   --all                        Execute batch tidy: delete every merged candidate, then pull + prune.
 #                                Branch-local soft refusals are skipped-with-note unless --force.
 #
+#   Deleting a branch also purges its out-of-repo smriti scratch —
+#   ~/.smriti/projects/<slug>/<branch>-{plan,design,debug}-*.md and
+#   audits/<branch>-*/ — since that work has shipped. Best-effort; never blocks
+#   the deletion.
+#
 # Modifiers:
 #   --force                      Override branch-local safety guards (unmerged, no-upstream,
 #                                ahead-of-upstream). Does NOT override global preconditions
@@ -318,6 +323,54 @@ delete_branch() {
   fi
 }
 
+# ─── artifact purge (ties smriti's out-of-repo scratch to branch lifecycle) ─
+#
+# When a merged branch is deleted, its plan/design/debug docs and browser-audit
+# dirs under ~/.smriti/projects/<slug>/ are dead scratch — the work shipped.
+# Purge them so state doesn't accumulate forever. Resolves the slug via the
+# sibling smriti-slug helper (same install dir), mirroring smriti-project.
+
+# The project's out-of-repo artifact dir, or "" if the slug can't be resolved.
+project_artifacts_dir() {
+  local self_dir slug
+  self_dir="$(cd "$(dirname "$0")" && pwd -P)"
+  if [ -x "$self_dir/smriti-slug" ]; then
+    slug=$("$self_dir/smriti-slug" --print 2>/dev/null || true)
+  else
+    slug=$(smriti-slug --print 2>/dev/null || true)
+  fi
+  [ -n "$slug" ] || return 0
+  printf '%s/projects/%s' "${SMRITI_HOME:-$HOME/.smriti}" "$slug"
+}
+
+# Remove one deleted branch's docs + audit dirs under $1 (the project dir).
+# Best-effort: always returns 0 so it never fails the deletion it follows.
+# Scoped strictly to "<branch-slug>-*" so a bug can't reach unrelated files.
+purge_branch_artifacts() {
+  local proj_dir="$1" branch="$2"
+  [ -n "$proj_dir" ] && [ -d "$proj_dir" ] || return 0
+  [ -n "$branch" ] || return 0
+  local branch_slug="${branch//\//--}"
+  [ -n "$branch_slug" ] || return 0
+
+  local removed=0 f d
+  for f in "$proj_dir/$branch_slug"-plan-*.md \
+           "$proj_dir/$branch_slug"-design-*.md \
+           "$proj_dir/$branch_slug"-debug-*.md; do
+    [ -e "$f" ] || continue          # unmatched glob stays literal; skip it
+    rm -f "$f" && removed=$((removed + 1))
+  done
+  for d in "$proj_dir/audits/$branch_slug"-*/; do
+    [ -d "$d" ] || continue
+    rm -rf "$d" && removed=$((removed + 1))
+  done
+
+  if [ "$removed" -gt 0 ]; then
+    echo "smriti-clean: purged $removed artifact(s) for '$branch'"
+  fi
+  return 0
+}
+
 # ─── plan emit ──────────────────────────────────────────────────────────
 
 emit_plan_json() {
@@ -476,6 +529,7 @@ mode_branch() {
   git fetch --prune --quiet 2>/dev/null || true
 
   echo "smriti-clean: deleted '$TARGET_BRANCH' (detection: $DETECTION)"
+  purge_branch_artifacts "$(project_artifacts_dir)" "$TARGET_BRANCH"
 }
 
 # ─── mode: --all ────────────────────────────────────────────────────────
@@ -515,6 +569,10 @@ mode_all() {
   fi
   git pull --quiet --ff-only 2>/dev/null || git pull --quiet || true
 
+  # Resolve the artifact dir once; each deleted branch's scratch is purged below.
+  local artifacts_dir
+  artifacts_dir=$(project_artifacts_dir)
+
   local deleted=0 skipped=0
   local rows
   rows=$(printf '%s' "$candidates_json" | jq -c '.[]')
@@ -539,6 +597,7 @@ mode_all() {
     if delete_output=$(delete_branch "$b"); then
       echo "smriti-clean: deleted '$b'"
       deleted=$((deleted + 1))
+      purge_branch_artifacts "$artifacts_dir" "$b"
     else
       echo "smriti-clean: skipped '$b' — git refused: $delete_output"
       skipped=$((skipped + 1))

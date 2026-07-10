@@ -22,6 +22,11 @@ setup() {
 
   ln -s "$ROOT/bin/smriti-clean" "$FAKE_BIN/smriti-clean"
   ln -s "$ROOT/bin/smriti-default-branch" "$FAKE_BIN/smriti-default-branch"
+  # smriti-clean resolves the project slug via its sibling helper to purge a
+  # deleted branch's out-of-repo artifacts. Symlink it in, and isolate
+  # SMRITI_HOME so tests never read or write the real ~/.smriti.
+  ln -s "$ROOT/bin/smriti-slug" "$FAKE_BIN/smriti-slug"
+  export SMRITI_HOME="$WORK/smriti-home"
   CLI="$FAKE_BIN/smriti-clean"
 
   # Default: run with NO gh on PATH so tests use the git-fallback path. We
@@ -492,4 +497,87 @@ EOF
   # loses its callsite. Grep against the rendered SKILL.md (the production
   # artifact); the .tmpl source's intent doesn't matter if generation drops it.
   grep -q "Next: /clean" "$ROOT/ship/SKILL.md"
+}
+
+# ─── artifact purge: deleting a branch clears its out-of-repo scratch ───
+
+# Resolve + create the current repo's artifact dir; echo its path so the test
+# can seed and assert against it. Mirrors how smriti-clean resolves the slug.
+seed_project_dir() {
+  local proj
+  proj="$SMRITI_HOME/projects/$("$FAKE_BIN/smriti-slug" --print)"
+  mkdir -p "$proj/audits"
+  printf '%s' "$proj"
+}
+
+@test "purge: --branch clears that branch's plan/design/debug docs + audits, spares others" {
+  init_repo
+  make_merged_branch "feat-a"
+  git checkout -q main
+  PROJ=$(seed_project_dir)
+  # feat-a's scratch — should be purged (3 docs + 1 audit dir = 4)
+  touch "$PROJ/feat-a-plan-2026-01-01T00-00-00Z.md"
+  touch "$PROJ/feat-a-design-2026-01-01T00-00-00Z.md"
+  touch "$PROJ/feat-a-debug-2026-01-01T00-00-00Z.md"
+  mkdir -p "$PROJ/audits/feat-a-2026-01-01T00-00-00Z"
+  touch "$PROJ/audits/feat-a-2026-01-01T00-00-00Z/audit.json"
+  # unrelated scratch — must survive
+  touch "$PROJ/feat-b-plan-2026-01-01T00-00-00Z.md"
+  touch "$PROJ/main-design-2026-01-01T00-00-00Z.md"
+
+  run "$CLI" --branch feat-a --force
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "purged 4 artifact(s) for 'feat-a'"
+
+  [ ! -f "$PROJ/feat-a-plan-2026-01-01T00-00-00Z.md" ]
+  [ ! -f "$PROJ/feat-a-design-2026-01-01T00-00-00Z.md" ]
+  [ ! -f "$PROJ/feat-a-debug-2026-01-01T00-00-00Z.md" ]
+  [ ! -d "$PROJ/audits/feat-a-2026-01-01T00-00-00Z" ]
+  [ -f "$PROJ/feat-b-plan-2026-01-01T00-00-00Z.md" ]
+  [ -f "$PROJ/main-design-2026-01-01T00-00-00Z.md" ]
+}
+
+@test "purge: --all clears each deleted branch's artifacts" {
+  init_repo
+  make_merged_branch "feat-a"
+  make_merged_branch "feat-b"
+  git checkout -q main
+  PROJ=$(seed_project_dir)
+  touch "$PROJ/feat-a-plan-2026-01-01T00-00-00Z.md"
+  touch "$PROJ/feat-b-plan-2026-01-01T00-00-00Z.md"
+  touch "$PROJ/main-design-2026-01-01T00-00-00Z.md"
+
+  run "$CLI" --all --force
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "purged 1 artifact(s) for 'feat-a'"
+  echo "$output" | grep -q "purged 1 artifact(s) for 'feat-b'"
+  [ ! -f "$PROJ/feat-a-plan-2026-01-01T00-00-00Z.md" ]
+  [ ! -f "$PROJ/feat-b-plan-2026-01-01T00-00-00Z.md" ]
+  [ -f "$PROJ/main-design-2026-01-01T00-00-00Z.md" ]
+}
+
+@test "purge: best-effort — deletion succeeds with no artifact dir, prints no purge line" {
+  init_repo
+  make_merged_branch "feat-a"
+  git checkout -q main
+  # No project dir seeded — nothing to purge.
+  run "$CLI" --branch feat-a --force
+  [ "$status" -eq 0 ]
+  ! git show-ref --verify --quiet refs/heads/feat-a
+  [[ "$output" != *"purged"* ]]
+}
+
+@test "purge: slashed branch maps to <branch-slug> docs (feat/x -> feat--x)" {
+  init_repo
+  git checkout -q -b "feat/x"
+  echo work > wx; git add wx; git commit -q -m "w"
+  git checkout -q main
+  git merge --no-ff --no-edit -q "feat/x"
+  PROJ=$(seed_project_dir)
+  touch "$PROJ/feat--x-plan-2026-01-01T00-00-00Z.md"
+
+  run "$CLI" --branch "feat/x" --force
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "purged 1 artifact(s) for 'feat/x'"
+  [ ! -f "$PROJ/feat--x-plan-2026-01-01T00-00-00Z.md" ]
 }

@@ -2,7 +2,7 @@
 name: clean
 description: |
   Post-merge tidy: checkout default branch, pull, delete the merged feature branch,
-  prune stale remote refs. One shot via the smriti pipeline. Single-branch on a
+  prune stale remote refs. One shot. Single-branch on a
   feature branch that's been merged; interactive batch-delete on the default branch.
   Decision-brief AskUserQuestion before any deletion. Refuses on dirty tree, detached
   HEAD, denylisted branches, and branches with unpushed commits or no upstream (unless
@@ -71,7 +71,9 @@ D1 — Delete merged branch and switch to <default>?
 
 ELI10: <current branch> was merged (PR #<merged_pr or "detected via git">).
        Clean-up moves you to <default>, pulls latest, deletes the local
-       branch, and prunes stale remote refs.
+       branch, prunes stale remote refs, and clears this branch's
+       out-of-repo smriti scratch (plan/design/debug docs + audits) since
+       that work has shipped.
 
 Stakes if we pick wrong: deleting before the squash actually lands on
        <default> throws away the only local copy of your changes — though
@@ -113,7 +115,8 @@ You're on the default branch with one or more merged candidates. Decision-brief 
 D1 — Delete <N> merged branches?
 
 ELI10: <N> local branches were merged into <default>. Cleanup deletes
-       each, then prunes stale remote refs.
+       each, prunes stale remote refs, and clears each branch's out-of-repo
+       smriti scratch (plan/design/debug docs + audits).
 
 Candidates:
   • <branch-1>  (PR #<n> | merged via git-fallback)
@@ -154,13 +157,3 @@ After a successful run print one line of next-step guidance:
 - **Noop / refuse** → no handoff line (the reason was already surfaced).
 
 Don't auto-invoke anything; the user drives.
-
----
-
-{{LEARNINGS_LOG}}
-
-When logging learnings from this skill, prefer keys like:
-
-- `pitfall-clean-<topic>` — e.g., `pitfall-clean-squash-merge-no-gh` for the squash-detection gap
-- `pattern-clean-<area>` — recurring shape of post-merge cleanup decisions
-- `operational-clean-<topic>` — workflow facts (e.g., "user's repo has delete_branch_on_merge=true, so remote-side deletion is automatic")
