@@ -19,7 +19,7 @@ cd "$SMRITI_DIR"
 # 1. Install deps
 #
 # Browser-audit support: ./setup asks once whether to install Chromium for
-# /design-review v2's browser audits. Persisted to ~/.smriti/config as
+# /begin's browser verify step. Persisted to ~/.smriti/config as
 # `browse_enabled=true|false`. Chromium itself (~140MB) is downloaded on first
 # audit by `smriti-browse install` only when browse_enabled=true; the Playwright
 # npm package itself is small and always installed.
@@ -35,7 +35,7 @@ fi
 
 if [ -z "$BROWSE_ENABLED" ]; then
   echo ""
-  echo "smriti can audit rendered UI in /design-review v2 via a Playwright wrapper."
+  echo "smriti can capture screenshots + ARIA/console audits of rendered UI in /begin's verify step, via a Playwright wrapper."
   echo "First audit will download ~140MB of Chromium. The npm package itself is small."
   if [ -t 0 ]; then
     printf "Enable browser-audit support? [Y/n] "

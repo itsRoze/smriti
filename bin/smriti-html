@@ -221,7 +221,7 @@ function unknownCardIds(payload: Payload, spec: Spec): string[] {
   return Object.keys(payload.decisions).filter((id) => !known.has(id));
 }
 
-// ─── HTML render (themeable: /plan-design-review owns the look) ───────────────
+// ─── HTML render (themeable: /begin's plan-approval gate owns the look) ───────
 
 function escapeHtml(s: string): string {
   return s
@@ -233,7 +233,7 @@ function escapeHtml(s: string): string {
 }
 
 // Markdown-lite: enough to make decision-brief body_md readable without pulling
-// in a markdown dependency. Themed/upgraded in U2b/plan-design-review.
+// in a markdown dependency.
 function mdLite(s: string): string {
   let h = escapeHtml(s);
   h = h.replace(/`([^`]+)`/g, '<code>$1</code>');

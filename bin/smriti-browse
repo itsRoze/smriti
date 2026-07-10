@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-// smriti browse — localhost-only browser audit CLI for /design-review v2.
+// smriti browse — localhost-only browser audit CLI for /begin's verify step.
 //
 // Subcommands:
 //   audit <url> [<url>...]    Capture screenshots, ARIA snapshot, console log per URL.

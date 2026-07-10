@@ -7,8 +7,7 @@
 #   codex_default   on | ask | off
 #   proactive       true | false
 #   explain_level   default | terse
-#   browse_enabled  true | false      (set by ./setup; gates /design-review v2 browser audit)
-#   persona_threshold  <int>          (default 400; /eng-review fans out parallel persona reviewers when diff insertions exceed this)
+#   browse_enabled  true | false      (set by ./setup; gates /begin's browser verify step)
 #
 # Usage:
 #   smriti config get <key>
@@ -27,7 +26,7 @@ VAL="${3:-}"
 
 is_known_key() {
   case "$1" in
-    lean|codex_default|proactive|explain_level|browse_enabled|persona_threshold) return 0 ;;
+    lean|codex_default|proactive|explain_level|browse_enabled) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -39,7 +38,7 @@ case "$CMD" in
     ;;
   set)
     [ -z "$KEY" ] || [ -z "$VAL" ] && { echo "usage: smriti config set <key> <value>" >&2; exit 1; }
-    is_known_key "$KEY" || echo "warning: unknown key '$KEY' (allowed: lean, codex_default, proactive, explain_level, browse_enabled, persona_threshold)" >&2
+    is_known_key "$KEY" || echo "warning: unknown key '$KEY' (allowed: lean, codex_default, proactive, explain_level, browse_enabled)" >&2
     TMP=$(mktemp)
     grep -vE "^${KEY}=" "$CONFIG_FILE" > "$TMP" 2>/dev/null || true
     printf '%s=%s\n' "$KEY" "$VAL" >> "$TMP"

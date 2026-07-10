@@ -22,7 +22,7 @@ allowed-tools:
 
 # /bootstrap — one-time project init
 
-Capture durable codebase context to `PROJECT.md` so every downstream smriti skill (`/brainstorm`, `/plan`, `/work`, `/plan-eng-review`, etc.) starts with the same picture of the project.
+Capture durable codebase context to `PROJECT.md` so the `/begin` flow starts with the same picture of the project.
 
 ## Hard gate
 
@@ -73,7 +73,7 @@ Ask **one** AskUserQuestion covering all seven fields. Pre-fill from Phase 1 whe
 
 After the user answers:
 
-**3a. Persist `lean` globally** (so `/plan-eng-review` and others can read it):
+**3a. Persist `lean` globally** (so `/begin` and other skills can read it):
 
 ```bash
 smriti config set lean <senior|prototype>
@@ -106,19 +106,7 @@ smriti config set lean <senior|prototype>
 - <YYYY-MM-DD> Bootstrapped via /bootstrap.
 ```
 
-**3c. Log a project-level architecture learning** at high confidence:
-
-```bash
-smriti learnings-log \
-  --skill bootstrap \
-  --type architecture \
-  --key project-overview \
-  --insight "<one-sentence summary: what + who + lean>" \
-  --confidence 9 \
-  --source user-stated
-```
-
-**3d. Install smriti's coding principles** into the project's `CLAUDE.md`:
+**3c. Install smriti's coding principles** into the project's `CLAUDE.md`:
 
 ```bash
 smriti principles-install
@@ -142,12 +130,8 @@ fail-loud is by design.
 - If `design priority = high` AND `DESIGN.md` does NOT exist:
   > "Bootstrapped. Recommend `/design-consultation` next to lock in your design system before building."
 - Otherwise:
-  > "Bootstrapped. `PROJECT.md` written. Use `/brainstorm` to think through a feature, or just describe what you want to build."
+  > "Bootstrapped. `PROJECT.md` written. Use `/begin` to build a feature end to end, or just describe what you want to build."
 
 ## Done
 
 State concisely: *"Bootstrapped. PROJECT.md written. Future skills in this repo will read it for context."*
-
----
-
-{{LEARNINGS_LOG}}

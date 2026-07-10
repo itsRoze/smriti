@@ -5,8 +5,8 @@ description: |
   WebSearch when allowed), proposes SAFE choices and creative RISKS across 8 dimensions
   (aesthetic, decoration, layout, color, typography, spacing, motion, coherence),
   generates a self-contained HTML preview, and writes DESIGN.md to the repo root.
-  Subsequent design skills (/plan-design-review, /design-review) read DESIGN.md as
-  source of truth.
+  The `/begin` flow and the `frontend-design` skill read DESIGN.md as the source of
+  truth for UI work.
   Use when the project has UI scope but no DESIGN.md, or when the user wants to refresh
   the design system. Proactively invoke when /bootstrap set design priority = high and
   no DESIGN.md exists.
@@ -25,7 +25,7 @@ allowed-tools:
 
 # /design-consultation — build a design system from scratch
 
-Output: `DESIGN.md` at repo root + a self-contained HTML preview that opens in the browser. Downstream skills (`/plan-design-review`, `/design-review`) read DESIGN.md.
+Output: `DESIGN.md` at repo root + a self-contained HTML preview that opens in the browser. The `/begin` flow reads DESIGN.md when building UI, and consults the `frontend-design` skill for polish.
 
 {{DESIGN_HARD_RULES}}
 
@@ -170,7 +170,7 @@ Write to repo root:
 ```markdown
 # Design System
 
-Generated <YYYY-MM-DD> via `/design-consultation`. Source of truth for `/plan-design-review` and `/design-review`.
+Generated <YYYY-MM-DD> via `/design-consultation`. Source of truth for UI work in `/begin` (via the `frontend-design` skill).
 
 ## Product Context
 <one paragraph synthesizing what this product is + the memorable feeling>
@@ -238,7 +238,7 @@ if [ -f CLAUDE.md ]; then
 
 ## Design system
 
-This project has a design system documented in `DESIGN.md`. When making UI changes, read DESIGN.md and use the documented tokens. `/plan-design-review` and `/design-review` enforce alignment.
+This project has a design system documented in `DESIGN.md`. When making UI changes, read DESIGN.md and use the documented tokens. The `frontend-design` skill keeps UI aligned to it during `/begin`.
 EOF
   fi
 fi
@@ -251,14 +251,4 @@ End with:
 > *"Design system written to `DESIGN.md`. HTML preview at `/tmp/smriti-design-preview-<ts>.html` (still open in your browser).*
 >
 > *Next steps:*
-> *- For new features with UI: run `/brainstorm` then `/plan-design-review` — it'll grade designs 0–10 against this system.*
-> *- For existing UI: run `/design-review` — it'll find drift and AI-slop in the code."*
-
----
-
-{{LEARNINGS_LOG}}
-
-When logging from this skill, prefer keys like:
-- `design-aesthetic` — the named direction the user chose
-- `design-pitfall-<topic>` — patterns the user explicitly rejected (avoid in future suggestions)
-- `pref-color-approach` — palette strategy preference
+> *- For any UI work, run `/begin` — it consults the `frontend-design` skill and reads this DESIGN.md."*

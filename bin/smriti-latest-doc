@@ -9,7 +9,7 @@
 # the review skills couldn't find their input. Centralizing the
 # contract here kills that bug class.
 #
-# Filename contract — writers (/brainstorm, /plan, /debug) all follow it:
+# Filename contract — writers (/begin, /debug) all follow it:
 #   $SMRITI_HOME/projects/<slug>/<branch-slug>-<type>-<timestamp>.md
 #   <branch-slug> = branch name with every `/` replaced by `--`.
 #

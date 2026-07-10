@@ -8,7 +8,7 @@ description: |
   Trigger phrases: "debug this", "why is this failing", "find the bug", "trace
   this error", or pasting a stack trace, error message, or issue reference.
   Proactively invoke when the user reports broken behavior or asks why something
-  is failing. Hands off to /eng-review before /ship; does not replace it.
+  is failing. Hands off to `/code-review` before shipping; does not replace it.
 allowed-tools:
   - Bash
   - Read
@@ -146,7 +146,7 @@ If 2-3 hypotheses are exhausted without confirmation, diagnose why:
 
 | Pattern | Diagnosis | Next move |
 |---|---|---|
-| Hypotheses point to different subsystems | Architecture problem, not localized bug | Present findings, suggest `/brainstorm` to rethink the design |
+| Hypotheses point to different subsystems | Architecture problem, not localized bug | Present findings, suggest `/begin` to re-scope the design |
 | Evidence contradicts itself | Wrong mental model of the code | Step back, re-read without assumptions |
 | Works locally, fails in CI/prod | Environment problem | Focus on env differences, config, dependencies, timing |
 | Fix works but prediction was wrong | Symptom fix, not root cause | Real cause still active — keep investigating |
@@ -159,15 +159,15 @@ Issue an AskUserQuestion in decision-brief shape (see top of skill). Options:
 |---|---|
 | **Fix it now** | Proceed to Phase 4 |
 | **Diagnosis only — I'll take it from here** | Skip Phase 4; proceed to Phase 6's summary; end the skill |
-| **Rethink the design** (`/brainstorm`) | Only when the root cause reveals a design problem — see below |
+| **Rethink the design** (`/begin`) | Only when the root cause reveals a design problem — see below |
 
-**When to suggest `/brainstorm`:** only when investigation reveals the bug cannot be properly fixed within the current design.
+**When to suggest `/begin`:** only when investigation reveals the bug cannot be properly fixed within the current design.
 
 - The root cause is a wrong responsibility or interface, not wrong logic
 - Requirements are wrong or incomplete (the system behaves as designed; the design doesn't match what users need)
 - Every fix is a workaround — you keep wanting to add special cases instead of a direct correction
 
-Do not suggest `/brainstorm` for bugs that are large but have a clear fix.
+Do not suggest `/begin` for bugs that are large but have a clear fix.
 
 ## Phase 4: Fix
 
@@ -229,7 +229,7 @@ DEBUG_FILE="$DEBUG_DIR/$BRANCH_SLUG-debug-$TS.md"
 - **Slug:** <slug>
 - **Branch:** <branch>
 - **Date:** <YYYY-MM-DD>
-- **Outcome:** <fix-applied | diagnosis-only | escalated-to-brainstorm>
+- **Outcome:** <fix-applied | diagnosis-only | escalated-to-begin>
 
 ## Problem
 <what was broken — the original symptom, in one short paragraph>
@@ -263,19 +263,8 @@ DEBUG_FILE="$DEBUG_DIR/$BRANCH_SLUG-debug-$TS.md"
 
 End with one of these, picked by context:
 
-- **Fix applied** → *"Run `/eng-review` to catch any drive-by issues in the fix, then `/ship`."*
+- **Fix applied** → *"Run `/code-review` to catch any drive-by issues in the fix, then ship when ready."*
 - **Diagnosis only** → *"Diagnosis written to `<debug-file>`. You're driving from here."*
-- **Escalated to brainstorm** → *"Root cause is a design problem. Debug investigation written to `<debug-file>`. Run `/brainstorm` to rethink the surface that's failing — it will pick up the debug doc automatically."*
+- **Escalated to /begin** → *"Root cause is a design problem. Debug investigation written to `<debug-file>`. Run `/begin` to re-scope the surface that's failing — it will pick up the debug doc automatically."*
 
 State the recommendation; don't auto-invoke. The user runs the next skill themselves.
-
----
-
-{{LEARNINGS_LOG}}
-
-When logging from this skill, prefer keys like:
-
-- `causal-<area>` — root-cause patterns worth recognizing next time (e.g., `causal-stale-cache-on-retry`)
-- `tier-<N><x>-violation` — structural lessons surfaced by debug (e.g., `tier-1c-violation-string-dispatch`)
-- `pitfall-<category>` — traps that came up in investigation (e.g., `pitfall-mock-divergence`)
-- `prediction-<topic>` — predictions that turned out wrong, so future debugging avoids the same trap

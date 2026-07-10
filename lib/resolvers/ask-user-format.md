@@ -59,7 +59,7 @@ Net: <one-sentence verdict frame — what you're actually trading off>
 
 ### Element rules
 
-1. **D-numbering.** First question in a skill invocation is `D1`. Increment per question within the same skill. You count your own questions — there is no runtime counter. Drift over a long session is fine; minor inconsistency is not a bug. If a nested skill runs (e.g., `/plan-eng-review` calling `/brainstorm` inline), it starts its own `D1`; disambiguate as `D1 (brainstorm)` so the user can refer back unambiguously.
+1. **D-numbering.** First question in a skill invocation is `D1`. Increment per question within the same skill. You count your own questions — there is no runtime counter. Drift over a long session is fine; minor inconsistency is not a bug. If a nested skill runs (e.g., `/begin` calling `/debug` inline), it starts its own `D1`; disambiguate as `D1 (debug)` so the user can refer back unambiguously.
 
 2. **ELI10 (always).** Plain English, concrete examples, no function names. Say what it *does*, not what it's *called*. Even if the user is technical, even in terse mode — they're about to make a decision and need context they may not have loaded.
 
@@ -83,7 +83,7 @@ Net: <one-sentence verdict frame — what you're actually trading off>
 
 6. **Pros / cons.** Every option gets ✅ (pro) and ❌ (con) bullets:
    - **Minimum 2 ✅ + 1 ❌ per option.** If you can't name a con for the recommended option, the recommendation is hollow — go find one. If you can't name a pro for the rejected option, the question isn't real.
-   - **Minimum 40 characters per bullet.** `✅ Simple` is not a pro. `✅ Reuses the JSONL format already in learnings.jsonl, zero new parser` is. Concrete, observable, specific.
+   - **Minimum 40 characters per bullet.** `✅ Simple` is not a pro. `✅ Reuses the plan-doc JSONL format already parsed by smriti latest-doc, zero new parser` is. Concrete, observable, specific.
    - **Hard-stop escape** for genuinely one-sided choices (one-way doors, destructive-action confirmations): a single bullet `✅ No cons — this is a hard-stop choice` satisfies the rule. Use sparingly; overuse turns the brief into theater.
 
 7. **Net line (always).** Closes the decision with a one-sentence synthesis of what the user is actually trading off. Not a summary — a verdict frame. Examples: *"Speed now vs maintainability later."* / *"Coverage we'll regret skipping vs coverage we'll regret writing."* / *"The boring option ships; the interesting option teaches."*

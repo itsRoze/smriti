@@ -1,9 +1,7 @@
 #!/usr/bin/env bats
 # Tests for the severity-gated decision cadence (delegate posture):
-#   1-3. Contract lint on lib/resolvers/ask-user-format.md — the gate's source
-#        of truth that 7 skills inherit via {{ASK_USER_FORMAT}}.
-#   4.   Drift guard: the two review skills that DON'T consume the resolver
-#        (eng-review, design-review) must point back to it as source of truth.
+#   Contract lint on lib/resolvers/ask-user-format.md — the gate's source of
+#   truth that the skills inherit via {{ASK_USER_FORMAT}}.
 #
 # Run via: bun run test (which shells out to scripts/run-tests.sh)
 
@@ -53,13 +51,4 @@ setup() {
 @test "ask-user-format is self-contained: no unresolved template placeholders" {
   run grep -nE '\{\{[A-Z_]+\}\}' "$GATE_FILE"
   [ "$status" -ne 0 ] || { echo "found template placeholder:"; echo "$output"; false; }
-}
-
-# ─── Story 3: drift guard for the non-consuming review skills ───────────────
-
-@test "eng-review and design-review point back to the gate source of truth" {
-  # These two skills don't import {{ASK_USER_FORMAT}}; their inline classifiers
-  # must cite the resolver so a future gate edit knows both exist.
-  grep -q 'lib/resolvers/ask-user-format.md' "$ROOT/eng-review/SKILL.md.tmpl"
-  grep -q 'lib/resolvers/ask-user-format.md' "$ROOT/design-review/SKILL.md.tmpl"
 }

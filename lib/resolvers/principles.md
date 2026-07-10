@@ -162,7 +162,7 @@ When citing, write `Tier 1b (locality) — fragility evidence: change to X broke
 
 ## How review uses this file
 
-`/eng-review` and `/plan-eng-review` inject this file as structured criteria. For each finding:
+smriti's native `/code-review` reads this file as structured criteria, and `/begin` follows it while implementing. For each finding:
 
 1. Identify the tier and rule violated (e.g., Tier 1b, Tier 2.7).
 2. Cite the rule by name in the finding text.
