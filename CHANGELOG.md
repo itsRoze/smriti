@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.1.1 — 2026-07-18
+
+### Changed
+- **The interactive HTML review loop is mandatory for multi-finding reviews.** Gate 2 of `/begin` and the shared html-render resolver no longer present AskUserQuestion as a discretionary alternative: a plan or N-finding review always goes through `smriti html serve` + `await`. Fallbacks are strictly failure handling — an `await` timeout means re-await; a server that dies after the page rendered means use the page's "Copy response" block; only `serve` failing to start (no page ever renders) permits the one-question-per-finding fallback.
+
 ## 1.1.0 — 2026-07-18
 
 ### Changed

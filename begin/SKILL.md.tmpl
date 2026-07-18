@@ -35,7 +35,7 @@ smriti drives everything between them.
 | Gate | When | What you ask for |
 |------|------|------------------|
 | **1 · Clarify** | after understanding, *only if* there's a genuine fork | a tight set of questions |
-| **2 · Approve** | after the plan + Codex pass | approve, or request changes (interactive HTML) |
+| **2 · Approve** | after the plan + Codex pass | approve, or request changes (**always** interactive HTML) |
 | **3 · Review** | after implement + review + verify | you test; you decide PR vs. main |
 
 Between gates, keep moving — don't stop to narrate or ask permission.
@@ -155,11 +155,24 @@ Map the plan to the spec:
 - If you built UI mockups, include them as a **Design** section/card so the user
   sees the change.
 
+**ALWAYS render Gate 2 as HTML.** The plan is a multi-section review, so it goes
+through the interactive HTML loop **every time** — running `smriti html serve` +
+`await` is mandatory here. Do **NOT** substitute a plain `AskUserQuestion` for the
+HTML view because it seems quicker or simpler: presenting the plan as a single
+question instead of the rendered review is a bug, not a shortcut.
+
 The loop: `serve` → `await` → apply the payload. A card `reject`/`edit` or
 `global_notes` → revise the **plan markdown**, bump `revision_id`, `render`, and
 re-await. `action: finish` → the plan is approved; `stop` the session and advance
-to Step 6. Fall back to a single AskUserQuestion (*approve / request changes*) if
-the browser is unreachable — the gate is never a hard stop.
+to Step 6.
+
+The **only** permitted fallback to a single AskUserQuestion (*approve / request
+changes*) is when `smriti html serve` fails to start and no page ever renders.
+If the server becomes unreachable *after* the page rendered (`await`/`render`
+exit 6), stay in HTML: the rendered page's **"Copy response"** block lets the
+user paste the payload JSON back to you. Never fall back as a discretionary
+choice; never because AskUserQuestion is simpler. Absent a serve-fails-to-start
+failure, Gate 2 is HTML — and it is never a hard stop.
 
 ## Step 6 · Implement
 

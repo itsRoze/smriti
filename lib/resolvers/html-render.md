@@ -6,10 +6,13 @@ instead of N serial AskUserQuestion prompts. The user accepts / rejects / edits
 each finding and adds free-form notes; you read the structured result, revise,
 re-render, and repeat until they finish.
 
-**Coexistence, not replacement.** Single-decision skills keep AskUserQuestion —
-HTML only earns the context switch for N findings. The decision-brief content
-(ELI10 / Stakes / Recommendation / pros-cons) is exactly what fills each card's
-`body_md`; HTML is a new *presentation* of that format, not a new format.
+**HTML is mandatory for N findings.** A single-decision skill keeps
+AskUserQuestion; a **multi-finding** review does not get that choice — once the
+output is N decisions, the interactive HTML loop is required, not one option among
+several. Do NOT collapse N findings into a single AskUserQuestion (or a serial
+run of them) because it feels quicker. The decision-brief content (ELI10 / Stakes
+/ Recommendation / pros-cons) is exactly what fills each card's `body_md`; HTML is
+a new *presentation* of that format, not a new format.
 
 **Markdown stays the source of truth.** The spec is a generated view of your
 findings; persist decisions back to the markdown doc as usual.
@@ -135,14 +138,20 @@ the code ever disagree, the code wins** — this is a mirror for convenience.
 - `unknown_card_ids` — see *Finding identity*.
 - unreachable / `await` timeout — fall back (below).
 
-### Block-with-fallback
+### Block-with-fallback — HTML is the path; falling back needs a real failure
 
-The loop blocks on `await`, but you are never hard-stuck:
+The loop blocks on `await`, but you are never hard-stuck. The fallbacks below are
+**failure handling, not a menu** — never drop the HTML render because the user
+"would rather not open a browser" or because serial questions feel simpler:
 
-- `await` **times out** (exit 5) → the view is still waiting; re-await, or offer
-  to continue in the terminal.
-- **No server / unreachable** (exit 6), or the user would rather not open a
-  browser → the rendered page always shows a **"Copy response"** block; the user
-  pastes the payload JSON back to you. Parse it identically.
-- The user ignores the HTML entirely → fall back to the **one-AskUserQuestion-
-  per-finding** flow. HTML is the richer path, not the only path.
+- `await` **times out** (exit 5) → the view is still waiting; re-await. A timeout
+  is **not** an unreachable server — do NOT fall back to AskUserQuestion here.
+- **Transport unreachable but the page rendered** (`serve` succeeded, then
+  `await`/`render` exit 6 / server unreachable) → stay in HTML: the rendered page
+  always shows a **"Copy response"** block, so the user pastes the payload JSON
+  back to you. Parse it identically.
+- **`serve` itself fails to start** (no page ever renders) → this is the **only**
+  condition that permits the **one-AskUserQuestion-per-finding** fallback.
+
+Absent a genuine `serve`-fails-to-start or exit-6 unreachable failure, HTML is the
+only path — do not substitute AskUserQuestion because it is simpler.
