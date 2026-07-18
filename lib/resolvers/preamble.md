@@ -15,7 +15,10 @@ BRANCH_SLUG="${BRANCH//\//--}"
 
 # Config
 LEAN=$(smriti config get lean 2>/dev/null || echo senior)
-CODEX_DEFAULT=$(smriti config get codex_default 2>/dev/null || echo ask)
+CODEX_DEFAULT=$(smriti config get codex_default 2>/dev/null || echo auto)
+# Legacy alias: `ask` predates autonomous mode and now means `auto`.
+[ "$CODEX_DEFAULT" = "ask" ] && CODEX_DEFAULT=auto
+CODEX_DEFAULT="${CODEX_DEFAULT:-auto}"
 EXPLAIN_LEVEL=$(smriti config get explain_level 2>/dev/null || echo default)
 PROACTIVE=$(smriti config get proactive 2>/dev/null || echo true)
 
@@ -69,6 +72,6 @@ fi
 | `IS_FIRST_TIME` | `yes` if this is the first smriti run in this repo. |
 | `LEAN` | `senior` or `prototype`. Skills should honor this. |
 | `CODEX_AVAILABLE` | `1` if Codex CLI is installed and authed. |
-| `CODEX_DEFAULT` | `on` / `ask` / `off`. |
+| `CODEX_DEFAULT` | `on` / `auto` / `off` (`auto` = Claude decides; legacy `ask` is normalized to `auto`). |
 | `HAS_PROJECT_DOC` / `HAS_DESIGN_DOC` / `HAS_TODOS` | `yes` / `no`. |
 | `HAS_PRINCIPLES` | `yes` if project's `CLAUDE.md` has the smriti principles `@`-import (via `smriti principles-install`); `no` triggers a soft nudge. |

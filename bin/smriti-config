@@ -4,7 +4,7 @@
 #
 # Known keys:
 #   lean            senior | prototype
-#   codex_default   on | ask | off
+#   codex_default   on | auto | off   (auto = Claude decides per change; legacy `ask` = auto)
 #   proactive       true | false
 #   explain_level   default | terse
 #   browse_enabled  true | false      (set by ./setup; gates /begin's browser verify step)
