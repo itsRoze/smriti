@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.1.0 — 2026-07-18
+
+### Changed
+- **Codex review is now autonomous.** The `ask` mode (an AskUserQuestion before every Codex pass) is gone. The new default, `codex_default=auto`, has Claude decide per change: run the Codex second opinion unless the change is genuinely small *and* straightforward (docs/copy, config flips, renames, ~≤30 mechanical lines with no logic surface), and note the skip in one line instead of asking. `on` and `off` behave as before; a legacy `ask` value in config is treated as `auto`.
+
 ## 1.0.0 — 2026-07-09
 
 A ground-up simplification. smriti was a multi-stage pipeline of a dozen skills coordinated by an approvals state machine; it's now a single command.

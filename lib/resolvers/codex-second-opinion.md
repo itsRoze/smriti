@@ -1,4 +1,4 @@
-## Phase: Codex second opinion (auto-offered)
+## Phase: Codex second opinion (autonomous)
 
 Source `smriti codex-probe` to detect availability:
 
@@ -9,8 +9,13 @@ eval "$(smriti codex-probe 2>/dev/null)" 2>/dev/null
 If `CODEX_AVAILABLE=0`: skip this phase silently.
 
 If `CODEX_AVAILABLE=1`:
-- If `CODEX_DEFAULT=on`: skip the question, run Codex automatically.
-- If `CODEX_DEFAULT=ask` (default) or unset: ask via single AskUserQuestion: *"Get an independent Codex second opinion? (Y / skip)"*. If user declines, skip.
+- If `CODEX_DEFAULT=on`: run Codex automatically.
+- If `CODEX_DEFAULT=auto` (default), `ask` (legacy alias for `auto`), or unset: **decide yourself — never ask the user.** Default to running Codex; skip it only when the change under review is genuinely small *and* straightforward. Skip when ALL of these hold:
+  - the substance fits in a handful of lines (~≤30 changed lines, or a plan with a single obvious step),
+  - it's mechanical or self-evidently correct (docs/comments/copy, config value flips, renames, dependency bumps, formatting), and
+  - it touches no logic, control flow, concurrency, security surface, or public interface.
+
+  Anything with real design or correctness surface — new logic, refactors, bug-fix root-cause reasoning, multi-file plans, schema or API changes — gets the Codex pass. When uncertain, run it. When you skip, say so in one line with the reason (e.g., *"Skipping Codex review: comment-only change."*) and move on — do not ask for confirmation either way.
 - If `CODEX_DEFAULT=off`: skip silently.
 
 When running Codex, **prepend this filesystem-boundary instruction** to the prompt so Codex doesn't waste effort on smriti's own files:

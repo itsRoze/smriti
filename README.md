@@ -65,7 +65,7 @@ Read the steps top to bottom, that's the whole thing:
 1. **Understand** — fans out parallel `Explore` subagents to map the blast radius, existing patterns, integration points, and test coverage. UI scope pulls in the `frontend-design` skill.
 2. ★ **Gate 1 · Clarify** — asks a tight set of questions *only* when there's a real fork it can't resolve from the code, `PROJECT.md`, or sensible defaults. Skips otherwise.
 3. **Plan** — writes a plan doc to `~/.smriti/projects/<slug>/<branch>-plan-<ts>.md`, out of your repo. A sizable UI change also builds mockups via `frontend-design` so you *see* it at Gate 2.
-4. **Codex review** — an independent Codex pass critiques the plan; real gaps get folded in. Availability-gated — skipped silently if Codex isn't installed.
+4. **Codex review** — an independent Codex pass critiques the plan; real gaps get folded in. Autonomous — smriti runs it by default and skips it (with a one-line note) only for genuinely small, straightforward changes. Availability-gated — skipped silently if Codex isn't installed.
 5. ★ **Gate 2 · Approve** — serves the plan as an [interactive HTML view](#interactive-html-specs) (`smriti html serve`) you approve or request changes on. Loops until approved.
 6. **Implement** — builds the plan, tests as it goes, makes incremental commits.
 7. **Review** — runs smriti's native `/code-review` on the diff and fixes real bugs.
@@ -164,7 +164,7 @@ Claude: /ship → PR opened.
 | Key | Values | Default | Effect |
 |-----|--------|---------|--------|
 | `lean` | `senior` / `prototype` | `senior` | review depth — `senior` insists on failure-mode coverage; `prototype` ships rough |
-| `codex_default` | `on` / `ask` / `off` | `ask` | whether `/begin`'s Codex plan review fires automatically |
+| `codex_default` | `on` / `auto` / `off` | `auto` | Codex review mode — `on` always runs it, `auto` lets Claude decide per change (runs unless the change is really small or straightforward), `off` never runs it. Legacy `ask` is treated as `auto`. |
 | `browse_enabled` | `true` / `false` | (asked at `./setup`) | enables `/begin`'s verify browser step via `smriti browse` (Playwright) |
 | `proactive` | `true` / `false` | `true` | reserved (proactive skill suggestions) |
 | `explain_level` | `default` / `terse` | `default` | reserved (output verbosity) |
