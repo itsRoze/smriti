@@ -498,6 +498,14 @@ async function interactive(): Promise<number> {
       void onKey(d);
     };
     stdin.on('data', handler);
+
+    // Without this the board waits forever once stdin closes — a terminal that
+    // goes away, or any non-interactive driver, leaves the process lingering.
+    stdin.once('end', () => {
+      stdin.off('data', handler);
+      cleanup();
+      resolve(0);
+    });
   });
 }
 

@@ -10,6 +10,7 @@ The work layer. smriti had no concept of *work*: the flow started at a free-text
 - **`smriti trace`** — runs and phase events, so a run is watchable while it happens and reviewable afterwards. `events.id` is the cursor: one query serves both a live tail and full history.
 - **Documents are indexed against their ticket.** Plans, debug docs and audits register where they live as they're written; the markdown on disk stays the source of truth and the filename contract is untouched.
 - **Worktree per ticket.** `smriti ticket start` cuts one, so several tickets can be in flight without colliding.
+- **A project-scoped `/code-review`.** Claude Code's built-in is compiled in as manual-invocation-only, so `/begin`'s review step could never reach it and silently did nothing. The replacement is model-invocable and reads `principles.md`, so findings cite the tier they violate.
 
 ### Changed
 - **The skills stamp the ticket.** `/begin`, `/debug`, `/ship` and `/clean` pick it up from the branch via the preamble's `$TICKET`. `/ship` moves it to in review and records the PR; `/clean` marks it shipped once the merge is confirmed. A ticket is never required — every skill works unchanged on a hand-cut branch.
