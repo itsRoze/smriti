@@ -22,7 +22,11 @@ _smriti() {
 
   if (( CURRENT == 2 )); then
     local -a subcmds
-    subcmds=(${${(f)"$(ls "$bin_dir"/smriti-* 2>/dev/null)"}:t:s/smriti-//} help)
+    # Ask the dispatcher rather than globbing bin/: globbing advertised every
+    # internal helper as a user command. Falls back to the glob if the
+    # dispatcher is older than --commands.
+    subcmds=(${(f)"$("$bin_dir"/smriti --commands 2>/dev/null)"})
+    (( $#subcmds )) || subcmds=(${${(f)"$(ls "$bin_dir"/smriti-* 2>/dev/null)"}:t:s/smriti-//} help)
     _describe 'smriti command' subcmds
     return
   fi
@@ -43,7 +47,7 @@ _smriti() {
         _describe 'config subcommand' config_cmds
         ;;
       ticket)
-        local -a ticket_cmds=(add list show start status done doc doc-forget current)
+        local -a ticket_cmds=(add list show start edit cancel rm pr status done doc docs current)
         _describe 'ticket subcommand' ticket_cmds
         ;;
       trace)

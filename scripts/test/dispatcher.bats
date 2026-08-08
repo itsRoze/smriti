@@ -14,6 +14,10 @@ setup() {
   SMRITI="$FAKE_BIN/smriti"
 
   export SMRITI_HOME="$WORK/state"
+  REPO="$WORK/repo"
+  mkdir -p "$REPO"
+  git -C "$REPO" init -q -b main
+  git -C "$REPO" remote add origin "https://github.com/test/disp.git"
   mkdir -p "$SMRITI_HOME"
 }
 
@@ -78,4 +82,27 @@ teardown() {
   [[ "$output" == *"factory"* ]]
   [[ "$output" == *"ticket"* ]]
   [[ "$output" == *"trace"* ]]
+}
+
+@test "--commands lists only the user-facing surface, not internal helpers" {
+  # The zsh completion reads this instead of globbing bin/, which used to
+  # advertise slug, latest-doc, codex-probe and friends as if they were
+  # commands you were meant to type.
+  run "$SMRITI" --commands
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"board"* ]]
+  [[ "$output" == *"ticket"* ]]
+  [[ "$output" == *"help"* ]]
+  ! [[ "$output" == *"slug"* ]]
+  ! [[ "$output" == *"latest-doc"* ]]
+  ! [[ "$output" == *"codex-probe"* ]]
+  ! [[ "$output" == *"update-check"* ]]
+}
+
+@test "unadvertised helpers are still dispatchable — skills depend on them" {
+  # Hiding them from completion must not remove them from dispatch.
+  cd "$REPO"
+  run "$SMRITI" slug --print
+  [ "$status" -eq 0 ]
+  [ -n "$output" ]
 }
