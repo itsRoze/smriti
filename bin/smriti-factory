@@ -77,9 +77,12 @@ type Run = {
   last_phase: string | null;
 };
 
-// The label an app-less ticket groups under. Not a slug — no app has this
-// name, and grouping is by the literal value so it cannot collide.
-const NO_APP = 'ideas';
+// The bucket an app-less ticket groups under. Parentheses are rejected by
+// smriti-repo's validate_slug_shape, so no real app can ever produce this key —
+// which matters because `ideas` on its own IS a legal slug
+// (github.com/you/ideas), and using it here merged that app with every idea.
+const NO_APP = '(ideas)';
+const NO_APP_LABEL = 'ideas';
 
 function readJson<T>(bin: string, args: string[]): T[] {
   const r = spawnSync(bin, args, { encoding: 'utf8' });
@@ -255,7 +258,7 @@ function plainListing(): number {
   }
   const width = Math.max(60, process.stdout.columns || 80);
   for (const row of rows) {
-    if (row.kind === 'app') process.stdout.write(`${row.label}\n`);
+    if (row.kind === 'app') process.stdout.write(`${row.label === NO_APP ? NO_APP_LABEL : row.label}\n`);
     else if (row.kind === 'project') process.stdout.write(`  ▸ ${row.label}\n`);
     else if (row.kind === 'blank') process.stdout.write('\n');
     else if (row.kind === 'run') process.stdout.write(`${runLine(row.run, width)}\n`);

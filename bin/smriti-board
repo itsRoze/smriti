@@ -353,9 +353,11 @@ async function cmdServer(): Promise<never> {
         const title = (body.title || '').trim();
         if (!title) return json({ error: 'a title is required' }, 400);
         const args = ['add', title, '--ready'];
-        // No repo and no project is a legitimate capture: an idea.
+        // No repo and no project is a legitimate capture: an idea. '-' says so
+        // explicitly — omitting --repo would let smriti-ticket derive one from
+        // the SERVER's cwd, which is wherever `smriti` happened to be started.
         if (body.project) args.push('--project', body.project);
-        if (body.repo) args.push('--repo', body.repo);
+        args.push('--repo', body.repo || '-');
         const r = sh(TICKET, args);
         if (!r.ok) return json({ error: r.errOut || 'could not add' }, 500);
         const id = Number(r.out.match(/#(\d+)/)?.[1] || 0);

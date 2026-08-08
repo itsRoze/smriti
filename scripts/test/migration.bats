@@ -148,7 +148,7 @@ migrate() { "$TICKET" list --all >/dev/null; }
   seed_v1
   migrate
   local before; before=$(db "SELECT count(*) FROM tickets;")
-  rm -f "$SMRITI_HOME/.factory-schema-v2"   # force the guard to be consulted
+  db "PRAGMA user_version = 0;"   # force the guard down the slow path
   migrate
   [ "$(db "SELECT count(*) FROM tickets;")" = "$before" ]
   [ "$(db "SELECT count(*) FROM repositories;")" = "2" ]
@@ -196,24 +196,49 @@ migrate() { "$TICKET" list --all >/dev/null; }
   echo "$output" | jq -e '.[0] | has("repo_slug") and has("project_id")'
 }
 
-@test "migration: a fresh database is born at the new shape, unmigrated" {
+@test "migration: a fresh database is born at the new shape, and says so" {
   # No seed. A write, not a read: reads deliberately refuse to bring the store
   # into being just to answer "nothing here".
   "$TICKET" add "first" >/dev/null
   [ "$(db "SELECT count(*) FROM pragma_table_info('tickets') WHERE name='repo_slug';")" = "1" ]
   [ "$(db "SELECT count(*) FROM pragma_table_info('tickets') WHERE name='project_slug';")" = "0" ]
-  [ -f "$SMRITI_HOME/.factory-schema-v2" ]
+  [ "$(db "PRAGMA user_version;")" = "2" ]
 }
 
-@test "migration: the marker keeps steady state off the migration path" {
+@test "migration: the version is stamped in the database, not beside it" {
+  seed_v1
+  [ "$(db "PRAGMA user_version;")" = "0" ]
+  migrate
+  [ "$(db "PRAGMA user_version;")" = "2" ]
+  # And it is not tracked by any sibling file, which could desynchronise from
+  # the data it describes.
+  [ ! -f "$SMRITI_HOME/.factory-schema-v2" ]
+}
+
+@test "migration: restoring a v1 backup over a migrated home still migrates" {
+  # The failure a marker file cannot catch: the version travels WITH the data.
   seed_v1
   migrate
-  [ -f "$SMRITI_HOME/.factory-schema-v2" ]
-  # With the marker present the guard is never even consulted, which is what
-  # keeps the cost of every smriti command at one file test.
-  db "ALTER TABLE tickets ADD COLUMN canary TEXT;"
+  [ "$(db "PRAGMA user_version;")" = "2" ]
+
+  rm -f "$SMRITI_HOME/factory.db" "$SMRITI_HOME/factory.db-wal" "$SMRITI_HOME/factory.db-shm"
+  seed_v1                                   # a pre-upgrade backup, restored
+  run "$TICKET" list --all
+  [ "$status" -eq 0 ]
+  [ "$(db "PRAGMA user_version;")" = "2" ]
+  [ "$(db "SELECT count(*) FROM pragma_table_info('tickets') WHERE name='repo_slug';")" = "1" ]
+}
+
+@test "migration: a v2-shaped database with an unstamped version is just stamped" {
+  # Reshaped by hand, or built by a pre-release. Re-running the rebuild would
+  # fail on a column that is already gone.
+  seed_v1
   migrate
-  [ "$(db "SELECT count(*) FROM pragma_table_info('tickets') WHERE name='canary';")" = "1" ]
+  db "PRAGMA user_version = 0;"
+  run "$TICKET" list --all
+  [ "$status" -eq 0 ]
+  [ "$(db "PRAGMA user_version;")" = "2" ]
+  [ "$(db "SELECT count(*) FROM tickets;")" = "2" ]
 }
 
 @test "migration: a v1 store with an empty project_slug lands as no app" {
@@ -223,4 +248,56 @@ migrate() { "$TICKET" list --all >/dev/null; }
   [ "$(db "SELECT coalesce(repo_slug,'NULL') FROM tickets WHERE id=2;")" = "NULL" ]
   # ...and does not become a phantom repository named ''.
   [ "$(db "SELECT count(*) FROM repositories WHERE slug='';")" = "0" ]
+}
+
+# ─── the guard's failure modes ──────────────────────────────────────────────
+# The marker is a promise that the store is current. Writing it when that is
+# merely unknown is worse than not writing it at all: the migration is then
+# skipped forever and every later command queries columns that do not exist.
+
+@test "migration: a stale lock directory does not block forever" {
+  seed_v1
+  mkdir -p "$SMRITI_HOME/.factory-migrating"   # a corpse from a hard kill
+  run "$TICKET" list --all
+  [ "$status" -eq 0 ]
+  [ "$(db "SELECT count(*) FROM pragma_table_info('tickets') WHERE name='repo_slug';")" = "1" ]
+  [ ! -d "$SMRITI_HOME/.factory-migrating" ]
+}
+
+@test "migration: the lock is released on the happy path" {
+  seed_v1
+  migrate
+  [ ! -d "$SMRITI_HOME/.factory-migrating" ]
+}
+
+@test "migration: concurrent first runs all succeed, none reports a failure" {
+  # Two worktrees reaching a cold store at once both used to pass the guard;
+  # the loser then ran its transaction against tables the winner had already
+  # rebuilt and exited 3 claiming the migration failed.
+  seed_v1
+  "$TICKET" list --all >/dev/null 2>"$WORK/e1" & p1=$!
+  "$TICKET" list --all >/dev/null 2>"$WORK/e2" & p2=$!
+  "$FAKE_BIN/smriti-repo" list --json >/dev/null 2>"$WORK/e3" & p3=$!
+  wait $p1; s1=$?
+  wait $p2; s2=$?
+  wait $p3; s3=$?
+  [ "$s1" -eq 0 ] && [ "$s2" -eq 0 ] && [ "$s3" -eq 0 ]
+  ! grep -q "migration failed" "$WORK/e1" "$WORK/e2" "$WORK/e3"
+  [ "$(db "SELECT count(*) FROM tickets;")" = "2" ]
+  [ "$(db "PRAGMA user_version;")" = "2" ]
+}
+
+@test "migration: an unreadable store fails loudly rather than half-working" {
+  # Carrying on would run v2 SQL against a v1 shape and error column by column.
+  seed_v1
+  chmod 000 "$SMRITI_HOME/factory.db"
+  run "$TICKET" list --all
+  chmod 644 "$SMRITI_HOME/factory.db"
+  [ "$status" -eq 3 ]
+  [[ "$output" == *"cannot read"* ]]
+
+  # ...and it recovers once the file is readable again.
+  migrate
+  [ "$(db "SELECT count(*) FROM pragma_table_info('tickets') WHERE name='repo_slug';")" = "1" ]
+  [ "$(db "PRAGMA user_version;")" = "2" ]
 }

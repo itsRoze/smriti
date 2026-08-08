@@ -653,3 +653,28 @@ seed_commit() { echo seed > f && git add f && git commit -q -m init; }
   [ "$TICKET" = "1" ]
   [ "$TICKET_PROJECT" = "Search v2" ]
 }
+
+@test "edit: an empty --project is a usage error, not a silent detach" {
+  # It used to read as "no project" AND, through repo_of_project(''), as "no
+  # app" — so the ticket silently left its app and vanished from every view.
+  "$CLI" add "bug in app" >/dev/null
+  run "$CLI" edit 1 --project ""
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"--no-project"* ]]
+  [ "$(tdb "SELECT repo_slug FROM tickets WHERE id=1;")" = "test-demo" ]
+}
+
+@test "edit: an empty --repo is a usage error too" {
+  "$CLI" add "bug in app" >/dev/null
+  run "$CLI" edit 1 --repo ""
+  [ "$status" -eq 2 ]
+  [ "$(tdb "SELECT repo_slug FROM tickets WHERE id=1;")" = "test-demo" ]
+}
+
+@test "list --json: the project key is not the old project_slug" {
+  # v1.2's project_slug held the REPOSITORY. Reusing that name for the project
+  # would hand every existing reader a different entity without an error.
+  "$CLI" add "a ticket" >/dev/null
+  run "$CLI" list --json
+  echo "$output" | jq -e '.[0] | has("repo_slug") and has("project_ref") and (has("project_slug") | not)'
+}

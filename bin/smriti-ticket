@@ -160,8 +160,8 @@ cmd_add() {
 
   while [ $# -gt 0 ]; do
     case "$1" in
-      --repo)     [ $# -ge 2 ] || die "--repo requires a value";    repo="$2";    shift 2 ;;
-      --project)  [ $# -ge 2 ] || die "--project requires a value"; project="$2"; shift 2 ;;
+      --repo)     [ $# -ge 2 ] && [ -n "$2" ] || die "--repo requires a value (use '-' for no app)";    repo="$2";    shift 2 ;;
+      --project)  [ $# -ge 2 ] && [ -n "$2" ] || die "--project requires a value (use --no-project to detach)"; project="$2"; shift 2 ;;
       --body)     [ $# -ge 2 ] || die "--body requires a value";    body="$2";    shift 2 ;;
       --priority) [ $# -ge 2 ] || die "--priority requires a value"; priority="$2"; shift 2 ;;
       --ready)    status="ready"; shift ;;
@@ -207,8 +207,8 @@ cmd_list() {
   local repo="" project="" status="" all=0 json=0 repo_given=0
   while [ $# -gt 0 ]; do
     case "$1" in
-      --repo)    [ $# -ge 2 ] || die "--repo requires a value"; repo="$2"; repo_given=1; shift 2 ;;
-      --project) [ $# -ge 2 ] || die "--project requires a value"; project="$2"; shift 2 ;;
+      --repo)    [ $# -ge 2 ] && [ -n "$2" ] || die "--repo requires a value (use '-' for no app)"; repo="$2"; repo_given=1; shift 2 ;;
+      --project) [ $# -ge 2 ] && [ -n "$2" ] || die "--project requires a value"; project="$2"; shift 2 ;;
       --status)  [ $# -ge 2 ] || die "--status requires a value";  status="$2";  shift 2 ;;
       --all)  all=1; shift ;;
       --json) json=1; shift ;;
@@ -247,8 +247,11 @@ cmd_list() {
   local order="ORDER BY priority DESC, id ASC"
 
   if [ "$json" -eq 1 ]; then
+    # Deliberately NOT called project_slug: that key existed in v1.2 and held
+    # the REPOSITORY. Reusing the name for a different entity would break every
+    # existing reader silently, one wrong value at a time.
     db_json "SELECT id, repo_slug, project_id,
-                    (SELECT slug FROM projects p WHERE p.id = tickets.project_id) AS project_slug,
+                    (SELECT slug FROM projects p WHERE p.id = tickets.project_id) AS project_ref,
                     (SELECT name FROM projects p WHERE p.id = tickets.project_id) AS project_name,
                     title, body, status, priority, branch,
                     worktree_path, pr_url, origin, created_at, updated_at
@@ -456,8 +459,8 @@ cmd_edit() {
       --body)     [ $# -ge 2 ] || die "--body requires a value";     body="$2";     have=1; shift 2
                   [ -z "$body" ] && clear_body=1 ;;
       --priority) [ $# -ge 2 ] || die "--priority requires a value"; priority="$2"; have=1; shift 2 ;;
-      --repo)     [ $# -ge 2 ] || die "--repo requires a value";     repo="$2";     have=1; repo_given=1; shift 2 ;;
-      --project)  [ $# -ge 2 ] || die "--project requires a value";  project="$2";  have=1; project_given=1; shift 2 ;;
+      --repo)     [ $# -ge 2 ] && [ -n "$2" ] || die "--repo requires a value (use '-' for no app)";     repo="$2";     have=1; repo_given=1; shift 2 ;;
+      --project)  [ $# -ge 2 ] && [ -n "$2" ] || die "--project requires a value (use --no-project to detach)";  project="$2";  have=1; project_given=1; shift 2 ;;
       --no-project) no_project=1; have=1; shift ;;
       *) die "unknown flag: $1" ;;
     esac

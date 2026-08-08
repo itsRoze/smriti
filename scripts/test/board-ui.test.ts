@@ -230,12 +230,13 @@ describe('board UI', () => {
     const { context, page, errors } = await open();
     try {
       await page.goto(url.split('?')[0] + '#/r/test-demo', { waitUntil: 'domcontentloaded' });
-      await page.locator('#desc').click();
-      await page.locator('#descedit').fill('a scratch app for tests');
-      await page.locator('#descedit').press('Meta+Enter');
-      await page.waitForFunction(
-        () => document.querySelector('#desc')?.textContent?.includes('a scratch app for tests') ?? false,
-      );
+      // #pagedesc, not #desc: the detail overlay owns #desc/#descedit, and the
+      // two used to collide — the overlay's editor operated on the page's
+      // description and saved the app's text into a ticket body.
+      await page.locator('#pagedesc').click();
+      await page.locator('#pagedescedit').fill('a scratch app for tests');
+      await page.locator('#pagedescedit').press('Meta+Enter');
+      await page.waitForSelector('#pagedesc:has-text("a scratch app for tests")');
       // ...and it is really in the store, not just on screen.
       const shown = spawnSync(REPO, ['show', 'test-demo', '--json'], {
         encoding: 'utf8', env: { ...process.env, SMRITI_HOME: HOME_DIR },

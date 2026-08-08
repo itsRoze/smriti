@@ -442,6 +442,7 @@ export function boardPage(): string {
   // OWNED by the view: flat/sel are rebuilt from whatever the current view
   // drew, so s/d/⏎ can never act on a row belonging to a page you left.
   let view = { kind: 'board' };
+  let lastViewKey = '';
   // Which doc tab an app page is showing, remembered across live re-renders so
   // an SSE refresh does not snap you back to PROJECT.md mid-read.
   let docTab = 'PROJECT';
@@ -544,7 +545,7 @@ export function boardPage(): string {
     return '<div class="lab">paper trail</div><div class="trail">' + docs.map((d) =>
       '<div class="doc" data-doc="' + d.id + '"><span class="tag">' + esc(d.type) + '</span>' +
       '<span>' + esc(d.path.split('/').pop()) + '</span></div>'
-    ).join('') + '</div><div class="docview" id="docview"></div>';
+    ).join('') + '</div><div class="docview" id="pagedoc"></div>';
   }
 
   function historyHtml(list){
@@ -671,7 +672,7 @@ export function boardPage(): string {
   function renderApp(slug){
     const repo = repoBySlug(slug) || { slug, name: appLabel(slug), counts: {} };
     const items = ticketsIn(slug);
-    const projs = projectsIn(slug);
+    const projs = projectsIn(slug).filter((p) => p.status === 'active');
     const docs = S.documents.filter((d) => d.repo_slug === slug);
     const hue = hueFor(slug);
 
@@ -689,9 +690,9 @@ export function boardPage(): string {
       '</div></div></div>';
 
     h += '<div class="lab">what this app is</div>' +
-      '<div class="body" id="desc" data-edit="repo" title="click to edit">' +
+      '<div class="body" id="pagedesc" data-edit="repo" title="click to edit">' +
       (repo.description ? esc(repo.description) : '<span class="ghost">what this app is, and why…</span>') + '</div>' +
-      '<textarea class="descedit" id="descedit" placeholder="what this app is, and why">' + esc(repo.description || '') + '</textarea>';
+      '<textarea class="descedit" id="pagedescedit" placeholder="what this app is, and why">' + esc(repo.description || '') + '</textarea>';
 
     // The two repo-level documents. Rendered from disk, so all three states are
     // real: present, absent, and no repo to look in at all.
@@ -757,9 +758,9 @@ export function boardPage(): string {
       '</div></div></div>';
 
     h += '<div class="lab">what this project is</div>' +
-      '<div class="body" id="desc" data-edit="project" data-pid="' + p.id + '" title="click to edit">' +
+      '<div class="body" id="pagedesc" data-edit="project" data-pid="' + p.id + '" title="click to edit">' +
       (p.description ? esc(p.description) : '<span class="ghost">what this project is, and why…</span>') + '</div>' +
-      '<textarea class="descedit" id="descedit" placeholder="what this project is, and why">' + esc(p.description || '') + '</textarea>';
+      '<textarea class="descedit" id="pagedescedit" placeholder="what this project is, and why">' + esc(p.description || '') + '</textarea>';
 
     const open = items.filter(isOpen).sort(byStatus);
     cardIdx = 0; flat = [];
@@ -795,7 +796,14 @@ export function boardPage(): string {
       return;
     }
     const key = slug + '|' + docTab;
-    if (!force && docCache.has(key)){ pane.innerHTML = docCache.get(key); return; }
+    if (!force && docCache.has(key)){
+      // Only touch the DOM when the content actually differs: re-assigning the
+      // same html resets the scroll position, which on a long PROJECT.md means
+      // a live update yanks you back to the top mid-read.
+      const html = docCache.get(key);
+      if (pane.innerHTML !== html) pane.innerHTML = html;
+      return;
+    }
     pane.innerHTML = '<div class="nothing">reading…</div>';
     try {
       const res = await api('/api/repos/' + encodeURIComponent(slug) + '/doc/' + docTab);
@@ -819,14 +827,22 @@ export function boardPage(): string {
     else if (parts[0] === 'p' && parts[1]) view = { kind: 'project', id: Number(decodeURIComponent(parts[1])) };
     else view = { kind: 'board' };
 
-    // Selection belongs to the view that drew it.
+    const key = view.kind + ':' + (view.slug ?? view.id ?? '');
+    const changed = key !== lastViewKey;
+    lastViewKey = key;
+    // Selection is owned by the view: cleared when you move between views, kept
+    // when the view you are on simply re-renders (which SSE does about once a
+    // second while an agent is running).
+    const keep = changed ? -1 : sel;
     flat = []; sel = -1;
+
     // The treeline is the board's horizon, not a page ornament.
     document.querySelector('.trees').classList.toggle('off', view.kind !== 'board');
     if (view.kind === 'app') renderApp(view.slug);
     else if (view.kind === 'project') renderProject(view.id);
     else renderBoard();
-    if (sel >= flat.length) sel = flat.length - 1;
+
+    sel = keep >= flat.length ? flat.length - 1 : keep;
     paintSel();
   }
   const go = (hash) => { if (location.hash === hash) route(); else location.hash = hash; };
@@ -874,9 +890,11 @@ export function boardPage(): string {
   }
 
   // The description editor, shared by both pages — same click-to-edit
-  // affordance a ticket body already has.
+  // affordance a ticket body already has. Its ids are page-specific on purpose:
+  // the detail overlay owns #desc/#descedit, and sharing them made this latch
+  // onto the overlay's nodes whenever the board was showing.
   function wireDescEditor(){
-    const d = $('#desc'), ta = $('#descedit');
+    const d = $('#pagedesc'), ta = $('#pagedescedit');
     if (!d || !ta) return;
     const save = async () => {
       const next = ta.value.trim();
@@ -925,8 +943,16 @@ export function boardPage(): string {
     if (!r.ok) throw new Error((await r.text().catch(() => '')) || ('HTTP ' + r.status));
     return r.json();
   }
+  // True while a description editor is open. Re-rendering underneath one
+  // destroys the textarea without firing its blur handler, so the text is lost
+  // with no save — worse than showing data a second out of date.
+  function isEditing(){
+    const ta = document.querySelector('.descedit.on');
+    return Boolean(ta) && document.activeElement === ta;
+  }
+
   async function refresh(){
-    try { S = await api('/api/state'); route(); }
+    try { S = await api('/api/state'); if (!isEditing()) route(); }
     catch (e) {
       // 503 is the store failing to read; anything else is the server gone.
       const msg = /could not read/.test(String(e.message))

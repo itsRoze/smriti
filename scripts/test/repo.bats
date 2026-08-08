@@ -452,3 +452,30 @@ EOF
   # Still no database: a read must not conjure one into being.
   [ ! -f "$SMRITI_HOME/factory.db" ]
 }
+
+@test "list --json: works with no factory.db, and creates no stray files" {
+  # repo_json's empty-store branch passed its SQL as the DATABASE FILENAME, so
+  # sqlite3 opened the statement as a file, printed a parse error, consumed the
+  # caller's stdin as SQL, and left a file in the cwd named after the query.
+  mkdir -p "$SMRITI_HOME/projects/appone" "$SMRITI_HOME/projects/apptwo"
+  cd "$WORK"
+  [ ! -f "$SMRITI_HOME/factory.db" ]
+
+  run "$CLI" list --json
+  [ "$status" -eq 0 ]
+  echo "$output" | jq -e 'length == 2'
+  [ "$(echo "$output" | jq -r '.[0].slug')" = "appone" ]
+  [ "$(echo "$output" | jq -r '.[0].counts.tickets')" = "0" ]
+  # Nothing named after the SQL may appear anywhere.
+  [ -z "$(find "$WORK" "$SMRITI_HOME" -name 'SELECT*' 2>/dev/null)" ]
+  [ ! -f "$SMRITI_HOME/factory.db" ]
+}
+
+@test "show --json: an app with no factory.db still returns an object" {
+  # The board's repo-doc route parses this; empty output made it 404 forever.
+  mkdir -p "$SMRITI_HOME/projects/appone"
+  cd "$WORK"
+  run "$CLI" show appone --json
+  [ "$status" -eq 0 ]
+  echo "$output" | jq -e '.slug == "appone" and has("repo_path") and has("counts")'
+}

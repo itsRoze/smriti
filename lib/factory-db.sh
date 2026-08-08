@@ -61,24 +61,73 @@ _factory_conn_args() {
 # factory-schema.sql can only CREATE. Reshaping a table that already exists
 # needs SQLite's rebuild dance, and that is what this does — once, ever.
 #
-# Steady state must stay free: this runs on every db() call, so the fast path is
-# a single `[ -f ]` on a marker written the moment the database is known to be
-# current. Without the marker even a no-op check would cost an extra sqlite3
-# process per invocation, doubling the process count of every smriti command.
-FACTORY_MARK="${SMRITI_HOME:-$HOME/.smriti}/.factory-schema-v2"
+# The schema version lives in the DATABASE, as `PRAGMA user_version`, not in a
+# sibling marker file. A marker is faster to read, but it can desynchronise from
+# the thing it describes — restore a pre-upgrade backup of factory.db, or sync
+# the file between machines, and the marker still says "current" while the data
+# is not. Every command then fails with `no such column: repo_slug` and the only
+# cure is deleting a dotfile the user has no reason to know exists.
+#
+# Reading it costs one sqlite3 invocation (~4ms against ~16ms for a whole
+# `ticket list`). That is the price of a version that cannot lie, and it is also
+# what makes a future v3 possible.
+FACTORY_SCHEMA_VERSION=2
 
-# v1 → v2: project_slug always held a REPOSITORY, so it becomes a nullable
-# repo_slug and gains a nullable project_id beside it. Old rows land as one-off
-# tickets in their app — deliberately no projects are invented, because "this
-# ticket is not part of any project" is a legitimate state in the new model.
+# The store's schema version. Three answers, and they must stay distinct:
+# a number, or failure — because "could not read it" is not "it is current".
+# Collapsing those two is how a database that was merely locked at the wrong
+# moment gets recorded as migrated and then never is.
+_db_version() {
+  local v
+  v=$(sqlite3 "$FACTORY_DB" ".timeout 10000" "PRAGMA user_version;" 2>/dev/null) || return 1
+  case "$v" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  printf '%s' "$v"
+}
+
 _db_migrate_v2() {
-  # The guard is inside the same sqlite3 call as the work: two worktrees can
-  # reach this at once, and the loser must see the migrated shape and no-op
-  # rather than rebuild a second time.
+  # Serialised with a directory lock: `mkdir` is atomic, so exactly one process
+  # migrates. Without it two worktrees reaching a cold store at once both pass
+  # the guard, and the loser's transaction then runs against tables the winner
+  # already rebuilt — failing on a column that no longer exists and reporting a
+  # migration failure for a database that is in fact perfectly fine.
+  local lock="${SMRITI_HOME:-$HOME/.smriti}/.factory-migrating"
+  local waited=0
+  while ! mkdir "$lock" 2>/dev/null; do
+    waited=$((waited + 1))
+    # A lock older than the wait budget is a corpse from a hard kill, not a
+    # peer: clear it rather than blocking every future invocation forever.
+    if [ "$waited" -gt 300 ]; then rmdir "$lock" 2>/dev/null || true; continue; fi
+    sleep 0.1
+  done
+
+  # Re-read now that we hold the lock: whoever we queued behind may have done
+  # the work already, in which case there is nothing left to do.
+  local v
+  if ! v=$(_db_version); then
+    rmdir "$lock" 2>/dev/null || true
+    return 1
+  fi
+  if [ "$v" -ge "$FACTORY_SCHEMA_VERSION" ]; then
+    rmdir "$lock" 2>/dev/null || true
+    return 0
+  fi
+
+  # Version says old, but is the shape actually old? A database can be at the
+  # new shape with an unstamped version — one built by a pre-release of this
+  # change, or reshaped by hand. Running the rebuild against it would fail on a
+  # column that is already gone, so stamp it and stop instead.
   local pending
-  pending=$(sqlite3 "$FACTORY_DB" \
-    "SELECT count(*) FROM pragma_table_info('tickets') WHERE name='project_slug';" 2>/dev/null) || return 0
-  [ "$pending" = "1" ] || return 0
+  pending=$(sqlite3 "$FACTORY_DB" ".timeout 10000" \
+    "SELECT count(*) FROM pragma_table_info('tickets') WHERE name='project_slug';" 2>/dev/null) || {
+      rmdir "$lock" 2>/dev/null || true; return 1; }
+  if [ "$pending" != "1" ]; then
+    sqlite3 "$FACTORY_DB" ".timeout 10000" "PRAGMA user_version = $FACTORY_SCHEMA_VERSION;" >/dev/null 2>&1 || {
+      rmdir "$lock" 2>/dev/null || true; return 1; }
+    rmdir "$lock" 2>/dev/null || true
+    return 0
+  fi
 
   # foreign_keys OFF so dropping runs does not cascade events away, and
   # legacy_alter_table ON so RENAME TO does not rewrite the REFERENCES clauses
@@ -142,10 +191,15 @@ _db_migrate_v2() {
      DROP TABLE documents; ALTER TABLE documents_v2 RENAME TO documents;
      DROP TABLE runs;      ALTER TABLE runs_v2      RENAME TO runs;
 
+     PRAGMA user_version = $FACTORY_SCHEMA_VERSION;
+
      COMMIT;" || {
+      rmdir "$lock" 2>/dev/null || true
       echo "${SMRITI_TOOL:-smriti-factory}: factory.db migration failed; the database is unchanged" >&2
+      echo "${SMRITI_TOOL:-smriti-factory}: it is a single transaction, so nothing was half-applied." >&2
       exit 3
     }
+  rmdir "$lock" 2>/dev/null || true
 }
 
 _db_ready() {
@@ -154,17 +208,28 @@ _db_ready() {
     mkdir -p "$(dirname "$FACTORY_DB")"
     chmod 700 "$(dirname "$FACTORY_DB")" 2>/dev/null || true
     # journal_mode is persistent once set; its output is discarded here.
-    sqlite3 "$FACTORY_DB" "PRAGMA journal_mode=WAL;" >/dev/null
-    # A database this process just created is born at the current shape.
-    : > "$FACTORY_MARK" 2>/dev/null || true
+    # A database this process just created is born at the current shape, and
+    # records that in its own header rather than in a file beside it.
+    sqlite3 "$FACTORY_DB" \
+      "PRAGMA journal_mode=WAL; PRAGMA user_version = $FACTORY_SCHEMA_VERSION;" >/dev/null
   fi
   if [ ! -f "$SMRITI_LIB/factory-schema.sql" ]; then
     echo "${SMRITI_TOOL:-smriti-factory}: schema not found at $SMRITI_LIB/factory-schema.sql" >&2
     exit 3
   fi
-  if [ ! -f "$FACTORY_MARK" ]; then
-    _db_migrate_v2
-    : > "$FACTORY_MARK" 2>/dev/null || true
+  # Read the version from the database itself. A read that FAILS is not
+  # permission to carry on: falling through would run new SQL against an old
+  # shape, so say what is wrong instead of erroring column by column.
+  local _v
+  if ! _v=$(_db_version); then
+    echo "${SMRITI_TOOL:-smriti-factory}: cannot read $FACTORY_DB (locked, or not a database?)" >&2
+    exit 3
+  fi
+  if [ "$_v" -lt "$FACTORY_SCHEMA_VERSION" ]; then
+    _db_migrate_v2 || {
+      echo "${SMRITI_TOOL:-smriti-factory}: $FACTORY_DB needs migrating to schema v$FACTORY_SCHEMA_VERSION but the attempt did not complete." >&2
+      exit 3
+    }
   fi
   _factory_conn_args
 }

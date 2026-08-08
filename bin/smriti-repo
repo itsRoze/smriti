@@ -165,17 +165,7 @@ cmd_list() {
   local slugs; slugs=$(all_slugs)
 
   if [ "$json" -eq 1 ]; then
-    # Assembled by hand rather than by one query: existence is derived from
-    # three sources and only one of them is SQL.
-    local first=1
-    printf '['
-    while IFS= read -r slug; do
-      [ -z "$slug" ] && continue
-      [ "$first" -eq 1 ] || printf ','
-      first=0
-      printf '%s' "$(repo_json "$slug")"
-    done <<< "$slugs"
-    printf ']\n'
+    printf '%s\n' "$slugs" | repos_json
     return 0
   fi
 
@@ -227,52 +217,91 @@ cmd_list() {
 
 # ─── show ───────────────────────────────────────────────────────────────────
 
-# One app as a JSON object. The board's read: it needs the repo path (to render
+# Apps as JSON, for the board — which needs each repo path (to render
 # PROJECT.md / DESIGN.md) and the counts, and holds no SQL of its own.
 #
-# Built by SQLite's json_object() in ONE call rather than by jq over several.
-# `list --json` calls this per app, so three spawns each would have made the
-# board's state read cost 3N processes; and json_object escapes quotes and
-# newlines in a description correctly, which hand-assembled JSON does not.
+# ONE sqlite3 process for any number of apps. The filesystem facts (where the
+# repo is, whether those two files exist) are not SQL, so they are resolved in
+# shell and handed to the query as a VALUES table to join against. The board
+# re-reads /api/state on every db change — roughly once a second while an agent
+# runs — so a process per app here was N spawns a second, each re-applying the
+# whole schema file.
+#
+# json_object() rather than hand-assembled JSON: a description containing a
+# quote or a newline has to come back out correctly, and this is the only way
+# that is true without shelling out to jq.
+
+# The `(slug, repo_path, project_md, design_md)` rows, already resolved.
+# Returns 1 when there is nothing at all, so callers can emit [] and stop.
+_app_values() {
+  local first=1 slug path pmd dmd
+  while IFS= read -r slug; do
+    [ -z "$slug" ] && continue
+    path=$(repo_path_for_slug "$slug")
+    pmd=""; dmd=""
+    if [ -n "$path" ]; then
+      if [ -f "$path/PROJECT.md" ]; then pmd="$path/PROJECT.md"; fi
+      if [ -f "$path/DESIGN.md" ];  then dmd="$path/DESIGN.md";  fi
+    fi
+    [ "$first" -eq 1 ] || printf ','
+    first=0
+    printf '(%s,%s,%s,%s)' \
+      "$(sql_quote "$slug")" "$(sql_quote_or_null "$path")" \
+      "$(sql_quote_or_null "$pmd")" "$(sql_quote_or_null "$dmd")"
+  done
+  [ "$first" -eq 1 ] && return 1
+  return 0
+}
+
+# The per-app object, shared by `list --json` and `show --json` so the two can
+# never describe an app differently.
+_app_object_sql='json_object(
+  '"'"'slug'"'"', app.slug,
+  '"'"'name'"'"', coalesce((SELECT nullif(r.name,'"''"') FROM repositories r WHERE r.slug = app.slug), app.slug),
+  '"'"'description'"'"', (SELECT nullif(r.description,'"''"') FROM repositories r WHERE r.slug = app.slug),
+  '"'"'repo_path'"'"', app.repo_path,
+  '"'"'project_md'"'"', app.project_md,
+  '"'"'design_md'"'"', app.design_md,
+  '"'"'counts'"'"', json_object(
+    '"'"'tickets'"'"',   (SELECT count(*) FROM tickets t  WHERE t.repo_slug = app.slug),
+    '"'"'open'"'"',      (SELECT count(*) FROM tickets t  WHERE t.repo_slug = app.slug
+                                            AND t.status NOT IN ('"'"'shipped'"'"','"'"'cancelled'"'"')),
+    '"'"'building'"'"',  (SELECT count(*) FROM tickets t  WHERE t.repo_slug = app.slug
+                                            AND t.status = '"'"'in_progress'"'"'),
+    '"'"'projects'"'"',  (SELECT count(*) FROM projects p WHERE p.repo_slug = app.slug),
+    '"'"'documents'"'"', (SELECT count(*) FROM documents d WHERE d.repo_slug = app.slug)))'
+
+# The same shape with every count zero, for a machine that has state
+# directories but has never created a factory.db. `:memory:` is a real database
+# argument — passing the SQL as the filename instead makes sqlite3 open the
+# statement as a file, print a parse error, and then read the caller's stdin.
+_app_object_sql_empty="json_object(
+  'slug', app.slug, 'name', app.slug, 'description', NULL,
+  'repo_path', app.repo_path, 'project_md', app.project_md, 'design_md', app.design_md,
+  'counts', json_object('tickets',0,'open',0,'building',0,'projects',0,'documents',0))"
+
+# All apps, as a JSON array. Reads newline-separated slugs on stdin.
+repos_json() {
+  local values
+  values=$(_app_values) || { echo '[]'; return 0; }
+  local cte="WITH app(slug, repo_path, project_md, design_md) AS (VALUES $values)"
+  if factory_db_exists; then
+    db "$cte SELECT json_group_array($_app_object_sql) FROM app;"
+  else
+    sqlite3 :memory: "$cte SELECT json_group_array($_app_object_sql_empty) FROM app;"
+  fi
+}
+
+# One app, as a JSON object.
 repo_json() {
-  local slug="$1"
-  local path project_md design_md
-  path=$(repo_path_for_slug "$slug")
-  project_md=""; design_md=""
-  if [ -n "$path" ]; then
-    [ -f "$path/PROJECT.md" ] && project_md="$path/PROJECT.md"
-    [ -f "$path/DESIGN.md" ]  && design_md="$path/DESIGN.md"
+  local values
+  values=$(printf '%s\n' "$1" | _app_values) || { echo 'null'; return 0; }
+  local cte="WITH app(slug, repo_path, project_md, design_md) AS (VALUES $values)"
+  if factory_db_exists; then
+    db "$cte SELECT $_app_object_sql FROM app;"
+  else
+    sqlite3 :memory: "$cte SELECT $_app_object_sql_empty FROM app;"
   fi
-
-  local q; q=$(sql_quote "$slug")
-
-  if ! factory_db_exists; then
-    # No store yet: the app is real (it has a state directory), it just has no
-    # attributes and no work. sqlite3 with no file still evaluates json_object.
-    sqlite3 "SELECT json_object(
-      'slug', $q, 'name', $q, 'description', NULL,
-      'repo_path', $(sql_quote_or_null "$path"),
-      'project_md', $(sql_quote_or_null "$project_md"),
-      'design_md', $(sql_quote_or_null "$design_md"),
-      'counts', json_object('tickets',0,'open',0,'building',0,'projects',0,'documents',0));"
-    return 0
-  fi
-
-  db "SELECT json_object(
-        'slug', $q,
-        'name', coalesce((SELECT nullif(name,'') FROM repositories WHERE slug = $q), $q),
-        'description', (SELECT nullif(description,'') FROM repositories WHERE slug = $q),
-        'repo_path',  $(sql_quote_or_null "$path"),
-        'project_md', $(sql_quote_or_null "$project_md"),
-        'design_md',  $(sql_quote_or_null "$design_md"),
-        'counts', json_object(
-          'tickets',   (SELECT count(*) FROM tickets  WHERE repo_slug = $q),
-          'open',      (SELECT count(*) FROM tickets  WHERE repo_slug = $q
-                          AND status NOT IN ('shipped','cancelled')),
-          'building',  (SELECT count(*) FROM tickets  WHERE repo_slug = $q
-                          AND status = 'in_progress'),
-          'projects',  (SELECT count(*) FROM projects WHERE repo_slug = $q),
-          'documents', (SELECT count(*) FROM documents WHERE repo_slug = $q)));"
 }
 
 cmd_show() {

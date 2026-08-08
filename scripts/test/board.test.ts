@@ -354,3 +354,21 @@ test('a DESIGN.md symlinked out of the repo is refused, not followed', async () 
   expect(r.status).toBe(403);
   expect((await r.json()) as { error: string }).toEqual({ error: 'forbidden path' });
 });
+
+test('captured tickets never inherit the SERVER cwd as their app', async () => {
+  // The board server runs from wherever `smriti` was started, which has nothing
+  // to do with what you are looking at. Omitting --repo let smriti-ticket
+  // derive one from that cwd; '-' says "no app" explicitly.
+  const r = await fetch(`${base()}/api/tickets`, {
+    method: 'POST',
+    headers: { cookie: jar, 'content-type': 'application/json' },
+    body: JSON.stringify({ title: 'an idea with no app' }),
+  });
+  expect(r.status).toBe(200);
+  const { id } = (await r.json()) as { id: number };
+
+  const s = (await (await fetch(`${base()}/api/state`, withCookie())).json()) as {
+    tickets: { id: number; repo_slug: string | null }[];
+  };
+  expect(s.tickets.find((t) => t.id === id)?.repo_slug).toBeNull();
+});
