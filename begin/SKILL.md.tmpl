@@ -72,6 +72,28 @@ branch was cut by `smriti ticket start`). Two ways the flow picks one up:
 **A ticket is never required.** A bare `/begin "do the thing"` on any branch
 works exactly as before — `$TICKET` is simply empty and nothing is stamped.
 
+## Tracing the run
+
+Open a run at Step 0, mark each step as it completes, and close it at Step 9.
+This is what makes a run visible in `smriti factory` while it is happening, and
+reviewable afterwards.
+
+```bash
+eval "$(smriti trace start begin ${TICKET:+--ticket $TICKET} 2>/dev/null)" 2>/dev/null || true
+```
+
+Then after each step: `smriti trace emit <phase> ok || true`, using the step's
+own name — `ground`, `understand`, `clarify`, `plan`, `codex`, `approve`,
+`implement`, `review`, `verify`. Two that carry weight:
+
+- **entering Gate 2** — `smriti trace emit approve awaiting || true`, which is
+  what lists the run under *waiting on you*.
+- **Step 9** — `smriti trace end || true` (or `--status failed` if you're
+  handing back red).
+
+**Never let tracing affect the work.** Every call is `|| true`; a trace failure
+is invisible bookkeeping, not a reason to stop.
+
 ---
 
 ## Step 0 · Ground (silent)
