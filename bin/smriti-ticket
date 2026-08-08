@@ -1,0 +1,365 @@
+#!/usr/bin/env bash
+# smriti ticket — the work layer: work items and the index of documents about them.
+# State: $SMRITI_HOME/factory.db   (schema: lib/factory-schema.sql)
+#
+# Subcommands:
+#   smriti ticket add <title> [--project S] [--body T] [--priority N] [--ready]
+#   smriti ticket list [--project S] [--status S] [--all] [--json]
+#   smriti ticket show <id> [--json]
+#   smriti ticket status <id> <status>        idea|ready|in_progress|in_review|shipped
+#   smriti ticket done <id>                   shorthand for `status <id> shipped`
+#   smriti ticket doc <id|-> --type T --path P [--branch B]
+#   smriti ticket current [--json]            the ticket for this branch, as `KEY=value`
+#
+# Exit codes:
+#   0  ok
+#   2  usage error
+#   3  sqlite3 or schema missing
+#   4  no such ticket
+#
+# Documents are *indexed*, never stored: `doc` records where a markdown file
+# lives so a ticket can carry its paper trail, while the file on disk under
+# ~/.smriti/projects/<slug>/ stays the source of truth. This deliberately does
+# not touch the filename contract in bin/smriti-latest-doc.
+
+set -e
+
+SMRITI_TOOL=smriti-ticket
+
+# Resolve our own dir through the symlink chain before dirname — the install
+# puts a symlink on PATH, and dirname($0) on the link resolves to the wrong dir.
+_self="$0"
+[ -L "$_self" ] && _self=$(readlink "$_self")
+case "$_self" in
+  /*) ;;
+  *)  _self="$(cd "$(dirname "$0")" && pwd -P)/$(basename "$_self")" ;;
+esac
+SMRITI_BIN="$(cd "$(dirname "$_self")" && pwd -P)"
+SMRITI_LIB="$(cd "$SMRITI_BIN/../lib" && pwd -P)"
+unset _self
+
+# shellcheck source=../lib/factory-db.sh
+. "$SMRITI_LIB/factory-db.sh"
+
+VALID_STATUSES="idea ready in_progress in_review shipped"
+VALID_DOC_TYPES="plan debug design audit"
+
+usage() {
+  cat <<'USAGE' >&2
+usage:
+  smriti ticket add <title> [--project S] [--body T] [--priority N] [--ready]
+  smriti ticket list [--project S] [--status S] [--all] [--json]
+  smriti ticket show <id> [--json]
+  smriti ticket status <id> <idea|ready|in_progress|in_review|shipped>
+  smriti ticket done <id>
+  smriti ticket doc <id|-> --type <plan|debug|design|audit> --path P [--branch B]
+  smriti ticket current [--json]
+USAGE
+  exit 2
+}
+
+die() { echo "$SMRITI_TOOL: $1" >&2; exit "${2:-2}"; }
+
+# ─── helpers ────────────────────────────────────────────────────────────────
+
+# Gated on actually being in a repo: smriti-slug falls back to `path-<hash>`
+# of the cwd when there is no repo, which would silently file work under a
+# meaningless project rather than telling the user to name one.
+current_slug() {
+  git rev-parse --show-toplevel >/dev/null 2>&1 || return 0
+  if [ -x "$SMRITI_BIN/smriti-slug" ]; then
+    "$SMRITI_BIN/smriti-slug" --print 2>/dev/null || true
+  elif command -v smriti-slug >/dev/null 2>&1; then
+    smriti-slug --print 2>/dev/null || true
+  fi
+}
+
+current_branch() { git branch --show-current 2>/dev/null || true; }
+
+require_id() {
+  case "$1" in
+    ''|*[!0-9]*) die "ticket id must be a number, got '$1'" ;;
+  esac
+}
+
+ticket_exists() {
+  [ "$(db "SELECT count(*) FROM tickets WHERE id = $1;")" = "1" ]
+}
+
+validate_status() {
+  case " $VALID_STATUSES " in
+    *" $1 "*) ;;
+    *) die "invalid status '$1' (expected: $VALID_STATUSES)" ;;
+  esac
+}
+
+validate_doc_type() {
+  case " $VALID_DOC_TYPES " in
+    *" $1 "*) ;;
+    *) die "invalid --type '$1' (expected: $VALID_DOC_TYPES)" ;;
+  esac
+}
+
+# Resolve the project for a write. Explicit --project wins; otherwise derive
+# from the repo we're standing in. Refusing beats silently filing work under
+# the wrong project.
+resolve_project() {
+  local explicit="$1" slug
+  if [ -n "$explicit" ]; then
+    case "$explicit" in
+      */*|.*) die "invalid project '$explicit' (must not contain '/' or start with '.')" ;;
+    esac
+    printf '%s' "$explicit"
+    return 0
+  fi
+  slug=$(current_slug)
+  [ -n "$slug" ] || die "not in a git repo — pass --project <slug>"
+  printf '%s' "$slug"
+}
+
+# ─── add ────────────────────────────────────────────────────────────────────
+
+cmd_add() {
+  local title="" body="" project="" priority=0 status="idea"
+  [ $# -gt 0 ] || usage
+  title="$1"; shift
+  case "$title" in -*) usage ;; esac
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --project)  [ $# -ge 2 ] || die "--project requires a value"; project="$2"; shift 2 ;;
+      --body)     [ $# -ge 2 ] || die "--body requires a value";    body="$2";    shift 2 ;;
+      --priority) [ $# -ge 2 ] || die "--priority requires a value"; priority="$2"; shift 2 ;;
+      --ready)    status="ready"; shift ;;
+      *) die "unknown flag: $1" ;;
+    esac
+  done
+
+  case "$priority" in ''|*[!0-9-]*) die "--priority must be a number" ;; esac
+  [ -n "$title" ] || die "title must not be empty"
+
+  local slug ts
+  slug=$(resolve_project "$project")
+  ts=$(now_utc)
+
+  # last_insert_rowid() is per-connection, so it has to ride along inside the
+  # same db_write rather than being fetched by a second invocation.
+  local id
+  id=$(db_write "INSERT INTO tickets (project_slug, title, body, status, priority, created_at, updated_at)
+            VALUES ($(sql_quote "$slug"), $(sql_quote "$title"), $(sql_quote_or_null "$body"),
+                    $(sql_quote "$status"), $priority, $(sql_quote "$ts"), $(sql_quote "$ts"));
+            SELECT last_insert_rowid();")
+  echo "added: #$id  $title  ($slug, $status)"
+}
+
+# ─── list ───────────────────────────────────────────────────────────────────
+
+cmd_list() {
+  local project="" status="" all=0 json=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --project) [ $# -ge 2 ] || die "--project requires a value"; project="$2"; shift 2 ;;
+      --status)  [ $# -ge 2 ] || die "--status requires a value";  status="$2";  shift 2 ;;
+      --all)  all=1; shift ;;
+      --json) json=1; shift ;;
+      *) die "unknown flag: $1" ;;
+    esac
+  done
+
+  local where="WHERE 1=1"
+  if [ -n "$project" ]; then
+    where="$where AND project_slug = $(sql_quote "$project")"
+  elif [ "$all" -eq 0 ]; then
+    local slug; slug=$(current_slug)
+    [ -n "$slug" ] && where="$where AND project_slug = $(sql_quote "$slug")"
+  fi
+  if [ -n "$status" ]; then
+    validate_status "$status"
+    where="$where AND status = $(sql_quote "$status")"
+  elif [ "$all" -eq 0 ]; then
+    # Shipped work is history; it clutters the working view unless asked for.
+    where="$where AND status != 'shipped'"
+  fi
+
+  local order="ORDER BY priority DESC, id ASC"
+
+  if [ "$json" -eq 1 ]; then
+    db_json "SELECT id, project_slug, title, body, status, priority, branch,
+                    worktree_path, pr_url, origin, created_at, updated_at
+             FROM tickets $where $order;"
+    return 0
+  fi
+
+  # char(9), not '\t' — SQLite string literals have no backslash escapes, so
+  # '\t' would be a literal backslash-t and the awk split below would never fire.
+  local rows
+  rows=$(db "SELECT id || char(9) || status || char(9) || project_slug || char(9) || title
+             FROM tickets $where $order;")
+  if [ -z "$rows" ]; then
+    echo "no tickets yet — add one with: smriti ticket add \"<what you want>\""
+    return 0
+  fi
+  printf '%s\n' "$rows" | awk -F'\t' '{ printf "%-5s %-12s %-22s %s\n", "#" $1, $2, $3, $4 }'
+}
+
+# ─── show ───────────────────────────────────────────────────────────────────
+
+cmd_show() {
+  local id="" json=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json) json=1; shift ;;
+      -*) die "unknown flag: $1" ;;
+      *) id="$1"; shift ;;
+    esac
+  done
+  [ -n "$id" ] || usage
+  require_id "$id"
+  ticket_exists "$id" || die "no ticket #$id" 4
+
+  if [ "$json" -eq 1 ]; then
+    local t d
+    t=$(db_json "SELECT * FROM tickets WHERE id = $id;")
+    d=$(db_json "SELECT id, type, path, branch, created_at FROM documents WHERE ticket_id = $id ORDER BY id;")
+    printf '{"ticket":%s,"documents":%s}\n' "$(printf '%s' "$t" | sed 's/^\[//; s/\]$//')" "$d"
+    return 0
+  fi
+
+  db "SELECT '#' || id || '  ' || title || char(10) ||
+             'project:  ' || project_slug || char(10) ||
+             'status:   ' || status || char(10) ||
+             'priority: ' || priority || char(10) ||
+             'branch:   ' || coalesce(branch, '—') || char(10) ||
+             'worktree: ' || coalesce(worktree_path, '—') || char(10) ||
+             'pr:       ' || coalesce(pr_url, '—') || char(10) ||
+             'created:  ' || created_at ||
+             coalesce(char(10) || char(10) || body, '')
+      FROM tickets WHERE id = $id;"
+
+  local docs
+  docs=$(db "SELECT '  ' || type || '  ' || path FROM documents WHERE ticket_id = $id ORDER BY id;")
+  if [ -n "$docs" ]; then
+    echo
+    echo "documents:"
+    printf '%s\n' "$docs"
+  fi
+}
+
+# ─── status / done ──────────────────────────────────────────────────────────
+
+cmd_status() {
+  [ $# -ge 2 ] || usage
+  local id="$1" status="$2"
+  require_id "$id"
+  validate_status "$status"
+  ticket_exists "$id" || die "no ticket #$id" 4
+  db_write "UPDATE tickets SET status = $(sql_quote "$status"), updated_at = $(sql_quote "$(now_utc)")
+            WHERE id = $id;"
+  echo "#$id → $status"
+}
+
+cmd_done() {
+  [ $# -ge 1 ] || usage
+  cmd_status "$1" shipped
+}
+
+# ─── doc ────────────────────────────────────────────────────────────────────
+
+# Registering the same path twice is a no-op rather than an error: /begin may
+# re-register its plan on a re-run, and failing there would break the flow for
+# a bookkeeping detail.
+cmd_doc() {
+  [ $# -ge 1 ] || usage
+  local id="$1"; shift
+  local type="" path="" branch=""
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --type)   [ $# -ge 2 ] || die "--type requires a value";   type="$2";   shift 2 ;;
+      --path)   [ $# -ge 2 ] || die "--path requires a value";   path="$2";   shift 2 ;;
+      --branch) [ $# -ge 2 ] || die "--branch requires a value"; branch="$2"; shift 2 ;;
+      *) die "unknown flag: $1" ;;
+    esac
+  done
+
+  [ -n "$type" ] || die "--type is required"
+  [ -n "$path" ] || die "--path is required"
+  validate_doc_type "$type"
+
+  local ticket_sql slug
+  if [ "$id" = "-" ]; then
+    ticket_sql="NULL"
+  else
+    require_id "$id"
+    ticket_exists "$id" || die "no ticket #$id" 4
+    ticket_sql="$id"
+  fi
+
+  [ -z "$branch" ] && branch=$(current_branch)
+  slug=$(current_slug)
+  if [ -z "$slug" ] && [ "$ticket_sql" != "NULL" ]; then
+    slug=$(db "SELECT project_slug FROM tickets WHERE id = $id;")
+  fi
+  [ -n "$slug" ] || die "not in a git repo and no ticket to infer the project from"
+
+  db_write "INSERT INTO documents (ticket_id, project_slug, type, path, branch, created_at)
+            VALUES ($ticket_sql, $(sql_quote "$slug"), $(sql_quote "$type"),
+                    $(sql_quote "$path"), $(sql_quote_or_null "$branch"), $(sql_quote "$(now_utc)"))
+            ON CONFLICT(path) DO UPDATE SET
+              ticket_id = excluded.ticket_id,
+              branch    = excluded.branch;"
+  echo "registered: $type → $path${ticket_sql:+ (#$id)}"
+}
+
+# ─── current ────────────────────────────────────────────────────────────────
+
+# Emits `KEY=value` for `eval "$(smriti ticket current)"` in the skill preamble,
+# mirroring the shape smriti-slug and smriti-codex-probe already use.
+cmd_current() {
+  local json=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json) json=1; shift ;;
+      *) die "unknown flag: $1" ;;
+    esac
+  done
+
+  local slug branch row
+  slug=$(current_slug)
+  branch=$(current_branch)
+
+  row=""
+  if [ -n "$slug" ] && [ -n "$branch" ]; then
+    row=$(db "SELECT id FROM tickets
+              WHERE project_slug = $(sql_quote "$slug") AND branch = $(sql_quote "$branch") LIMIT 1;")
+  fi
+
+  if [ "$json" -eq 1 ]; then
+    if [ -n "$row" ]; then db_json "SELECT * FROM tickets WHERE id = $row;"; else echo '[]'; fi
+    return 0
+  fi
+
+  if [ -n "$row" ]; then
+    printf 'TICKET=%s\n' "$row"
+    printf 'TICKET_TITLE=%q\n' "$(db "SELECT title FROM tickets WHERE id = $row;")"
+    printf 'TICKET_STATUS=%s\n' "$(db "SELECT status FROM tickets WHERE id = $row;")"
+  else
+    printf 'TICKET=\n'
+  fi
+}
+
+# ─── dispatch ───────────────────────────────────────────────────────────────
+
+CMD="${1:-}"
+shift || true
+case "$CMD" in
+  add)          cmd_add "$@" ;;
+  list|ls)      cmd_list "$@" ;;
+  show)         cmd_show "$@" ;;
+  status)       cmd_status "$@" ;;
+  done)         cmd_done "$@" ;;
+  doc)          cmd_doc "$@" ;;
+  current)      cmd_current "$@" ;;
+  ""|-h|--help) usage ;;
+  *) echo "$SMRITI_TOOL: unknown command '$CMD'" >&2; usage ;;
+esac
