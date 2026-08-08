@@ -1,0 +1,374 @@
+#!/usr/bin/env bun
+// smriti board — the factory's front door, served locally.
+//
+// Usage:
+//   smriti board            start (or reuse) the server and open the browser
+//   smriti board --url      print the URL without opening a browser
+//   smriti board stop       stop the server
+//
+// Exit codes: 0=ok 1=usage 2=runtime
+//
+// A web page instead of the old raw-mode TUI, because the surface you live in
+// daily needs typography, a palette, and the paper trail rendered in place —
+// none of which a terminal can carry. The original objection ("a browser can't
+// hand you an interactive terminal") is answered by THIS PROCESS: the server
+// shells out to herdr or tmux to create the session, then shows the exact
+// attach command rather than pretending it moved your focus.
+//
+// It holds NO SQL. All reads and writes go through the CLI verbs
+// (smriti-ticket / smriti-trace), same as the TUI did. The one exception is
+// reading document files to render them, guarded to $SMRITI_HOME/projects/.
+//
+// AUTH — this server cuts worktrees, spawns agents and reads files, so every
+// route is authenticated:
+//   - the CLI mints a secret (statedir, mode 0600) and opens /?k=<secret>
+//   - that exchange sets an HttpOnly SameSite=Strict cookie; the page's own
+//     fetches ride the cookie and never see the secret
+//   - Host must be 127.0.0.1:<port> (kills DNS rebinding), and any Origin /
+//     Sec-Fetch-Site present must be same-origin (kills cross-site CSRF)
+//
+// SINGLETON — state lives at $SMRITI_HOME/.server/factory/ (a fixed path, not
+// a random session): portfile, pidfile, secret, log. Re-running `smriti`
+// reuses a live server; a dead one is swept and restarted.
+
+import { spawn, spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, chmodSync, realpathSync, statSync } from 'node:fs';
+import { dirname, join, sep } from 'node:path';
+import { homedir } from 'node:os';
+import { boardPage } from '../lib/board-ui.ts';
+import { renderMarkdown } from '../lib/md.ts';
+
+const SELF = realpathSync(process.argv[1]);
+const SMRITI_BIN = dirname(SELF);
+const TICKET = join(SMRITI_BIN, 'smriti-ticket');
+const TRACE = join(SMRITI_BIN, 'smriti-trace');
+const SMRITI_HOME = process.env.SMRITI_HOME || join(homedir(), '.smriti');
+const STATE_DIR = join(SMRITI_HOME, '.server', 'factory');
+const IDLE_MS = Number(process.env.SMRITI_BOARD_IDLE_MS || 45 * 60 * 1000);
+
+function err(msg: string): never {
+  process.stderr.write(`smriti-board: ${msg}\n`);
+  process.exit(1);
+}
+function rand(n = 16): string {
+  const b = new Uint8Array(n);
+  crypto.getRandomValues(b);
+  return [...b].map((x) => x.toString(16).padStart(2, '0')).join('');
+}
+function pidAlive(pid: number): boolean {
+  try { process.kill(pid, 0); return true; } catch { return false; }
+}
+function readState(): { port: number; pid: number; secret: string } | null {
+  try {
+    const port = parseInt(readFileSync(join(STATE_DIR, 'portfile'), 'utf8').trim(), 10);
+    const pid = parseInt(readFileSync(join(STATE_DIR, 'pidfile'), 'utf8').trim(), 10);
+    const secret = readFileSync(join(STATE_DIR, 'secret'), 'utf8').trim();
+    if (!port || !pid || !secret) return null;
+    return { port, pid, secret };
+  } catch { return null; }
+}
+function sh(bin: string, args: string[], timeoutMs = 15000): { ok: boolean; out: string; errOut: string } {
+  const r = spawnSync(bin, args, { encoding: 'utf8', timeout: timeoutMs });
+  return { ok: r.status === 0, out: (r.stdout || '').trim(), errOut: (r.stderr || '').trim() };
+}
+function readJsonCmd<T>(args: string[], from = TICKET): T[] {
+  const r = sh(from, args);
+  if (!r.ok) return [];
+  try { return JSON.parse(r.out || '[]') as T[]; } catch { return []; }
+}
+function openInBrowser(url: string): void {
+  const opener = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open';
+  spawnSync(opener, [url], { stdio: 'ignore' });
+}
+
+// ─── session launcher: herdr → tmux → manual ─────────────────────────────
+// Herdr is preferred (it verifies the agent actually came up, and offers
+// per-agent attach) but it is pre-1.0 with observed CLI churn — so every call
+// is defensive and ANY failure falls through to the next backend. The board
+// never fails a start because a session backend did.
+
+type Launch = { method: 'herdr' | 'tmux' | 'manual'; attach: string };
+
+function launchSession(dir: string, ticketId: number): Launch {
+  const prompt = `/begin ticket:${ticketId}`;
+  const name = `t${ticketId}`;
+  const manual = { method: 'manual' as const, attach: `cd ${dir} && claude "${prompt}"` };
+
+  if (Bun.which('herdr')) {
+    try {
+      // Open the (already cut) worktree as a workspace, then start claude in
+      // its root pane. Shapes per herdr docs v0.8; guarded because pre-1.0.
+      const ws = sh('herdr', ['worktree', 'open', '--path', dir, '--json'], 20000);
+      if (ws.ok) {
+        let pane = '';
+        try { pane = JSON.parse(ws.out)?.result?.root_pane ?? JSON.parse(ws.out)?.root_pane ?? ''; } catch {}
+        const startArgs = ['agent', 'start', name, '--kind', 'claude'];
+        if (pane) startArgs.push('--pane', pane);
+        startArgs.push('--', 'claude', prompt);
+        const st = sh('herdr', startArgs, 45000);
+        if (st.ok) return { method: 'herdr', attach: `herdr agent attach ${name}` };
+      }
+    } catch {}
+  }
+
+  if (Bun.which('tmux')) {
+    // Only if a tmux server is actually running — `new-window` against a dead
+    // server would start one nobody is attached to.
+    const alive = sh('tmux', ['list-sessions'], 4000);
+    if (alive.ok) {
+      const w = sh('tmux', ['new-window', '-d', '-c', dir, '-n', name, 'claude', prompt], 8000);
+      if (w.ok) return { method: 'tmux', attach: `tmux select-window -t ${name}` };
+    }
+  }
+
+  return manual;
+}
+
+// ─── the server process ──────────────────────────────────────────────────
+
+async function cmdServer(): Promise<never> {
+  mkdirSync(STATE_DIR, { recursive: true });
+  chmodSync(STATE_DIR, 0o700);
+  const secret = rand(16);
+  writeFileSync(join(STATE_DIR, 'secret'), secret + '\n', { mode: 0o600 });
+
+  const cookies = new Set<string>();
+  let last = Date.now();
+  const touch = () => { last = Date.now(); };
+  const sse = new Set<(s: string) => void>();
+
+  const projectsRoot = (() => {
+    const p = join(SMRITI_HOME, 'projects');
+    mkdirSync(p, { recursive: true });
+    return realpathSync(p);
+  })();
+
+  const json = (data: unknown, status = 200, headers: Record<string, string> = {}) =>
+    new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json', ...headers } });
+
+  const server = Bun.serve({
+    hostname: '127.0.0.1',
+    port: 0,
+    idleTimeout: 120,
+    async fetch(req) {
+      const url = new URL(req.url);
+
+      // Host check first: a DNS-rebinding page reaches us with its own Host.
+      if (req.headers.get('host') !== `127.0.0.1:${server.port}`) {
+        return new Response('forbidden', { status: 403 });
+      }
+      // Cross-site checks: browsers send these; same-origin fetches pass.
+      const origin = req.headers.get('origin');
+      if (origin && origin !== `http://127.0.0.1:${server.port}`) {
+        return new Response('forbidden', { status: 403 });
+      }
+      const sfs = req.headers.get('sec-fetch-site');
+      if (sfs && sfs !== 'same-origin' && sfs !== 'none') {
+        return new Response('forbidden', { status: 403 });
+      }
+
+      const cookie = (req.headers.get('cookie') || '').match(/smriti_board=([a-f0-9]+)/)?.[1];
+      const authed = Boolean(cookie && cookies.has(cookie));
+
+      // The bootstrap exchange: secret → cookie. The only route that works
+      // without a cookie.
+      if (url.pathname === '/' && req.method === 'GET') {
+        const k = url.searchParams.get('k');
+        if (k && k === secret) {
+          touch();
+          const token = rand(16);
+          cookies.add(token);
+          return new Response(null, {
+            status: 302,
+            headers: {
+              location: '/',
+              'set-cookie': `smriti_board=${token}; HttpOnly; SameSite=Strict; Path=/`,
+            },
+          });
+        }
+        if (authed) { touch(); return new Response(boardPage(), { headers: { 'content-type': 'text/html; charset=utf-8' } }); }
+        return new Response('smriti board: not authorized — run `smriti` to open the board', { status: 403 });
+      }
+
+      if (!authed) return new Response('forbidden', { status: 403 });
+
+      if (url.pathname === '/api/ping') { touch(); return json({ ok: true }); }
+
+      if (url.pathname === '/api/state' && req.method === 'GET') {
+        touch();
+        return json({
+          tickets: readJsonCmd(['list', '--all', '--json']),
+          runs: readJsonCmd(['list', '--active', '--json'], TRACE),
+          documents: readJsonCmd(['docs', '--json']),
+        });
+      }
+
+      if (url.pathname.startsWith('/api/doc/') && req.method === 'GET') {
+        touch();
+        const id = url.pathname.split('/').pop() || '';
+        if (!/^\d+$/.test(id)) return json({ error: 'bad id' }, 400);
+        const doc = readJsonCmd<{ id: number; path: string }>(['docs', '--json']).find((d) => d.id === Number(id));
+        if (!doc) return json({ error: 'no such document' }, 404);
+        // The one step outside the CLI contract: reading a file to render it.
+        // realpath + prefix check so this can never become a file-read oracle.
+        let real = '';
+        try { real = realpathSync(doc.path); } catch { return json({ error: 'file is gone' }, 404); }
+        if (!real.startsWith(projectsRoot + sep)) return json({ error: 'forbidden path' }, 403);
+        if (statSync(real).size > 2_000_000) return json({ error: 'too large' }, 413);
+        return json({ html: renderMarkdown(readFileSync(real, 'utf8')) });
+      }
+
+      if (url.pathname === '/api/tickets' && req.method === 'POST') {
+        touch();
+        const body = (await req.json().catch(() => ({}))) as { title?: string; project?: string };
+        const title = (body.title || '').trim();
+        if (!title) return json({ error: 'a title is required' }, 400);
+        const args = ['add', title, '--ready'];
+        if (body.project) args.push('--project', body.project);
+        const r = sh(TICKET, args);
+        if (!r.ok) return json({ error: r.errOut || 'could not add' }, 500);
+        const id = Number(r.out.match(/#(\d+)/)?.[1] || 0);
+        broadcast();
+        return json({ id });
+      }
+
+      const start = url.pathname.match(/^\/api\/tickets\/(\d+)\/start$/);
+      if (start && req.method === 'POST') {
+        touch();
+        const id = Number(start[1]);
+        const r = sh(TICKET, ['start', String(id)], 30000);
+        if (!r.ok) return json({ error: r.errOut || 'could not start' }, 500);
+        const dir = r.out.split('\n')[0].trim();
+        const launch = launchSession(dir, id);
+        broadcast();
+        return json({ path: dir, ...launch });
+      }
+
+      const done = url.pathname.match(/^\/api\/tickets\/(\d+)\/done$/);
+      if (done && req.method === 'POST') {
+        touch();
+        const r = sh(TICKET, ['done', done[1]]);
+        if (!r.ok) return json({ error: r.errOut || 'could not update' }, 500);
+        broadcast();
+        return json({ ok: true });
+      }
+
+      if (url.pathname === '/api/events' && req.method === 'GET') {
+        // Deliberately does NOT touch(): an idle tab must not keep the server
+        // alive forever. The client pings while visible instead.
+        let send: (s: string) => void;
+        const stream = new ReadableStream({
+          start(c) {
+            const enc = new TextEncoder();
+            send = (s) => { try { c.enqueue(enc.encode(s)); } catch { sse.delete(send); } };
+            sse.add(send);
+            send(`event: hello\ndata: ok\n\n`);
+          },
+          cancel() { sse.delete(send); },
+        });
+        return new Response(stream, {
+          headers: { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' },
+        });
+      }
+
+      return new Response('not found', { status: 404 });
+    },
+  });
+
+  function broadcast() { for (const fn of sse) fn(`event: changed\ndata: 1\n\n`); }
+
+  // Watch the store and tell open tabs. Polling mtime is cheap and safe —
+  // polling the db through the CLI every second would be 3 spawns/second.
+  const dbPath = join(SMRITI_HOME, 'factory.db');
+  let lastM = 0;
+  const watcher = setInterval(() => {
+    try {
+      const m = statSync(dbPath).mtimeMs;
+      if (m !== lastM) { lastM = m; broadcast(); }
+    } catch {}
+  }, 900);
+  watcher.unref?.();
+
+  const heartbeat = setInterval(() => { if (sse.size) for (const fn of sse) fn(': keep-alive\n\n'); }, 20000);
+  heartbeat.unref?.();
+
+  const reaper = setInterval(() => {
+    if (Date.now() - last > IDLE_MS) {
+      try { rmSync(STATE_DIR, { recursive: true, force: true }); } catch {}
+      process.exit(0);
+    }
+  }, 5000);
+  reaper.unref?.();
+
+  // pidfile first, portfile last: portfile presence == ready.
+  writeFileSync(join(STATE_DIR, 'pidfile'), `${process.pid}\n`, { mode: 0o600 });
+  writeFileSync(join(STATE_DIR, 'portfile'), `${server.port}\n`, { mode: 0o600 });
+
+  return await new Promise<never>(() => {});
+}
+
+// ─── CLI ─────────────────────────────────────────────────────────────────
+
+function ensureServer(): { port: number; secret: string } {
+  const existing = readState();
+  if (existing && pidAlive(existing.pid)) return existing;
+  if (existsSync(STATE_DIR)) rmSync(STATE_DIR, { recursive: true, force: true });
+  mkdirSync(STATE_DIR, { recursive: true });
+
+  const child = spawn(process.execPath, [SELF, '__server'], {
+    detached: true,
+    stdio: ['ignore', 'ignore', 'ignore'],
+    env: process.env,
+  });
+  child.unref();
+
+  const deadline = Date.now() + 6000;
+  while (Date.now() < deadline) {
+    const st = readState();
+    if (st) return st;
+    Bun.sleepSync(50);
+  }
+  try { child.kill(); } catch {}
+  rmSync(STATE_DIR, { recursive: true, force: true });
+  process.stderr.write('smriti-board: server did not start within 6s\n');
+  process.exit(2);
+}
+
+async function main(): Promise<number> {
+  const args = process.argv.slice(2);
+  const cmd = args[0] || 'open';
+
+  if (cmd === '__server') { await cmdServer(); return 0; }
+
+  if (cmd === 'stop') {
+    const st = readState();
+    if (st && pidAlive(st.pid)) { try { process.kill(st.pid, 'SIGTERM'); } catch {} }
+    rmSync(STATE_DIR, { recursive: true, force: true });
+    process.stdout.write('stopped\n');
+    return 0;
+  }
+
+  if (cmd === 'open' || cmd === '--url' || cmd === '-h' || cmd === '--help') {
+    if (cmd === '-h' || cmd === '--help') {
+      process.stderr.write(
+        'Usage:\n  smriti board          open the board (starts the server if needed)\n' +
+        '  smriti board --url    print the URL without opening a browser\n' +
+        '  smriti board stop     stop the server\n' +
+        'Exit codes: 0=ok 1=usage 2=runtime\n',
+      );
+      return 1;
+    }
+    const st = ensureServer();
+    const url = `http://127.0.0.1:${st.port}/?k=${st.secret}`;
+    process.stdout.write(url + '\n');
+    if (cmd === 'open') openInBrowser(url);
+    return 0;
+  }
+
+  err(`unknown command: ${cmd}`);
+}
+
+main().then((c) => process.exit(c)).catch((e) => {
+  process.stderr.write(`smriti-board: ${String(e?.message ?? e)}\n`);
+  process.exit(2);
+});

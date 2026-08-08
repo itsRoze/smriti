@@ -321,7 +321,16 @@ async function runOne(
   let finalUrl = url;
   let navError: string | null = null;
   try {
-    await page.goto(url, { waitUntil: 'networkidle', timeout: NAV_TIMEOUT_MS });
+    // networkidle first — the strictest signal. But a page holding a live
+    // connection (SSE, websocket) is NEVER network-idle, so on timeout fall
+    // back to 'load' + a longer settle rather than failing the audit. The
+    // factory board is exactly such a page.
+    try {
+      await page.goto(url, { waitUntil: 'networkidle', timeout: NAV_TIMEOUT_MS });
+    } catch {
+      await page.goto(url, { waitUntil: 'load', timeout: NAV_TIMEOUT_MS });
+      await page.waitForTimeout(SETTLE_MS * 4);
+    }
     finalUrl = page.url();
     await page.waitForLoadState('domcontentloaded', { timeout: NAV_TIMEOUT_MS });
     await page.waitForTimeout(SETTLE_MS);

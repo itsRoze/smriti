@@ -162,28 +162,29 @@ Claude: /ship → PR opened.
 
 ## The factory
 
-`smriti` on its own opens the factory — every project, every ticket, what is
-running, and what is waiting on you:
+`smriti` on its own opens the board — a locally served page showing every
+project, every ticket, what is running, and what is waiting on you:
 
 ```bash
 smriti
 ```
 
-```
-smriti factory   ↑↓ move · enter start · a add · n project · d done · / filter · q quit
-────────────────────────────────────────────────────────────────────────────────
-portfolio
-   #3   idea      Dark mode
+The look is a planning sketchbook: warm grid paper, pine-marker ink,
+hand-drawn boxes, a highlighter swipe on whatever needs a decision. Everything
+is keyboard-first — `↑↓` move, `⏎` open, `s` start, `c` capture, `⌘K` for
+anything — and every action lands in under a keystroke-and-a-half.
 
-smriti
-   #1   in review Export to CSV
- ● #2   building  Fix login redirect                  ← waiting on you (approve)
-```
+Starting a ticket cuts its worktree and opens a Claude Code session via
+**herdr** (preferred, if installed) or **tmux**, then shows the exact attach
+command — the session is a terminal; the button never needed to be. With
+neither installed it hands you the command with a copy button.
 
-Pressing enter on a ticket cuts a worktree, marks it in progress, and opens a
-tmux window running `/begin` on it — so a session comes up with the work
-already loaded. Outside tmux it prints the command instead. Piped or
-redirected, `smriti` stays the plain dispatcher it has always been.
+The server binds 127.0.0.1 only, and every route — reads included — is
+authenticated: the CLI mints a single-purpose secret, the browser exchanges it
+for an `HttpOnly` cookie, and requests with a foreign `Host` or cross-site
+`Origin` are refused outright. Piped or redirected, `smriti` stays the plain
+dispatcher it has always been; `smriti factory --list` remains the scriptable
+read.
 
 Everything the board does is also a command, and the board is only a client of
 them — it holds no SQL of its own:

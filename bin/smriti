@@ -14,7 +14,7 @@ while [ -L "$_self" ]; do
 done
 SMRITI_BIN="$(cd "$(dirname "$_self")" && pwd -P)"
 
-USER_COMMANDS=(browse config factory html principles-install project ticket trace)
+USER_COMMANDS=(board browse config factory html principles-install project ticket trace)
 
 show_help() {
   cat <<EOF
@@ -22,13 +22,14 @@ smriti — personal Claude Code skill stack
 
 Usage: smriti [command] [args...]
 
-Run with no arguments in a terminal to open the factory — every project, every
-ticket, what is running, and what is waiting on you.
+Run with no arguments in a terminal to open the board — every project, every
+ticket, what is running, and what is waiting on you, in your browser.
 
 Commands:
+  board               The front door: the factory board, served locally
   browse              Browser audit CLI (install, login, audit, update)
   config              Global config get/set/unset/list
-  factory             The front door: interactive board over all projects
+  factory             Scriptable listing of tickets and runs (--list)
   html                Interactive HTML spec renderer + round-trip (render, serve, await, stop)
   principles-install  Install coding principles into a project's CLAUDE.md
   project             Manage tracked projects (list, current, forget, new, rename)
@@ -50,12 +51,12 @@ show_version() {
 
 CMD="${1:-}"
 
-# Bare `smriti` in a terminal opens the factory — the whole point is not having
+# Bare `smriti` in a terminal opens the board — the whole point is not having
 # to remember what to run. Piped or redirected, it stays the predictable
 # non-interactive dispatcher it has always been, so scripts and docs are
 # unaffected; `smriti help` always prints help either way.
-if [ -z "$CMD" ] && [ -t 1 ] && [ -t 0 ] && [ -x "$SMRITI_BIN/smriti-factory" ]; then
-  exec "$SMRITI_BIN/smriti-factory"
+if [ -z "$CMD" ] && [ -t 1 ] && [ -t 0 ] && [ -x "$SMRITI_BIN/smriti-board" ]; then
+  exec "$SMRITI_BIN/smriti-board" open
 fi
 
 case "$CMD" in

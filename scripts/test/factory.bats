@@ -109,15 +109,15 @@ teardown() {
 
 # ─── non-interactive safety ─────────────────────────────────────────────────
 
-@test "piped output is a plain listing, never a screen redraw" {
-  # A full-screen alternate-buffer redraw into a pipe is noise, and would break
-  # anything scripting against this.
+@test "bare invocation prints the listing — no server started, no browser opened" {
+  # The interactive surface moved to `smriti board`; this binary must stay a
+  # pure read. A server or browser materialising here would break every script
+  # and pipe that uses it.
   "$TICKET" add "Export to CSV" >/dev/null
   run bun "$CLI"
   [ "$status" -eq 0 ]
-  # No alternate-screen or cursor-hide escapes.
-  ! [[ "$output" == *$'\x1b[?1049h'* ]]
-  ! [[ "$output" == *$'\x1b[?25l'* ]]
+  [[ "$output" == *"Export to CSV"* ]]
+  [ ! -d "$SMRITI_HOME/.server" ]
 }
 
 @test "a broken ticket store degrades to an empty board, not a crash" {
@@ -129,10 +129,10 @@ teardown() {
 
 # ─── usage ──────────────────────────────────────────────────────────────────
 
-@test "--help exits 1 with the key legend" {
+@test "--help exits 1 and points at the board" {
   run bun "$CLI" --help
   [ "$status" -eq 1 ]
-  [[ "$output" == *"enter start"* ]]
+  [[ "$output" == *"smriti board"* ]]
 }
 
 @test "unknown flag exits 1 (usage), matching smriti-html and smriti-browse" {

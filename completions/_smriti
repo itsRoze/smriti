@@ -34,6 +34,10 @@ _smriti() {
         local -a project_cmds=(new list current forget rename)
         _describe 'project subcommand' project_cmds
         ;;
+      board)
+        local -a board_cmds=(open stop --url)
+        _describe 'board subcommand' board_cmds
+        ;;
       config)
         local -a config_cmds=(get set unset list)
         _describe 'config subcommand' config_cmds

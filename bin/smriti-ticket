@@ -11,6 +11,7 @@
 #   smriti ticket status <id> <status>        idea|ready|in_progress|in_review|shipped
 #   smriti ticket done <id>                   shorthand for `status <id> shipped`
 #   smriti ticket doc <id|-> --type T --path P [--branch B]
+#   smriti ticket docs [--json]               the whole document index
 #   smriti ticket current [--json]            the ticket for this branch, as `KEY=value`
 #
 # Exit codes:
@@ -62,6 +63,7 @@ usage:
   smriti ticket status <id> <idea|ready|in_progress|in_review|shipped>
   smriti ticket done <id>
   smriti ticket doc <id|-> --type <plan|debug|design|audit> --path P [--branch B]
+  smriti ticket docs [--json]
   smriti ticket current [--json]
 USAGE
   exit 2
@@ -465,6 +467,29 @@ cmd_doc() {
   echo "registered: $type → $path${ticket_sql:+ (#$id)}"
 }
 
+# The whole index in one call — the board renders paper trails and one
+# subprocess per ticket would be an N+1.
+cmd_docs() {
+  local json=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json) json=1; shift ;;
+      *) die "unknown flag: $1" ;;
+    esac
+  done
+  if ! factory_db_exists; then
+    [ "$json" -eq 1 ] && { echo '[]'; return 0; }
+    echo "no documents yet"; return 0
+  fi
+  if [ "$json" -eq 1 ]; then
+    db_json "SELECT id, ticket_id, project_slug, type, path, branch, created_at
+             FROM documents ORDER BY id;"
+  else
+    db "SELECT type || char(9) || coalesce('#' || ticket_id,'—') || char(9) || path
+        FROM documents ORDER BY id;" | awk -F'\t' '{ printf "%-8s %-6s %s\n", $1, $2, $3 }'
+  fi
+}
+
 # ─── doc-forget ─────────────────────────────────────────────────────────────
 
 # Drop index rows for a branch whose files have been purged. The index must not
@@ -561,6 +586,7 @@ case "$CMD" in
   status)       cmd_status "$@" ;;
   done)         cmd_done "$@" ;;
   doc)          cmd_doc "$@" ;;
+  docs)         cmd_docs "$@" ;;
   doc-forget)   cmd_doc_forget "$@" ;;
   current)      cmd_current "$@" ;;
   ""|-h|--help) usage ;;

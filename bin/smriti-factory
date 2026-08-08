@@ -1,25 +1,21 @@
 #!/usr/bin/env bun
-// smriti factory — the front door. Every project, every ticket, what is
-// running, and what is waiting on you, on one screen.
+// smriti factory — the scriptable terminal read of the factory's state.
 //
 // Usage:
-//   smriti factory              interactive (a TTY); plain listing otherwise
-//   smriti factory --list       plain listing, never interactive
+//   smriti factory --list     plain listing of tickets and runs (the default)
 //
 // Exit codes: 0=ok  1=usage  2=runtime
 //
-// This is a TUI rather than a web app because its job is to *start* work, not
-// only display it: selecting a ticket cuts a worktree and opens a Claude Code
-// session in it. A browser cannot hand you an interactive terminal; tmux can.
+// The interactive front door is `smriti board` — a locally served page. It
+// replaced the raw-mode TUI that used to live here. The objection that killed
+// the first web proposal ("a browser cannot hand you an interactive terminal")
+// is answered by the board's SERVER: it shells out to herdr or tmux to create
+// the session, then shows the exact attach command. The session is a terminal;
+// the button never needed to be.
 //
-// It contains NO SQL. Everything is read through `smriti ticket --json` and
-// `smriti trace --json`, and every write goes back through those same verbs,
-// so the schema never exists in two languages. That also makes this a second
-// consumer of exactly the contract a future dashboard would use.
-//
-// TypeScript rather than bash — the house default — for the same reason
-// smriti-html and smriti-browse are: raw-mode input, an alternate screen
-// buffer and a redraw loop are a genuine runtime need, not a preference.
+// What remains here is the piped/scripted surface: `smriti factory --list`
+// prints the same model the board renders, reading it the same way — through
+// `smriti ticket --json` and `smriti trace --json`, never SQL.
 
 import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
@@ -39,12 +35,17 @@ function err(msg: string): never {
 
 function usage(): never {
   process.stderr.write(
-    `smriti factory v${TOOL_VERSION}\n\n` +
-      `Usage:\n` +
-      `  smriti factory            interactive board (plain listing when not a TTY)\n` +
-      `  smriti factory --list     plain listing, never interactive\n\n` +
-      `Keys: ↑/↓ move · enter start/attach · a add · n new project · d done · / filter · q quit\n` +
-      `Exit codes: 0=ok 1=usage 2=runtime\n`,
+    `smriti factory v${TOOL_VERSION}
+
+` +
+      `Usage:
+  smriti factory [--list]   plain listing of tickets and active runs
+
+` +
+      `The interactive board is \`smriti board\` (or just \`smriti\`).
+` +
+      `Exit codes: 0=ok 1=usage 2=runtime
+`,
   );
   process.exit(1);
 }
@@ -162,19 +163,9 @@ function buildRows(tickets: Ticket[], runs: Run[], filter: string): Row[] {
   return rows;
 }
 
-function firstSelectable(rows: Row[], from = 0, dir = 1): number {
-  for (let i = from; i >= 0 && i < rows.length; i += dir) {
-    if (rows[i].kind === 'ticket') return i;
-  }
-  return -1;
-}
 
 // ─── rendering ──────────────────────────────────────────────────────────────
 
-const DIM = '\x1b[2m';
-const BOLD = '\x1b[1m';
-const RESET = '\x1b[0m';
-const REV = '\x1b[7m';
 
 const STATUS_LABEL: Record<string, string> = {
   idea: 'idea',
@@ -210,37 +201,6 @@ function runLine(r: Run, width: number): string {
   return ` ${marker} ${pad('—', 5)}${pad('run', 10)}${pad(label, room)}${tail}`;
 }
 
-function renderScreen(rows: Row[], cursor: number, filter: string, note: string): string {
-  const width = Math.max(60, process.stdout.columns || 80);
-  const out: string[] = [];
-  out.push(`${BOLD}smriti factory${RESET}${DIM}   ↑↓ move · enter start · a add · n project · d done · / filter · q quit${RESET}`);
-  out.push('─'.repeat(width));
-
-  if (!rows.length) {
-    out.push('');
-    out.push(filter ? `  nothing matches "${filter}"` : '  no open tickets — press a to add one');
-  }
-
-  for (let i = 0; i < rows.length; i++) {
-    const row = rows[i];
-    if (row.kind === 'project') {
-      out.push(`${DIM}${row.label}${RESET}`);
-    } else if (row.kind === 'blank') {
-      out.push('');
-    } else if (row.kind === 'run') {
-      out.push(`${DIM}${runLine(row.run, width)}${RESET}`);
-    } else {
-      const line = ticketLine(row.ticket, row.run, width);
-      out.push(i === cursor ? `${REV}${pad(line, width)}${RESET}` : line);
-    }
-  }
-
-  out.push('');
-  out.push('─'.repeat(width));
-  if (filter) out.push(`${DIM}filter: ${filter}${RESET}`);
-  if (note) out.push(note);
-  return out.join('\n');
-}
 
 function plainListing(): number {
   const tickets = loadTickets();
@@ -260,278 +220,21 @@ function plainListing(): number {
   return 0;
 }
 
-// ─── actions ────────────────────────────────────────────────────────────────
-
-function insideTmux(): boolean {
-  return Boolean(process.env.TMUX);
-}
-
-// Cut/attach the worktree, then hand the session to tmux. Outside tmux we
-// print the command rather than failing — the worktree is already made, so the
-// user is one paste away either way.
-function startTicket(t: Ticket): string {
-  const r = spawnSync(TICKET, ['start', String(t.id)], { encoding: 'utf8' });
-  if (r.status !== 0) {
-    return `could not start #${t.id}: ${(r.stderr || '').trim().split('\n').pop() ?? ''}`;
-  }
-  const path = (r.stdout || '').trim();
-  if (!path) return `could not start #${t.id}`;
-
-  const prompt = `/begin ticket:${t.id}`;
-  if (!insideTmux()) {
-    return `worktree ready:\n  cd ${path} && claude "${prompt}"`;
-  }
-  const w = spawnSync('tmux', ['new-window', '-c', path, '-n', `t${t.id}`, 'claude', prompt], {
-    encoding: 'utf8',
-  });
-  if (w.status !== 0) {
-    return `worktree ready, but tmux refused:\n  cd ${path} && claude "${prompt}"`;
-  }
-  return `#${t.id} started in a new tmux window`;
-}
-
-function attachRun(t: Ticket): string | null {
-  // Already has a live worktree — jump to its window if one is open.
-  if (!t.worktree_path || !insideTmux()) return null;
-  const list = spawnSync('tmux', ['list-windows', '-F', '#{window_name}'], { encoding: 'utf8' });
-  if (list.status === 0 && (list.stdout || '').split('\n').includes(`t${t.id}`)) {
-    spawnSync('tmux', ['select-window', '-t', `t${t.id}`]);
-    return `switched to #${t.id}`;
-  }
-  return null;
-}
-
-// ─── interactive ────────────────────────────────────────────────────────────
-
-async function interactive(): Promise<number> {
-  const stdin = process.stdin;
-  let tickets = loadTickets();
-  let runs = loadRuns();
-  let filter = '';
-  let note = '';
-  let rows = buildRows(tickets, runs, filter);
-  let cursor = Math.max(0, firstSelectable(rows));
-
-  const enterAlt = () => process.stdout.write('\x1b[?1049h\x1b[?25l');
-  const leaveAlt = () => process.stdout.write('\x1b[?25h\x1b[?1049l');
-  const draw = () => {
-    process.stdout.write('\x1b[H\x1b[2J' + renderScreen(rows, cursor, filter, note));
-  };
-
-  const reload = () => {
-    tickets = loadTickets();
-    runs = loadRuns();
-    rows = buildRows(tickets, runs, filter);
-    if (rows[cursor]?.kind !== 'ticket') {
-      const next = firstSelectable(rows, Math.min(cursor, rows.length - 1), -1);
-      cursor = next >= 0 ? next : Math.max(0, firstSelectable(rows));
-    }
-  };
-
-  enterAlt();
-  stdin.setRawMode?.(true);
-  stdin.resume();
-  stdin.setEncoding('utf8');
-  draw();
-
-  const cleanup = () => {
-    stdin.setRawMode?.(false);
-    stdin.pause();
-    leaveAlt();
-  };
-  process.on('SIGINT', () => {
-    cleanup();
-    process.exit(0);
-  });
-
-  return await new Promise<number>((resolve) => {
-    // One handler, one mode. There used to be a second `stdin.on('data')`
-    // listener for text prompts, attached while this one was still live — both
-    // fired on every keystroke, so typing a ticket title containing 'd' marked
-    // a ticket shipped and 'q' quit mid-word. A mode field is the fix: text
-    // input and navigation can never both consume the same key.
-    type Mode = 'nav' | 'filter' | 'input';
-    let mode: Mode = 'nav';
-    let buf = '';
-    let inputLabel = '';
-    let onSubmit: ((value: string) => void) | null = null;
-
-    const askFor = (label: string, done: (value: string) => void) => {
-      mode = 'input';
-      buf = '';
-      inputLabel = label;
-      onSubmit = done;
-    };
-
-    const drawInput = () => {
-      process.stdout.write(`\x1b[H\x1b[2J${inputLabel}\n\n${DIM}enter to accept · esc to cancel${RESET}\n\n> ${buf}`);
-    };
-
-    const onKey = async (data: string) => {
-      if (mode === 'input') {
-        if (data === '\r' || data === '\n') {
-          const value = buf.trim();
-          const done = onSubmit;
-          mode = 'nav';
-          onSubmit = null;
-          if (done) await Promise.resolve(done(value));
-          draw();
-          return;
-        }
-        if (data === '\x1b' || data === '\x03') {
-          mode = 'nav';
-          onSubmit = null;
-          draw();
-          return;
-        }
-        if (data === '\x7f' || data === '\b') buf = buf.slice(0, -1);
-        else if (data >= ' ') buf += data;
-        drawInput();
-        return;
-      }
-
-      if (mode === 'filter') {
-        if (data === '\r' || data === '\n' || data === '\x1b') {
-          mode = 'nav';
-        } else if (data === '\x7f') {
-          filter = filter.slice(0, -1);
-        } else if (data >= ' ') {
-          filter += data;
-        }
-        rows = buildRows(tickets, runs, filter);
-        cursor = Math.max(0, firstSelectable(rows));
-        draw();
-        return;
-      }
-
-      switch (data) {
-        case 'q':
-        case '\x03':
-          stdin.off('data', handler);
-          cleanup();
-          resolve(0);
-          return;
-
-        case '\x1b[A':
-        case 'k': {
-          const next = firstSelectable(rows, cursor - 1, -1);
-          if (next >= 0) cursor = next;
-          note = '';
-          break;
-        }
-        case '\x1b[B':
-        case 'j': {
-          const next = firstSelectable(rows, cursor + 1, 1);
-          if (next >= 0) cursor = next;
-          note = '';
-          break;
-        }
-
-        case '\r':
-        case '\n': {
-          const row = rows[cursor];
-          if (row?.kind !== 'ticket') break;
-          note = attachRun(row.ticket) ?? startTicket(row.ticket);
-          reload();
-          break;
-        }
-
-        case 'a': {
-          // Capture the project before handing off — the cursor may move by
-          // the time the title comes back.
-          const row = rows[cursor];
-          const project = row?.kind === 'ticket' ? row.ticket.project_slug : undefined;
-          askFor('New ticket — what do you want?', (title) => {
-            if (!title) return;
-            const args = ['add', title];
-            if (project) args.push('--project', project, '--ready');
-            const r = spawnSync(TICKET, args, { encoding: 'utf8' });
-            note = r.status === 0 ? (r.stdout || '').trim() : `could not add: ${(r.stderr || '').trim()}`;
-            reload();
-          });
-          drawInput();
-          return;
-        }
-
-        case 'n': {
-          askFor('New project — name?', (name) => {
-            if (!name) return;
-            const r = spawnSync(join(SMRITI_BIN, 'smriti-project'), ['new', name], {
-              encoding: 'utf8',
-            });
-            note =
-              r.status === 0
-                ? (r.stdout || '').trim().split('\n')[0]
-                : `could not create: ${(r.stderr || '').trim()}`;
-            reload();
-          });
-          drawInput();
-          return;
-        }
-
-        case 'd': {
-          const row = rows[cursor];
-          if (row?.kind !== 'ticket') break;
-          const r = spawnSync(TICKET, ['done', String(row.ticket.id)], { encoding: 'utf8' });
-          note = r.status === 0 ? (r.stdout || '').trim() : 'could not update';
-          reload();
-          break;
-        }
-
-        case '/':
-          mode = 'filter';
-          filter = '';
-          break;
-
-        case 'r':
-          reload();
-          note = 'refreshed';
-          break;
-
-        default:
-          return;
-      }
-      draw();
-    };
-
-    const handler = (d: string) => {
-      void onKey(d);
-    };
-    stdin.on('data', handler);
-
-    // Without this the board waits forever once stdin closes — a terminal that
-    // goes away, or any non-interactive driver, leaves the process lingering.
-    stdin.once('end', () => {
-      stdin.off('data', handler);
-      cleanup();
-      resolve(0);
-    });
-  });
-}
-
-// ─── main ───────────────────────────────────────────────────────────────────
+// ─── main ───────────────────────────────────────────────────────────────
 
 async function main(): Promise<number> {
-  let forceList = false;
   for (const a of process.argv.slice(2)) {
-    if (a === '--list') forceList = true;
+    if (a === '--list') continue; // the only mode; kept for compatibility
     else if (a === '-h' || a === '--help') usage();
     else if (a.startsWith('--')) err(`unknown flag: ${a}`);
     else err(`unexpected argument: ${a}`);
   }
-
-  // Piped or redirected output gets the plain listing — a full-screen redraw
-  // into a pipe is noise, and scripts must keep working.
-  if (forceList || !process.stdout.isTTY || !process.stdin.isTTY) {
-    return plainListing();
-  }
-  return await interactive();
+  return plainListing();
 }
 
 main()
   .then((code) => process.exit(code))
   .catch((e) => {
-    process.stdout.write('\x1b[?25h\x1b[?1049l');
     process.stderr.write(`smriti-factory: ${String(e?.message ?? e)}\n`);
     process.exit(2);
   });
