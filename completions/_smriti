@@ -38,17 +38,17 @@ _smriti() {
         local -a config_cmds=(get set unset list)
         _describe 'config subcommand' config_cmds
         ;;
-      approvals)
-        local -a approvals_cmds=(get set required check sync)
-        _describe 'approvals subcommand' approvals_cmds
+      ticket)
+        local -a ticket_cmds=(add list show start status done doc doc-forget current)
+        _describe 'ticket subcommand' ticket_cmds
+        ;;
+      trace)
+        local -a trace_cmds=(start emit end list show tail)
+        _describe 'trace subcommand' trace_cmds
         ;;
       browse)
         local -a browse_cmds=(audit login install update help)
         _describe 'browse subcommand' browse_cmds
-        ;;
-      version-bump)
-        local -a vb_cmds=(classify apply repair read-version)
-        _describe 'version-bump subcommand' vb_cmds
         ;;
       clean)
         local -a clean_cmds=(plan list-merged branch all)

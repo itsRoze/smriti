@@ -21,16 +21,19 @@ teardown() {
   rm -rf "$WORK"
 }
 
-@test "no args: prints help and exits 0" {
+@test "no args: prints help and exits 0 when output is not a terminal" {
+  # Bare `smriti` on a TTY opens the factory board. Piped or redirected it must
+  # stay the predictable non-interactive dispatcher, so scripts keep working.
   run "$SMRITI"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"Usage: smriti <command>"* ]]
+  [[ "$output" == *"Usage: smriti"* ]]
+  [[ "$output" == *"Commands:"* ]]
 }
 
 @test "--help: prints help and exits 0" {
   run "$SMRITI" --help
   [ "$status" -eq 0 ]
-  [[ "$output" == *"Usage: smriti <command>"* ]]
+  [[ "$output" == *"Usage: smriti"* ]]
 }
 
 @test "--version: prints version" {
@@ -55,4 +58,24 @@ teardown() {
   run "$SMRITI" slug --print
   [ "$status" -eq 0 ]
   [ -n "$output" ]
+}
+
+@test "dispatches to ticket helper" {
+  run "$SMRITI" ticket --help
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"usage:"* ]]
+}
+
+@test "dispatches to trace helper" {
+  run "$SMRITI" trace --help
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"usage:"* ]]
+}
+
+@test "help lists the factory, ticket and trace commands" {
+  run "$SMRITI" help
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"factory"* ]]
+  [[ "$output" == *"ticket"* ]]
+  [[ "$output" == *"trace"* ]]
 }

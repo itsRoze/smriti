@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.2.0 — 2026-08-08
+
+The work layer. smriti had no concept of *work*: the flow started at a free-text `/begin` prompt, with no backlog, no ticket, and no view across projects. Ideas lived in a separate tracker, disconnected from the system that does the work.
+
+### Added
+- **`smriti` on its own opens the factory** — one board showing every project, every ticket, what is running, and what is waiting on you. Enter on a ticket cuts a worktree, marks it in progress, and opens a tmux window with `/begin` already running on it. Piped or redirected, bare `smriti` stays the plain dispatcher it has always been.
+- **`smriti ticket`** — the work layer, stored in `~/.smriti/factory.db`. Add, list, show, start, status, done, plus a document index. `--json` on the read verbs, so the board is a client of the same contract you use by hand.
+- **`smriti trace`** — runs and phase events, so a run is watchable while it happens and reviewable afterwards. `events.id` is the cursor: one query serves both a live tail and full history.
+- **Documents are indexed against their ticket.** Plans, debug docs and audits register where they live as they're written; the markdown on disk stays the source of truth and the filename contract is untouched.
+- **Worktree per ticket.** `smriti ticket start` cuts one, so several tickets can be in flight without colliding.
+
+### Changed
+- **The skills stamp the ticket.** `/begin`, `/debug`, `/ship` and `/clean` pick it up from the branch via the preamble's `$TICKET`. `/ship` moves it to in review and records the PR; `/clean` marks it shipped once the merge is confirmed. A ticket is never required — every skill works unchanged on a hand-cut branch.
+- **Linear is no longer the system of record.** `/debug` still reads a Linear issue when you paste one, but the local store is what smriti tracks against.
+
+### Fixed
+- **`/clean` no longer breaks on worktrees.** It ran `git checkout <default>` in three places, which fails inside a linked worktree when the default branch is checked out elsewhere — and under `set -e` that crashed rather than refused. Branch-lifecycle commands now run against the primary worktree, a branch held by a linked worktree gets that worktree removed first, and running `/clean` from inside the worktree it is deleting works.
+- **A new worktree no longer looks like a new project.** `IS_FIRST_TIME` was keyed on the path hash, so every freshly-cut worktree fired the `/bootstrap` nudge. It is now keyed on repo identity.
+- **`/ship` no longer builds an empty PR title.** It called `smriti pr-title-rewrite "" "$RAW_TITLE"`; the empty version argument is a usage error, so the title came back empty every time. The call is removed — `/ship` hasn't version-prefixed titles since 1.0.
+- **Stale zsh completions** for `approvals` and `version-bump`, both removed in 1.0, are gone.
+- `VERSION` and `package.json` had drifted apart (1.1.1 vs 1.0.0); both are now 1.2.0.
+
 ## 1.1.1 — 2026-07-18
 
 ### Changed

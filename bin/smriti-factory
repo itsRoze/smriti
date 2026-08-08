@@ -1,0 +1,484 @@
+#!/usr/bin/env bun
+// smriti factory — the front door. Every project, every ticket, what is
+// running, and what is waiting on you, on one screen.
+//
+// Usage:
+//   smriti factory              interactive (a TTY); plain listing otherwise
+//   smriti factory --list       plain listing, never interactive
+//
+// Exit codes: 0=ok  1=usage  2=runtime
+//
+// This is a TUI rather than a web app because its job is to *start* work, not
+// only display it: selecting a ticket cuts a worktree and opens a Claude Code
+// session in it. A browser cannot hand you an interactive terminal; tmux can.
+//
+// It contains NO SQL. Everything is read through `smriti ticket --json` and
+// `smriti trace --json`, and every write goes back through those same verbs,
+// so the schema never exists in two languages. That also makes this a second
+// consumer of exactly the contract a future dashboard would use.
+//
+// TypeScript rather than bash — the house default — for the same reason
+// smriti-html and smriti-browse are: raw-mode input, an alternate screen
+// buffer and a redraw loop are a genuine runtime need, not a preference.
+
+import { spawnSync } from 'node:child_process';
+import { dirname, join } from 'node:path';
+import { realpathSync } from 'node:fs';
+
+const TOOL_VERSION = '0.1.0';
+
+const SELF = realpathSync(process.argv[1]);
+const SMRITI_BIN = dirname(SELF);
+const TICKET = join(SMRITI_BIN, 'smriti-ticket');
+const TRACE = join(SMRITI_BIN, 'smriti-trace');
+
+function err(msg: string): never {
+  process.stderr.write(`smriti-factory: ${msg}\n`);
+  process.exit(2);
+}
+
+function usage(): never {
+  process.stderr.write(
+    `smriti factory v${TOOL_VERSION}\n\n` +
+      `Usage:\n` +
+      `  smriti factory            interactive board (plain listing when not a TTY)\n` +
+      `  smriti factory --list     plain listing, never interactive\n\n` +
+      `Keys: ↑/↓ move · enter start/attach · a add · n new project · d done · / filter · q quit\n` +
+      `Exit codes: 0=ok 1=usage 2=runtime\n`,
+  );
+  process.exit(1);
+}
+
+// ─── data ───────────────────────────────────────────────────────────────────
+
+type Ticket = {
+  id: number;
+  project_slug: string;
+  title: string;
+  status: string;
+  priority: number;
+  branch: string | null;
+  worktree_path: string | null;
+  pr_url: string | null;
+};
+
+type Run = {
+  run_uid: string;
+  ticket_id: number | null;
+  project_slug: string;
+  skill: string;
+  branch: string | null;
+  status: string;
+  last_phase: string | null;
+};
+
+function readJson<T>(bin: string, args: string[]): T[] {
+  const r = spawnSync(bin, args, { encoding: 'utf8' });
+  if (r.status !== 0) return [];
+  try {
+    return JSON.parse(r.stdout || '[]') as T[];
+  } catch {
+    return [];
+  }
+}
+
+function loadTickets(): Ticket[] {
+  return readJson<Ticket>(TICKET, ['list', '--all', '--json']);
+}
+
+function loadRuns(): Run[] {
+  return readJson<Run>(TRACE, ['list', '--active', '--json']);
+}
+
+// ─── model ──────────────────────────────────────────────────────────────────
+
+// Work order, not alphabetical: what needs a decision sits above what is
+// merely open, which sits above what is only an idea.
+const STATUS_ORDER = ['in_review', 'in_progress', 'ready', 'idea', 'shipped'];
+
+type Row =
+  | { kind: 'project'; label: string }
+  | { kind: 'ticket'; ticket: Ticket; run?: Run }
+  | { kind: 'blank' };
+
+function buildRows(tickets: Ticket[], runs: Run[], filter: string): Row[] {
+  const q = filter.trim().toLowerCase();
+  const visible = tickets.filter((t) => {
+    if (t.status === 'shipped') return false;
+    if (!q) return true;
+    return (
+      t.title.toLowerCase().includes(q) ||
+      t.project_slug.toLowerCase().includes(q) ||
+      String(t.id) === q
+    );
+  });
+
+  const runFor = new Map<number, Run>();
+  for (const r of runs) if (r.ticket_id != null) runFor.set(r.ticket_id, r);
+
+  const byProject = new Map<string, Ticket[]>();
+  for (const t of visible) {
+    if (!byProject.has(t.project_slug)) byProject.set(t.project_slug, []);
+    byProject.get(t.project_slug)!.push(t);
+  }
+
+  const rows: Row[] = [];
+  for (const project of [...byProject.keys()].sort()) {
+    const items = byProject.get(project)!.sort((a, b) => {
+      const s = STATUS_ORDER.indexOf(a.status) - STATUS_ORDER.indexOf(b.status);
+      if (s !== 0) return s;
+      if (a.priority !== b.priority) return b.priority - a.priority;
+      return a.id - b.id;
+    });
+    rows.push({ kind: 'project', label: project });
+    for (const t of items) rows.push({ kind: 'ticket', ticket: t, run: runFor.get(t.id) });
+    rows.push({ kind: 'blank' });
+  }
+  if (rows.length && rows[rows.length - 1].kind === 'blank') rows.pop();
+  return rows;
+}
+
+function firstSelectable(rows: Row[], from = 0, dir = 1): number {
+  for (let i = from; i >= 0 && i < rows.length; i += dir) {
+    if (rows[i].kind === 'ticket') return i;
+  }
+  return -1;
+}
+
+// ─── rendering ──────────────────────────────────────────────────────────────
+
+const DIM = '\x1b[2m';
+const BOLD = '\x1b[1m';
+const RESET = '\x1b[0m';
+const REV = '\x1b[7m';
+
+const STATUS_LABEL: Record<string, string> = {
+  idea: 'idea',
+  ready: 'ready',
+  in_progress: 'building',
+  in_review: 'in review',
+  shipped: 'shipped',
+};
+
+function pad(s: string, n: number): string {
+  return s.length >= n ? s.slice(0, n) : s + ' '.repeat(n - s.length);
+}
+
+function ticketLine(t: Ticket, run: Run | undefined, width: number): string {
+  const awaiting = run?.status === 'awaiting';
+  const marker = awaiting ? '●' : run ? '▸' : ' ';
+  const id = pad(`#${t.id}`, 5);
+  const status = pad(STATUS_LABEL[t.status] ?? t.status, 10);
+  let tail = '';
+  if (awaiting) tail = `  ← waiting on you (${run!.last_phase ?? 'gate'})`;
+  else if (run) tail = `  running ${run.skill}`;
+  const title = t.title.replace(/\s+/g, ' ');
+  const room = Math.max(10, width - 4 - 5 - 10 - tail.length);
+  return ` ${marker} ${id}${status}${pad(title, room)}${tail}`;
+}
+
+function renderScreen(rows: Row[], cursor: number, filter: string, note: string): string {
+  const width = Math.max(60, process.stdout.columns || 80);
+  const out: string[] = [];
+  out.push(`${BOLD}smriti factory${RESET}${DIM}   ↑↓ move · enter start · a add · n project · d done · / filter · q quit${RESET}`);
+  out.push('─'.repeat(width));
+
+  if (!rows.length) {
+    out.push('');
+    out.push(filter ? `  nothing matches "${filter}"` : '  no open tickets — press a to add one');
+  }
+
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    if (row.kind === 'project') {
+      out.push(`${DIM}${row.label}${RESET}`);
+    } else if (row.kind === 'blank') {
+      out.push('');
+    } else {
+      const line = ticketLine(row.ticket, row.run, width);
+      out.push(i === cursor ? `${REV}${pad(line, width)}${RESET}` : line);
+    }
+  }
+
+  out.push('');
+  out.push('─'.repeat(width));
+  if (filter) out.push(`${DIM}filter: ${filter}${RESET}`);
+  if (note) out.push(note);
+  return out.join('\n');
+}
+
+function plainListing(): number {
+  const tickets = loadTickets();
+  const runs = loadRuns();
+  const rows = buildRows(tickets, runs, '');
+  if (!rows.length) {
+    process.stdout.write('no open tickets — add one with: smriti ticket add "<what you want>"\n');
+    return 0;
+  }
+  const width = Math.max(60, process.stdout.columns || 80);
+  for (const row of rows) {
+    if (row.kind === 'project') process.stdout.write(`${row.label}\n`);
+    else if (row.kind === 'blank') process.stdout.write('\n');
+    else process.stdout.write(`${ticketLine(row.ticket, row.run, width)}\n`);
+  }
+  return 0;
+}
+
+// ─── actions ────────────────────────────────────────────────────────────────
+
+function insideTmux(): boolean {
+  return Boolean(process.env.TMUX);
+}
+
+// Cut/attach the worktree, then hand the session to tmux. Outside tmux we
+// print the command rather than failing — the worktree is already made, so the
+// user is one paste away either way.
+function startTicket(t: Ticket): string {
+  const r = spawnSync(TICKET, ['start', String(t.id)], { encoding: 'utf8' });
+  if (r.status !== 0) {
+    return `could not start #${t.id}: ${(r.stderr || '').trim().split('\n').pop() ?? ''}`;
+  }
+  const path = (r.stdout || '').trim();
+  if (!path) return `could not start #${t.id}`;
+
+  const prompt = `/begin ticket:${t.id}`;
+  if (!insideTmux()) {
+    return `worktree ready:\n  cd ${path} && claude "${prompt}"`;
+  }
+  const w = spawnSync('tmux', ['new-window', '-c', path, '-n', `t${t.id}`, 'claude', prompt], {
+    encoding: 'utf8',
+  });
+  if (w.status !== 0) {
+    return `worktree ready, but tmux refused:\n  cd ${path} && claude "${prompt}"`;
+  }
+  return `#${t.id} started in a new tmux window`;
+}
+
+function attachRun(t: Ticket): string | null {
+  // Already has a live worktree — jump to its window if one is open.
+  if (!t.worktree_path || !insideTmux()) return null;
+  const list = spawnSync('tmux', ['list-windows', '-F', '#{window_name}'], { encoding: 'utf8' });
+  if (list.status === 0 && (list.stdout || '').split('\n').includes(`t${t.id}`)) {
+    spawnSync('tmux', ['select-window', '-t', `t${t.id}`]);
+    return `switched to #${t.id}`;
+  }
+  return null;
+}
+
+// ─── interactive ────────────────────────────────────────────────────────────
+
+async function interactive(): Promise<number> {
+  const stdin = process.stdin;
+  let tickets = loadTickets();
+  let runs = loadRuns();
+  let filter = '';
+  let note = '';
+  let rows = buildRows(tickets, runs, filter);
+  let cursor = Math.max(0, firstSelectable(rows));
+
+  const enterAlt = () => process.stdout.write('\x1b[?1049h\x1b[?25l');
+  const leaveAlt = () => process.stdout.write('\x1b[?25h\x1b[?1049l');
+  const draw = () => {
+    process.stdout.write('\x1b[H\x1b[2J' + renderScreen(rows, cursor, filter, note));
+  };
+
+  const reload = () => {
+    tickets = loadTickets();
+    runs = loadRuns();
+    rows = buildRows(tickets, runs, filter);
+    if (rows[cursor]?.kind !== 'ticket') {
+      const next = firstSelectable(rows, Math.min(cursor, rows.length - 1), -1);
+      cursor = next >= 0 ? next : Math.max(0, firstSelectable(rows));
+    }
+  };
+
+  // Read one line with the alternate buffer still up. Raw mode means we handle
+  // backspace and enter ourselves.
+  const prompt = async (label: string): Promise<string> => {
+    let buf = '';
+    process.stdout.write(`\x1b[H\x1b[2J${label}\n\n> \x1b[?25h`);
+    return await new Promise((resolve) => {
+      const onKey = (data: Buffer) => {
+        const s = data.toString('utf8');
+        for (const ch of s) {
+          if (ch === '\r' || ch === '\n') {
+            stdin.off('data', onKey);
+            process.stdout.write('\x1b[?25l');
+            resolve(buf.trim());
+            return;
+          }
+          if (ch === '\x03' || ch === '\x1b') {
+            stdin.off('data', onKey);
+            process.stdout.write('\x1b[?25l');
+            resolve('');
+            return;
+          }
+          if (ch === '\x7f' || ch === '\b') {
+            buf = buf.slice(0, -1);
+            process.stdout.write('\x1b[2K\r> ' + buf);
+            continue;
+          }
+          if (ch >= ' ') {
+            buf += ch;
+            process.stdout.write(ch);
+          }
+        }
+      };
+      stdin.on('data', onKey);
+    });
+  };
+
+  enterAlt();
+  stdin.setRawMode?.(true);
+  stdin.resume();
+  stdin.setEncoding('utf8');
+  draw();
+
+  const cleanup = () => {
+    stdin.setRawMode?.(false);
+    stdin.pause();
+    leaveAlt();
+  };
+  process.on('SIGINT', () => {
+    cleanup();
+    process.exit(0);
+  });
+
+  return await new Promise<number>((resolve) => {
+    let filterMode = false;
+
+    const onKey = async (data: string) => {
+      if (filterMode) {
+        if (data === '\r' || data === '\n' || data === '\x1b') {
+          filterMode = false;
+        } else if (data === '\x7f') {
+          filter = filter.slice(0, -1);
+        } else if (data >= ' ') {
+          filter += data;
+        }
+        rows = buildRows(tickets, runs, filter);
+        cursor = Math.max(0, firstSelectable(rows));
+        draw();
+        return;
+      }
+
+      switch (data) {
+        case 'q':
+        case '\x03':
+          stdin.off('data', handler);
+          cleanup();
+          resolve(0);
+          return;
+
+        case '\x1b[A':
+        case 'k': {
+          const next = firstSelectable(rows, cursor - 1, -1);
+          if (next >= 0) cursor = next;
+          note = '';
+          break;
+        }
+        case '\x1b[B':
+        case 'j': {
+          const next = firstSelectable(rows, cursor + 1, 1);
+          if (next >= 0) cursor = next;
+          note = '';
+          break;
+        }
+
+        case '\r':
+        case '\n': {
+          const row = rows[cursor];
+          if (row?.kind !== 'ticket') break;
+          note = attachRun(row.ticket) ?? startTicket(row.ticket);
+          reload();
+          break;
+        }
+
+        case 'a': {
+          const title = await prompt('New ticket — what do you want?');
+          if (title) {
+            const row = rows[cursor];
+            const project =
+              row?.kind === 'ticket' ? row.ticket.project_slug : undefined;
+            const args = ['add', title];
+            if (project) args.push('--project', project, '--ready');
+            const r = spawnSync(TICKET, args, { encoding: 'utf8' });
+            note = r.status === 0 ? (r.stdout || '').trim() : `could not add: ${(r.stderr || '').trim()}`;
+            reload();
+          }
+          break;
+        }
+
+        case 'n': {
+          const name = await prompt('New project — name?');
+          if (name) {
+            const r = spawnSync(join(SMRITI_BIN, 'smriti-project'), ['new', name], {
+              encoding: 'utf8',
+            });
+            note =
+              r.status === 0
+                ? (r.stdout || '').trim().split('\n')[0]
+                : `could not create: ${(r.stderr || '').trim()}`;
+            reload();
+          }
+          break;
+        }
+
+        case 'd': {
+          const row = rows[cursor];
+          if (row?.kind !== 'ticket') break;
+          const r = spawnSync(TICKET, ['done', String(row.ticket.id)], { encoding: 'utf8' });
+          note = r.status === 0 ? (r.stdout || '').trim() : 'could not update';
+          reload();
+          break;
+        }
+
+        case '/':
+          filterMode = true;
+          filter = '';
+          break;
+
+        case 'r':
+          reload();
+          note = 'refreshed';
+          break;
+
+        default:
+          return;
+      }
+      draw();
+    };
+
+    const handler = (d: string) => {
+      void onKey(d);
+    };
+    stdin.on('data', handler);
+  });
+}
+
+// ─── main ───────────────────────────────────────────────────────────────────
+
+async function main(): Promise<number> {
+  let forceList = false;
+  for (const a of process.argv.slice(2)) {
+    if (a === '--list') forceList = true;
+    else if (a === '-h' || a === '--help') usage();
+    else if (a.startsWith('--')) err(`unknown flag: ${a}`);
+    else err(`unexpected argument: ${a}`);
+  }
+
+  // Piped or redirected output gets the plain listing — a full-screen redraw
+  // into a pipe is noise, and scripts must keep working.
+  if (forceList || !process.stdout.isTTY || !process.stdin.isTTY) {
+    return plainListing();
+  }
+  return await interactive();
+}
+
+main()
+  .then((code) => process.exit(code))
+  .catch((e) => {
+    process.stdout.write('\x1b[?25h\x1b[?1049l');
+    process.stderr.write(`smriti-factory: ${String(e?.message ?? e)}\n`);
+    process.exit(2);
+  });

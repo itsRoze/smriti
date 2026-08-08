@@ -27,6 +27,7 @@ Inspired by [gstack](https://github.com/garrytan/gstack), slimmed down for solo 
 ## Contents
 
 - [The flow](#the-flow)
+- [The factory](#the-factory)
 - [The skills](#the-skills)
 - [Install](#install)
 - [What a run looks like](#what-a-run-looks-like)
@@ -133,7 +134,8 @@ Claude: /ship → PR opened.
 
 ```
 ~/.claude/skills/smriti/                   ← code (this repo)
-├── bin/                                     # smriti (umbrella dispatcher) + smriti-{slug,config,project,codex-probe,update-check,pr-title-rewrite,browse,clean,default-branch,principles-install,html,latest-doc}
+├── bin/                                     # smriti (umbrella dispatcher) + smriti-{factory,ticket,trace,slug,config,project,codex-probe,update-check,pr-title-rewrite,browse,clean,default-branch,principles-install,html,latest-doc}
+├── lib/                                     # factory-schema.sql + factory-db.sh (the work layer's storage)
 ├── lib/resolvers/                           # {{PLACEHOLDER}} content (preamble, principles, design rules, etc.)
 ├── scripts/                                 # gen-skill-docs.ts, skill-check.ts, run-tests.sh + test/*.bats + test/*.test.ts
 └── <skill>/SKILL.md.tmpl                    # one per skill (generated SKILL.md is gitignored)
@@ -142,7 +144,8 @@ Claude: /ship → PR opened.
 
 ~/.smriti/                                 ← runtime state (never versioned)
 ├── config                                   # global k=v: lean, codex_default, …
-├── slug-cache/<sha>                         # path → slug mapping (absence = "first-time" trigger)
+├── factory.db                               # the work layer: tickets, document index, runs + phase events
+├── slug-cache/<sha>                         # path → slug mapping (one entry per worktree; same repo → same slug)
 └── projects/<slug>/                         # a branch's plan/design/debug docs + audits are
     │                                         #   purged by /clean when that branch is deleted
     ├── <branch>-plan-<ts>.md                 # implementation plans (one per /begin run)
@@ -155,6 +158,62 @@ Claude: /ship → PR opened.
 ├── PROJECT.md                              # /bootstrap output (committed)
 ├── DESIGN.md                               # /design-consultation output (committed)
 └── CLAUDE.md                               # @-imports lib/resolvers/principles.md from smriti install
+```
+
+## The factory
+
+`smriti` on its own opens the factory — every project, every ticket, what is
+running, and what is waiting on you:
+
+```bash
+smriti
+```
+
+```
+smriti factory   ↑↓ move · enter start · a add · n project · d done · / filter · q quit
+────────────────────────────────────────────────────────────────────────────────
+portfolio
+   #3   idea      Dark mode
+
+smriti
+   #1   in review Export to CSV
+ ● #2   building  Fix login redirect                  ← waiting on you (approve)
+```
+
+Pressing enter on a ticket cuts a worktree, marks it in progress, and opens a
+tmux window running `/begin` on it — so a session comes up with the work
+already loaded. Outside tmux it prints the command instead. Piped or
+redirected, `smriti` stays the plain dispatcher it has always been.
+
+Everything the board does is also a command, and the board is only a client of
+them — it holds no SQL of its own:
+
+```bash
+smriti ticket add "users should be able to export to CSV"   # capture, anywhere
+smriti ticket list                                          # this project
+smriti ticket list --all                                    # every project
+smriti ticket start 7                                       # worktree + branch; prints the path
+smriti ticket show 7                                        # detail + its documents
+```
+
+`/begin`, `/debug`, `/ship` and `/clean` pick the ticket up from the branch, so
+status tracking costs nothing: `/ship` moves it to in review and records the
+PR, and `/clean` marks it shipped once the merge is confirmed. Plans, debug
+docs and audits are indexed against the ticket as they're written — the files
+stay on disk as the source of truth, and the ticket just knows where they are.
+
+**A ticket is never required.** Every skill works exactly as before on a branch
+you cut by hand.
+
+### Watching a run
+
+Runs record their phases, so what a skill did is reviewable rather than a
+transcript to re-read:
+
+```bash
+smriti trace list --active     # what's running, what's parked at a gate
+smriti trace show <run-uid>    # one run, phase by phase
+smriti trace tail --after 0    # the cursor query — live tail and history in one
 ```
 
 ## Configuration
