@@ -13,6 +13,11 @@ BRANCH=$(git branch --show-current 2>/dev/null || echo unknown)
 # Use BRANCH for git/display, BRANCH_SLUG when interpolating into file paths.
 BRANCH_SLUG="${BRANCH//\//--}"
 
+# The ticket this branch is working, if any. Empty when the branch was cut by
+# hand rather than by `smriti ticket start` — every skill must still work.
+eval "$(smriti ticket current 2>/dev/null)" 2>/dev/null
+TICKET="${TICKET:-}"
+
 # Config
 LEAN=$(smriti config get lean 2>/dev/null || echo senior)
 CODEX_DEFAULT=$(smriti config get codex_default 2>/dev/null || echo auto)
@@ -51,6 +56,7 @@ fi
 # Echo session state
 echo "SLUG: $SLUG"
 echo "BRANCH: $BRANCH"
+echo "TICKET: ${TICKET:-none}${TICKET:+ ($TICKET_STATUS) $TICKET_TITLE}"
 echo "IS_FIRST_TIME: $IS_FIRST_TIME"
 echo "LEAN: $LEAN"
 echo "CODEX: available=$CODEX_AVAILABLE default=$CODEX_DEFAULT"
@@ -69,6 +75,7 @@ fi
 | `SLUG` | Per-project identity (cached). |
 | `BRANCH` | Current git branch. |
 | `BRANCH_SLUG` | Filename-safe form of `BRANCH` (slashes → `--`). Use for paths. |
+| `TICKET` | The ticket id this branch is working, or empty. `TICKET_TITLE` / `TICKET_STATUS` accompany it. Empty is normal — never require it. |
 | `IS_FIRST_TIME` | `yes` if this is the first smriti run in this repo. |
 | `LEAN` | `senior` or `prototype`. Skills should honor this. |
 | `CODEX_AVAILABLE` | `1` if Codex CLI is installed and authed. |

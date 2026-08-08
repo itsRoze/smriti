@@ -136,3 +136,42 @@ teardown() {
   [ "$status" -eq 0 ]
   [[ "$output" == path-* ]]
 }
+
+# ─── worktree identity ─────────────────────────────────────────────────
+
+@test "IS_FIRST_TIME: a second worktree of a known repo is not first-time" {
+  # The slug cache is keyed by path, so every freshly-cut worktree used to look
+  # like a brand-new project and fire the /bootstrap nudge. With a ticket per
+  # worktree that would happen on every single ticket.
+  mkdir -p "$WORK/wt-repo"
+  git -C "$WORK/wt-repo" init -q -b main
+  git -C "$WORK/wt-repo" config user.email "test@smriti.local"
+  git -C "$WORK/wt-repo" config user.name "smriti-test"
+  git -C "$WORK/wt-repo" remote add origin "https://github.com/test/known.git"
+  echo seed > "$WORK/wt-repo/f"
+  git -C "$WORK/wt-repo" add f
+  git -C "$WORK/wt-repo" commit -q -m init
+  local root; root=$(git -C "$WORK/wt-repo" rev-parse --show-toplevel)
+
+  run bash -c "cd '$root' && '$CLI'"
+  [[ "$output" == *"IS_FIRST_TIME=yes"* ]]
+
+  git -C "$root" worktree add -q "$WORK/linked" -b feature
+  run bash -c "cd '$WORK/linked' && '$CLI'"
+  [[ "$output" == *"SLUG=test-known"* ]]
+  [[ "$output" == *"IS_FIRST_TIME=no"* ]]
+}
+
+@test "IS_FIRST_TIME: a genuinely different repo is still first-time" {
+  # The guard above must not be so broad that new projects stop being detected.
+  mkdir -p "$WORK/repo-a" "$WORK/repo-b"
+  for r in repo-a repo-b; do
+    git -C "$WORK/$r" init -q -b main
+    git -C "$WORK/$r" remote add origin "https://github.com/test/$r.git"
+  done
+
+  run bash -c "cd \"\$(git -C '$WORK/repo-a' rev-parse --show-toplevel)\" && '$CLI'"
+  [[ "$output" == *"IS_FIRST_TIME=yes"* ]]
+  run bash -c "cd \"\$(git -C '$WORK/repo-b' rev-parse --show-toplevel)\" && '$CLI'"
+  [[ "$output" == *"IS_FIRST_TIME=yes"* ]]
+}

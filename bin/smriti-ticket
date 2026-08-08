@@ -6,6 +6,7 @@
 #   smriti ticket add <title> [--project S] [--body T] [--priority N] [--ready]
 #   smriti ticket list [--project S] [--status S] [--all] [--json]
 #   smriti ticket show <id> [--json]
+#   smriti ticket start <id>                  cut/attach a worktree; prints its path
 #   smriti ticket status <id> <status>        idea|ready|in_progress|in_review|shipped
 #   smriti ticket done <id>                   shorthand for `status <id> shipped`
 #   smriti ticket doc <id|-> --type T --path P [--branch B]
@@ -16,6 +17,7 @@
 #   2  usage error
 #   3  sqlite3 or schema missing
 #   4  no such ticket
+#   5  could not create or attach the worktree
 #
 # Documents are *indexed*, never stored: `doc` records where a markdown file
 # lives so a ticket can carry its paper trail, while the file on disk under
@@ -50,6 +52,7 @@ usage:
   smriti ticket add <title> [--project S] [--body T] [--priority N] [--ready]
   smriti ticket list [--project S] [--status S] [--all] [--json]
   smriti ticket show <id> [--json]
+  smriti ticket start <id>
   smriti ticket status <id> <idea|ready|in_progress|in_review|shipped>
   smriti ticket done <id>
   smriti ticket doc <id|-> --type <plan|debug|design|audit> --path P [--branch B]
@@ -245,6 +248,119 @@ cmd_show() {
   fi
 }
 
+# ─── start ──────────────────────────────────────────────────────────────────
+
+# Branch/dir-safe form of a title: "Export to CSV!" -> "export-to-csv".
+slugify() {
+  printf '%s' "$1" \
+    | tr 'A-Z' 'a-z' \
+    | tr -cs 'a-z0-9' '-' \
+    | sed -E 's/^-+//; s/-+$//' \
+    | cut -c1-40 \
+    | sed -E 's/-+$//'
+}
+
+# Where does this project live on disk? The slug-cache already maps repo paths
+# to slugs, so it is reused in reverse rather than adding a second registry.
+# Prefer a path that still exists and is a primary worktree.
+repo_path_for_slug() {
+  local want="$1" cache_dir="${SMRITI_HOME:-$HOME/.smriti}/slug-cache" f slug path fallback=""
+  [ -d "$cache_dir" ] || return 0
+  for f in "$cache_dir"/*; do
+    [ -f "$f" ] || continue
+    slug=$(grep -E '^SLUG=' "$f" 2>/dev/null | tail -1 | cut -d= -f2-)
+    [ "$slug" = "$want" ] || continue
+    path=$(grep -E '^SOURCE_PATH=' "$f" 2>/dev/null | tail -1 | cut -d= -f2-)
+    # SOURCE_PATH is written with %q, so it may carry shell quoting.
+    path=$(eval printf '%s' "$path" 2>/dev/null || printf '%s' "$path")
+    [ -d "$path" ] || continue
+    # A primary worktree has .git as a directory; linked ones have a .git file.
+    if [ -d "$path/.git" ]; then printf '%s' "$path"; return 0; fi
+    [ -z "$fallback" ] && fallback="$path"
+  done
+  [ -n "$fallback" ] && printf '%s' "$fallback"
+}
+
+# The primary worktree of a repo — the one branch-lifecycle commands must run
+# against. `git worktree list --porcelain` lists it first.
+primary_worktree() {
+  git -C "$1" worktree list --porcelain 2>/dev/null \
+    | awk '/^worktree /{print substr($0,10); exit}'
+}
+
+cmd_start() {
+  [ $# -ge 1 ] || usage
+  local id="$1"; shift
+  require_id "$id"
+  ticket_exists "$id" || die "no ticket #$id" 4
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      *) die "unknown flag: $1" ;;
+    esac
+  done
+
+  local slug title branch existing_wt existing_branch
+  slug=$(db "SELECT project_slug FROM tickets WHERE id = $id;")
+  title=$(db "SELECT title FROM tickets WHERE id = $id;")
+  existing_wt=$(db "SELECT coalesce(worktree_path,'') FROM tickets WHERE id = $id;")
+  existing_branch=$(db "SELECT coalesce(branch,'') FROM tickets WHERE id = $id;")
+
+  # Already started and the worktree is still there — attach, don't re-cut.
+  if [ -n "$existing_wt" ] && [ -d "$existing_wt" ]; then
+    echo "$existing_wt"
+    echo "smriti-ticket: #$id already in progress on '$existing_branch'" >&2
+    return 0
+  fi
+
+  local repo primary
+  repo=$(repo_path_for_slug "$slug")
+  if [ -z "$repo" ]; then
+    repo=$(git rev-parse --show-toplevel 2>/dev/null || true)
+    [ -n "$repo" ] || die "don't know where project '$slug' lives — run this from inside that repo once" 5
+  fi
+  primary=$(primary_worktree "$repo")
+  [ -n "$primary" ] || primary="$repo"
+
+  branch="$existing_branch"
+  [ -n "$branch" ] || branch="t$id-$(slugify "$title")"
+
+  local wt="$primary/.claude/worktrees/$branch"
+  mkdir -p "$(dirname "$wt")"
+
+  if [ -d "$wt" ]; then
+    : # directory survived without a db row; adopt it
+  elif git -C "$primary" show-ref --verify --quiet "refs/heads/$branch"; then
+    # Branch exists already (a re-start after cleanup) — attach, don't recreate.
+    git -C "$primary" worktree add "$wt" "$branch" >/dev/null 2>&1 \
+      || die "could not attach worktree for existing branch '$branch'" 5
+  else
+    local base; base=$(base_branch_for "$primary")
+    git -C "$primary" worktree add -b "$branch" "$wt" "$base" >/dev/null 2>&1 \
+      || die "could not create worktree at $wt (branch '$branch' off '$base')" 5
+  fi
+
+  db_write "UPDATE tickets SET status = 'in_progress',
+              branch = $(sql_quote "$branch"),
+              worktree_path = $(sql_quote "$wt"),
+              updated_at = $(sql_quote "$(now_utc)")
+            WHERE id = $id;"
+
+  # Path on stdout so a caller can `cd "$(smriti ticket start N)"`; everything
+  # else on stderr so that stays machine-usable.
+  echo "$wt"
+  echo "smriti-ticket: #$id → in_progress on '$branch'" >&2
+}
+
+base_branch_for() {
+  local repo="$1" b=""
+  if [ -x "$SMRITI_BIN/smriti-default-branch" ]; then
+    b=$(cd "$repo" && "$SMRITI_BIN/smriti-default-branch" 2>/dev/null || true)
+  fi
+  [ -n "$b" ] || b=main
+  printf '%s' "$b"
+}
+
 # ─── status / done ──────────────────────────────────────────────────────────
 
 cmd_status() {
@@ -311,22 +427,49 @@ cmd_doc() {
   echo "registered: $type → $path${ticket_sql:+ (#$id)}"
 }
 
+# ─── doc-forget ─────────────────────────────────────────────────────────────
+
+# Drop index rows for a branch whose files have been purged. The index must not
+# outlive the documents it points at.
+cmd_doc_forget() {
+  local branch=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --branch) [ $# -ge 2 ] || die "--branch requires a value"; branch="$2"; shift 2 ;;
+      *) die "unknown flag: $1" ;;
+    esac
+  done
+  [ -n "$branch" ] || die "--branch is required"
+
+  local slug; slug=$(current_slug)
+  local where="WHERE branch = $(sql_quote "$branch")"
+  [ -n "$slug" ] && where="$where AND project_slug = $(sql_quote "$slug")"
+
+  local n; n=$(db "SELECT count(*) FROM documents $where;")
+  db_write "DELETE FROM documents $where;"
+  echo "forgot $n document(s) for '$branch'"
+}
+
 # ─── current ────────────────────────────────────────────────────────────────
 
 # Emits `KEY=value` for `eval "$(smriti ticket current)"` in the skill preamble,
 # mirroring the shape smriti-slug and smriti-codex-probe already use.
 cmd_current() {
-  local json=0
+  local json=0 want_branch=""
   while [ $# -gt 0 ]; do
     case "$1" in
-      --json) json=1; shift ;;
+      --json)   json=1; shift ;;
+      # /clean needs the ticket for a branch it is about to delete, which by
+      # then is not the branch it is standing on.
+      --branch) [ $# -ge 2 ] || die "--branch requires a value"; want_branch="$2"; shift 2 ;;
       *) die "unknown flag: $1" ;;
     esac
   done
 
   local slug branch row
   slug=$(current_slug)
-  branch=$(current_branch)
+  branch="$want_branch"
+  [ -n "$branch" ] || branch=$(current_branch)
 
   row=""
   if [ -n "$slug" ] && [ -n "$branch" ]; then
@@ -356,9 +499,11 @@ case "$CMD" in
   add)          cmd_add "$@" ;;
   list|ls)      cmd_list "$@" ;;
   show)         cmd_show "$@" ;;
+  start)        cmd_start "$@" ;;
   status)       cmd_status "$@" ;;
   done)         cmd_done "$@" ;;
   doc)          cmd_doc "$@" ;;
+  doc-forget)   cmd_doc_forget "$@" ;;
   current)      cmd_current "$@" ;;
   ""|-h|--help) usage ;;
   *) echo "$SMRITI_TOOL: unknown command '$CMD'" >&2; usage ;;

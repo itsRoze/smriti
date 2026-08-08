@@ -108,13 +108,10 @@ EXISTING_PR=$(gh pr list --head "$CURRENT" --json number,url,state --jq '.[0]')
   PR MERGED/CLOSED → AskUserQuestion: **reopen / new PR / abort**.
 
 **Title:** the most descriptive non-mechanical commit subject on the branch (skip
-`WIP`, `fixup`, `Merge`). Run it through the rewriter for a clean prefix:
+`WIP`, `fixup`, `Merge`). Use it as-is — `/ship` does not version-prefix titles.
 
-```bash
-TITLE=$(smriti pr-title-rewrite "" "$RAW_TITLE")
-```
-
-**Body** — short and human, synthesized from the diff (not a commit dump):
+**Body** — short and human, synthesized from the diff (not a commit dump). Include
+the `Ticket:` line only when `$TICKET` is set:
 
 ```markdown
 ## Summary
@@ -123,7 +120,19 @@ TITLE=$(smriti pr-title-rewrite "" "$RAW_TITLE")
 ## Test plan
 - [ ] <one bullet per behavioral change worth verifying>
 
+Ticket: #<id> — <title>
+
 🤖 Generated via /ship — smriti
+```
+
+Once the PR exists, record it and move the ticket to `in_review`. It becomes
+`shipped` only when `/clean` confirms the merge, so status reflects what
+actually happened rather than what was intended:
+
+```bash
+if [ -n "$TICKET" ]; then
+  smriti ticket status "$TICKET" in_review >/dev/null 2>&1 || true
+fi
 ```
 
 ### main path ("push to main")
@@ -153,6 +162,7 @@ Then print the PR title + body so the user can paste them into their tool.
 ```
 /ship: shipped → <PR url | pushed to main>
 tests: <passed | pre-existing failures noted>
+ticket: #<id> → in_review        [omit when there's no ticket]
 
 Next: /clean after the PR merges (checkout base, pull, delete this branch, prune).
 ```

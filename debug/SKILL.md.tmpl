@@ -51,7 +51,8 @@ Parse `<bug_description>` to a clear problem statement:
 
 | Input shape | What to do |
 |-------------|------------|
-| GitHub issue ref (`#123`, `org/repo#123`, github URL) | `gh issue view <num> --json title,body,comments,labels` — read **every** comment, especially the latest |
+| smriti ticket ref (`ticket:7`, `#7`, or `$TICKET` already set) | `smriti ticket show <id>` — the body is the problem statement |
+| GitHub issue ref (`org/repo#123`, github URL) | `gh issue view <num> --json title,body,comments,labels` — read **every** comment, especially the latest |
 | Linear issue ref (Linear URL or issue ID like `ABC-123`) | Use the Linear MCP `get_issue` tool. If unavailable, ask the user to paste the issue body + comment thread |
 | Stack trace / error message / free-form description | The input is the problem statement |
 
@@ -219,6 +220,10 @@ mkdir -p "$DEBUG_DIR"
 # Filename contract: <branch-slug>-<type>-<ts>.md — readers find it via
 # `smriti latest-doc --type debug`. Keep this shape in sync with that helper.
 DEBUG_FILE="$DEBUG_DIR/$BRANCH_SLUG-debug-$TS.md"
+
+# Index it so the ticket carries its paper trail. The file stays the source of
+# truth; this only records where it lives.
+smriti ticket doc "${TICKET:--}" --type debug --path "$DEBUG_FILE" 2>/dev/null || true
 ```
 
 **Template:**
@@ -228,6 +233,7 @@ DEBUG_FILE="$DEBUG_DIR/$BRANCH_SLUG-debug-$TS.md"
 
 - **Slug:** <slug>
 - **Branch:** <branch>
+- **Ticket:** <$TICKET, or — >
 - **Date:** <YYYY-MM-DD>
 - **Outcome:** <fix-applied | diagnosis-only | escalated-to-begin>
 

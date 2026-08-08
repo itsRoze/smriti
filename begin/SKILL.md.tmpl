@@ -53,6 +53,25 @@ Between gates, keep moving — don't stop to narrate or ask permission.
    There is no trivial-edit fast path — the gates are cheap and the discipline
    is the point.
 
+## Working a ticket
+
+The preamble sets `$TICKET` when the current branch belongs to one (i.e. the
+branch was cut by `smriti ticket start`). Two ways the flow picks one up:
+
+- **Already on a ticket branch** — `$TICKET` is set. Use the ticket's title and
+  body as context alongside the request, and stamp the id on the plan and the
+  finish summary.
+- **The request names one** — `/begin ticket:7` or `/begin ticket:7 also fix the
+  header`. Read it with `smriti ticket show 7`, treat its body as the request
+  (plus any extra text the user added), and start it if it isn't already:
+
+  ```bash
+  WT=$(smriti ticket start 7) && cd "$WT"
+  ```
+
+**A ticket is never required.** A bare `/begin "do the thing"` on any branch
+works exactly as before — `$TICKET` is simply empty and nothing is stamped.
+
 ---
 
 ## Step 0 · Ground (silent)
@@ -115,8 +134,16 @@ mkdir -p "$PLAN_DIR"
 PLAN_FILE="$PLAN_DIR/$BRANCH_SLUG-plan-$TS.md"
 ```
 
+Once written, register it so the ticket carries its paper trail. The file on
+disk stays the source of truth — this only indexes where it lives:
+
+```bash
+smriti ticket doc "${TICKET:--}" --type plan --path "$PLAN_FILE" 2>/dev/null || true
+```
+
 The plan is concrete and strictly scoped to this request:
 
+- **Header** — `**Slug:**`, `**Branch:**`, `**Date:**`, `**Ticket:**` (`$TICKET`, or `—`).
 - **Problem** — the actual problem, restated.
 - **Approach** — the recommended direction, named, with *why*. If there's a real
   fork, present 2–3 options with trade-offs and mark your recommendation.
@@ -222,6 +249,7 @@ Summarize and **stop for the human**:
 
 ```
 ✅ /begin complete on <branch>
+   ticket:   #<id> <title>          [omit the line entirely when $TICKET is empty]
    built:    <one line — what landed>
    review:   <code-review outcome — bugs fixed / clean>
    verify:   <screenshots captured / tests green>  [attach screenshots for web]
@@ -232,7 +260,8 @@ Then **stop**. The user tests. **Shipping is explicit and on their word** — th
 flow never opens a PR or pushes on its own:
 
 - User says "open a PR" / "ship it" / "push to main" → invoke `Skill(skill="ship",
-  args="<PR or main, per what they said>")`.
+  args="<PR or main, per what they said>")`. Pass the ticket id along in `args`
+  when there is one, so the PR body can reference it.
 - Until they say so, you're done. Do not auto-invoke `/ship`.
 
 ---
