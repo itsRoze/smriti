@@ -500,7 +500,7 @@ export function boardPage(): string {
   async function startTicket(t){
     if (!t) return;
     tapKey('s');
-    const live = t.status === 'in_progress' && t.worktree_path;
+    const live = Boolean(sessionFor(t));
     toast(live ? 'finding the session for <b>#' + t.id + '</b>…'
                : 'cutting a worktree for <b>#' + t.id + '</b>…', 8000);
     try {
@@ -547,9 +547,11 @@ export function boardPage(): string {
       (t.body ? esc(t.body) : '<span class="ghost">add a description…</span>') + '</div>';
     h += '<textarea class="descedit" id="descedit" placeholder="what this actually is, and why">' + esc(t.body || '') + '</textarea>';
     h += '<div class="acts">';
-    // "start" on something already building is a lie — and it used to try to
-    // spawn a second session under the same name.
-    const live = t.status === 'in_progress' && t.worktree_path;
+    // "attach" is only honest if a session actually exists. Basing it on the
+    // ticket being in_progress got it wrong the moment a session was killed:
+    // the worktree and branch survive, so the board offered to attach to
+    // nothing. herdr is the authority on whether there is something to join.
+    const live = Boolean(sessionFor(t));
     if (t.status !== 'shipped' && t.status !== 'cancelled')
       h += '<button class="btn go" data-act="start">' + (live ? 'attach ⏎' : 'start ⏎') + '</button>';
     if (live) h += '<button class="btn" data-act="restart">restart session</button>';
