@@ -605,7 +605,6 @@ export function boardPage(): string {
     a.classList.add('on');
     const notes = {
       herdr: 'session started under herdr — jump to it with:',
-      tmux: 'a tmux window is running it — jump over with:',
       manual: 'worktree is ready — run this in a terminal:',
     };
     a.innerHTML = '<div class="note">' + esc(notes[res.method] || 'ready:') + '</div>' +

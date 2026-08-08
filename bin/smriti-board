@@ -12,8 +12,8 @@
 // daily needs typography, a palette, and the paper trail rendered in place —
 // none of which a terminal can carry. The original objection ("a browser can't
 // hand you an interactive terminal") is answered by THIS PROCESS: the server
-// shells out to herdr or tmux to create the session, then shows the exact
-// attach command rather than pretending it moved your focus.
+// shells out to herdr to create the session, then shows the exact attach
+// command rather than pretending it moved your focus.
 //
 // It holds NO SQL. All reads and writes go through the CLI verbs
 // (smriti-ticket / smriti-trace), same as the TUI did. The one exception is
@@ -83,13 +83,18 @@ function openInBrowser(url: string): void {
   spawnSync(opener, [url], { stdio: 'ignore' });
 }
 
-// ─── session launcher: herdr → tmux → manual ─────────────────────────────
-// Herdr is preferred (it verifies the agent actually came up, and offers
-// per-agent attach) but it is pre-1.0 with observed CLI churn — so every call
-// is defensive and ANY failure falls through to the next backend. The board
-// never fails a start because a session backend did.
+// ─── session launcher: herdr → a command you can paste ───────────────────
+// herdr is the session backend. It knows a pane holds Claude Code, creates
+// worktree workspaces natively, and confirms the agent is actually up before
+// returning — none of which a plain multiplexer can do.
+//
+// There is deliberately no second multiplexer to fall back to: maintaining two
+// was the thing being removed, and a silent fallback is worse than an honest
+// one. herdr is pre-1.0 with observed CLI churn, so every call is still
+// defensive — any failure lands on the printed command, which always works.
+// The board never fails a start because the backend did.
 
-type Launch = { method: 'herdr' | 'tmux' | 'manual'; attach: string };
+type Launch = { method: 'herdr' | 'manual'; attach: string };
 
 function launchSession(dir: string, ticketId: number): Launch {
   const prompt = `/begin ticket:${ticketId}`;
@@ -102,8 +107,8 @@ function launchSession(dir: string, ticketId: number): Launch {
 
   if (Bun.which('herdr')) {
     try {
-      // Verified against herdr 0.8.0, which differs from the docs in three ways
-      // that each silently sent us to the tmux fallback:
+      // Verified against herdr 0.8.0, which differs from its docs in three
+      // ways — each one silently turned every start into a pasted command:
       //   - there is no --json flag; output is JSON already (--json is an error)
       //   - `worktree open` needs --cwd to name the SOURCE repo when no
       //     workspace is active, not just --path
@@ -119,8 +124,8 @@ function launchSession(dir: string, ticketId: number): Launch {
 
       if (pane) {
         // A freshly-opened pane is not yet at a shell prompt, and `agent start`
-        // rejects it as agent_pane_busy. Retry briefly rather than falling
-        // through — in testing this succeeded on the second attempt.
+        // rejects it as agent_pane_busy. Retry briefly rather than giving up —
+        // in testing this succeeded on the second attempt, a second later.
         for (let i = 0; i < 8; i++) {
           const st = sh('herdr', ['agent', 'start', name, '--kind', 'claude', '--pane', pane, '--', 'claude', prompt], 45000);
           if (st.ok && !/"error"/.test(st.out)) {
@@ -131,16 +136,6 @@ function launchSession(dir: string, ticketId: number): Launch {
         }
       }
     } catch {}
-  }
-
-  if (Bun.which('tmux')) {
-    // Only if a tmux server is actually running — `new-window` against a dead
-    // server would start one nobody is attached to.
-    const alive = sh('tmux', ['list-sessions'], 4000);
-    if (alive.ok) {
-      const w = sh('tmux', ['new-window', '-d', '-c', dir, '-n', name, 'claude', prompt], 8000);
-      if (w.ok) return { method: 'tmux', attach: `tmux select-window -t ${name}` };
-    }
   }
 
   return manual;

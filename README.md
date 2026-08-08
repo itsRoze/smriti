@@ -182,9 +182,11 @@ trail); work that should never have existed gets **deleted** (the ticket and
 its index rows go, the markdown on disk never does).
 
 Starting a ticket cuts its worktree and opens a Claude Code session via
-**herdr** (preferred, if installed) or **tmux**, then shows the exact attach
-command — the session is a terminal; the button never needed to be. With
-neither installed it hands you the command with a copy button.
+**[herdr](https://herdr.dev)**, then shows the exact attach command — the
+session is a terminal; the button never needed to be. herdr is the only session
+backend by design: it is the one that knows a pane holds Claude Code and
+confirms the agent came up. Without it, the board hands you the `cd … && claude
+…` command with a copy button.
 
 The server binds 127.0.0.1 only, and every route — reads included — is
 authenticated: the CLI mints a single-purpose secret, the browser exchanges it

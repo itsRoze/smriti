@@ -9,8 +9,8 @@
 // The interactive front door is `smriti board` — a locally served page. It
 // replaced the raw-mode TUI that used to live here. The objection that killed
 // the first web proposal ("a browser cannot hand you an interactive terminal")
-// is answered by the board's SERVER: it shells out to herdr or tmux to create
-// the session, then shows the exact attach command. The session is a terminal;
+// is answered by the board's SERVER: it shells out to herdr to create the
+// session, then shows the exact attach command. The session is a terminal;
 // the button never needed to be.
 //
 // What remains here is the piped/scripted surface: `smriti factory --list`
