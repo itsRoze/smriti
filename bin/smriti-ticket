@@ -7,6 +7,7 @@
 #   smriti ticket list [--project S] [--status S] [--all] [--json]
 #   smriti ticket show <id> [--json]
 #   smriti ticket start <id>                  cut/attach a worktree; prints its path
+#   smriti ticket pr <id> <url>               record the PR and move to in_review
 #   smriti ticket status <id> <status>        idea|ready|in_progress|in_review|shipped
 #   smriti ticket done <id>                   shorthand for `status <id> shipped`
 #   smriti ticket doc <id|-> --type T --path P [--branch B]
@@ -28,14 +29,18 @@ set -e
 
 SMRITI_TOOL=smriti-ticket
 
-# Resolve our own dir through the symlink chain before dirname — the install
-# puts a symlink on PATH, and dirname($0) on the link resolves to the wrong dir.
+# Resolve our own dir through the full symlink chain before dirname: the install
+# puts a symlink on PATH, and a multi-hop chain would otherwise resolve
+# SMRITI_LIB to the wrong directory, making every call here hard-exit with
+# "schema not found". Same loop as bin/smriti.
 _self="$0"
-[ -L "$_self" ] && _self=$(readlink "$_self")
-case "$_self" in
-  /*) ;;
-  *)  _self="$(cd "$(dirname "$0")" && pwd -P)/$(basename "$_self")" ;;
-esac
+while [ -L "$_self" ]; do
+  _target=$(readlink "$_self")
+  case "$_target" in
+    /*) _self="$_target" ;;
+    *)  _self="$(cd "$(dirname "$_self")" && pwd -P)/$_target" ;;
+  esac
+done
 SMRITI_BIN="$(cd "$(dirname "$_self")" && pwd -P)"
 SMRITI_LIB="$(cd "$SMRITI_BIN/../lib" && pwd -P)"
 unset _self
@@ -53,6 +58,7 @@ usage:
   smriti ticket list [--project S] [--status S] [--all] [--json]
   smriti ticket show <id> [--json]
   smriti ticket start <id>
+  smriti ticket pr <id> <url>
   smriti ticket status <id> <idea|ready|in_progress|in_review|shipped>
   smriti ticket done <id>
   smriti ticket doc <id|-> --type <plan|debug|design|audit> --path P [--branch B]
@@ -61,29 +67,10 @@ USAGE
   exit 2
 }
 
-die() { echo "$SMRITI_TOOL: $1" >&2; exit "${2:-2}"; }
-
 # ─── helpers ────────────────────────────────────────────────────────────────
+# die, require_num, current_slug and current_branch come from factory-db.sh.
 
-# Gated on actually being in a repo: smriti-slug falls back to `path-<hash>`
-# of the cwd when there is no repo, which would silently file work under a
-# meaningless project rather than telling the user to name one.
-current_slug() {
-  git rev-parse --show-toplevel >/dev/null 2>&1 || return 0
-  if [ -x "$SMRITI_BIN/smriti-slug" ]; then
-    "$SMRITI_BIN/smriti-slug" --print 2>/dev/null || true
-  elif command -v smriti-slug >/dev/null 2>&1; then
-    smriti-slug --print 2>/dev/null || true
-  fi
-}
-
-current_branch() { git branch --show-current 2>/dev/null || true; }
-
-require_id() {
-  case "$1" in
-    ''|*[!0-9]*) die "ticket id must be a number, got '$1'" ;;
-  esac
-}
+require_id() { require_num "$1" "ticket id"; }
 
 ticket_exists() {
   [ "$(db "SELECT count(*) FROM tickets WHERE id = $1;")" = "1" ]
@@ -222,9 +209,9 @@ cmd_show() {
 
   if [ "$json" -eq 1 ]; then
     local t d
-    t=$(db_json "SELECT * FROM tickets WHERE id = $id;")
+    t=$(db_json_one "SELECT * FROM tickets WHERE id = $id;")
     d=$(db_json "SELECT id, type, path, branch, created_at FROM documents WHERE ticket_id = $id ORDER BY id;")
-    printf '{"ticket":%s,"documents":%s}\n' "$(printf '%s' "$t" | sed 's/^\[//; s/\]$//')" "$d"
+    printf '{"ticket":%s,"documents":%s}\n' "$t" "$d"
     return 0
   fi
 
@@ -270,9 +257,9 @@ repo_path_for_slug() {
     [ -f "$f" ] || continue
     slug=$(grep -E '^SLUG=' "$f" 2>/dev/null | tail -1 | cut -d= -f2-)
     [ "$slug" = "$want" ] || continue
+    # Written by smriti-slug with plain %s — no shell quoting to undo. An
+    # earlier `eval printf` here silently ate spaces in repo paths.
     path=$(grep -E '^SOURCE_PATH=' "$f" 2>/dev/null | tail -1 | cut -d= -f2-)
-    # SOURCE_PATH is written with %q, so it may carry shell quoting.
-    path=$(eval printf '%s' "$path" 2>/dev/null || printf '%s' "$path")
     [ -d "$path" ] || continue
     # A primary worktree has .git as a directory; linked ones have a .git file.
     if [ -d "$path/.git" ]; then printf '%s' "$path"; return 0; fi
@@ -288,6 +275,21 @@ primary_worktree() {
     | awk '/^worktree /{print substr($0,10); exit}'
 }
 
+# Worktrees live inside the repo, so without this the primary reads as
+# permanently dirty (an untracked .claude/worktrees/) and every later
+# `smriti clean` refuses. Written to .git/info/exclude rather than .gitignore:
+# this is a local tool artifact, not something to commit into someone's repo.
+ignore_worktrees_dir() {
+  local repo="$1" gitdir exclude
+  gitdir=$(git -C "$repo" rev-parse --git-common-dir 2>/dev/null) || return 0
+  case "$gitdir" in /*) ;; *) gitdir="$repo/$gitdir" ;; esac
+  exclude="$gitdir/info/exclude"
+  mkdir -p "$(dirname "$exclude")" 2>/dev/null || return 0
+  [ -f "$exclude" ] || : > "$exclude"
+  grep -qxF '.claude/worktrees/' "$exclude" 2>/dev/null && return 0
+  printf '%s\n' '.claude/worktrees/' >> "$exclude"
+}
+
 cmd_start() {
   [ $# -ge 1 ] || usage
   local id="$1"; shift
@@ -300,11 +302,12 @@ cmd_start() {
     esac
   done
 
-  local slug title branch existing_wt existing_branch
-  slug=$(db "SELECT project_slug FROM tickets WHERE id = $id;")
-  title=$(db "SELECT title FROM tickets WHERE id = $id;")
-  existing_wt=$(db "SELECT coalesce(worktree_path,'') FROM tickets WHERE id = $id;")
-  existing_branch=$(db "SELECT coalesce(branch,'') FROM tickets WHERE id = $id;")
+  # One read, four columns — each `db` call is a separate sqlite3 process.
+  local slug title branch existing_wt existing_branch row
+  row=$(db "SELECT project_slug || char(9) || title || char(9) ||
+                   coalesce(worktree_path,'') || char(9) || coalesce(branch,'')
+            FROM tickets WHERE id = $id;")
+  IFS=$'\t' read -r slug title existing_wt existing_branch <<< "$row"
 
   # Already started and the worktree is still there — attach, don't re-cut.
   if [ -n "$existing_wt" ] && [ -d "$existing_wt" ]; then
@@ -316,7 +319,12 @@ cmd_start() {
   local repo primary
   repo=$(repo_path_for_slug "$slug")
   if [ -z "$repo" ]; then
-    repo=$(git rev-parse --show-toplevel 2>/dev/null || true)
+    # Only fall back to the cwd when it IS this ticket's project. Without the
+    # match, `ticket start` for project A run from inside repo B cut the
+    # worktree in B and recorded it, with no warning.
+    if [ "$(current_slug)" = "$slug" ]; then
+      repo=$(git rev-parse --show-toplevel 2>/dev/null || true)
+    fi
     [ -n "$repo" ] || die "don't know where project '$slug' lives — run this from inside that repo once" 5
   fi
   primary=$(primary_worktree "$repo")
@@ -327,6 +335,7 @@ cmd_start() {
 
   local wt="$primary/.claude/worktrees/$branch"
   mkdir -p "$(dirname "$wt")"
+  ignore_worktrees_dir "$primary"
 
   if [ -d "$wt" ]; then
     : # directory survived without a db row; adopt it
@@ -372,6 +381,22 @@ cmd_status() {
   db_write "UPDATE tickets SET status = $(sql_quote "$status"), updated_at = $(sql_quote "$(now_utc)")
             WHERE id = $id;"
   echo "#$id → $status"
+}
+
+# /ship calls this once the PR exists. in_review rather than shipped: the merge
+# has not happened yet, and /clean is what confirms it.
+cmd_pr() {
+  [ $# -ge 2 ] || usage
+  local id="$1" url="$2"
+  # `-` means "no ticket" — the same sentinel `doc` takes, so callers have one
+  # shape for the optional case instead of guarding at every site.
+  [ "$id" = "-" ] && return 0
+  require_id "$id"
+  ticket_exists "$id" || die "no ticket #$id" 4
+  db_write "UPDATE tickets SET pr_url = $(sql_quote "$url"), status = 'in_review',
+                               updated_at = $(sql_quote "$(now_utc)")
+            WHERE id = $id;"
+  echo "#$id → in_review  $url"
 }
 
 cmd_done() {
@@ -455,40 +480,59 @@ cmd_doc_forget() {
 # Emits `KEY=value` for `eval "$(smriti ticket current)"` in the skill preamble,
 # mirroring the shape smriti-slug and smriti-codex-probe already use.
 cmd_current() {
-  local json=0 want_branch=""
+  local json=0 want_branch="" want_project=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --json)   json=1; shift ;;
       # /clean needs the ticket for a branch it is about to delete, which by
       # then is not the branch it is standing on.
-      --branch) [ $# -ge 2 ] || die "--branch requires a value"; want_branch="$2"; shift 2 ;;
+      --branch)  [ $# -ge 2 ] || die "--branch requires a value";  want_branch="$2";  shift 2 ;;
+      # The preamble already has SLUG and BRANCH; passing them avoids
+      # re-spawning smriti-slug and git on every skill invocation.
+      --project) [ $# -ge 2 ] || die "--project requires a value"; want_project="$2"; shift 2 ;;
       *) die "unknown flag: $1" ;;
     esac
   done
 
-  local slug branch row
-  slug=$(current_slug)
-  branch="$want_branch"
-  [ -n "$branch" ] || branch=$(current_branch)
-
-  row=""
-  if [ -n "$slug" ] && [ -n "$branch" ]; then
-    row=$(db "SELECT id FROM tickets
-              WHERE project_slug = $(sql_quote "$slug") AND branch = $(sql_quote "$branch") LIMIT 1;")
-  fi
-
-  if [ "$json" -eq 1 ]; then
-    if [ -n "$row" ]; then db_json "SELECT * FROM tickets WHERE id = $row;"; else echo '[]'; fi
+  # This runs in the preamble of every skill, so it must be cheap and must not
+  # have side effects. Before the store exists there is nothing to answer with,
+  # and asking would otherwise CREATE the database just to say "no ticket".
+  if ! factory_db_exists; then
+    [ "$json" -eq 1 ] && { echo '[]'; return 0; }
+    printf 'TICKET=\n'
     return 0
   fi
 
-  if [ -n "$row" ]; then
-    printf 'TICKET=%s\n' "$row"
-    printf 'TICKET_TITLE=%q\n' "$(db "SELECT title FROM tickets WHERE id = $row;")"
-    printf 'TICKET_STATUS=%s\n' "$(db "SELECT status FROM tickets WHERE id = $row;")"
-  else
+  local slug branch
+  slug="$want_project"
+  [ -n "$slug" ] || slug=$(current_slug)
+  branch="$want_branch"
+  [ -n "$branch" ] || branch=$(current_branch)
+
+  if [ -z "$slug" ] || [ -z "$branch" ]; then
+    [ "$json" -eq 1 ] && { echo '[]'; return 0; }
     printf 'TICKET=\n'
+    return 0
   fi
+
+  local where="WHERE project_slug = $(sql_quote "$slug") AND branch = $(sql_quote "$branch")"
+
+  if [ "$json" -eq 1 ]; then
+    db_json "SELECT * FROM tickets $where LIMIT 1;"
+    return 0
+  fi
+
+  # One query for all three fields.
+  local row id title status
+  row=$(db "SELECT id || char(9) || title || char(9) || status FROM tickets $where LIMIT 1;")
+  if [ -z "$row" ]; then
+    printf 'TICKET=\n'
+    return 0
+  fi
+  IFS=$'\t' read -r id title status <<< "$row"
+  printf 'TICKET=%s\n' "$id"
+  printf 'TICKET_TITLE=%q\n' "$title"
+  printf 'TICKET_STATUS=%s\n' "$status"
 }
 
 # ─── dispatch ───────────────────────────────────────────────────────────────
@@ -500,6 +544,7 @@ case "$CMD" in
   list|ls)      cmd_list "$@" ;;
   show)         cmd_show "$@" ;;
   start)        cmd_start "$@" ;;
+  pr)           cmd_pr "$@" ;;
   status)       cmd_status "$@" ;;
   done)         cmd_done "$@" ;;
   doc)          cmd_doc "$@" ;;

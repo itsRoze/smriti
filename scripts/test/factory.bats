@@ -135,13 +135,13 @@ teardown() {
   [[ "$output" == *"enter start"* ]]
 }
 
-@test "unknown flag exits 2" {
+@test "unknown flag exits 1 (usage), matching smriti-html and smriti-browse" {
   run bun "$CLI" --bogus
-  [ "$status" -eq 2 ]
+  [ "$status" -eq 1 ]
   [[ "$output" == *"unknown flag"* ]]
 }
 
-@test "unexpected positional argument exits 2" {
+@test "unexpected positional argument exits 1" {
   run bun "$CLI" wat
-  [ "$status" -eq 2 ]
+  [ "$status" -eq 1 ]
 }

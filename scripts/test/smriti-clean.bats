@@ -676,3 +676,39 @@ make_merged_branch_in_worktree() {
   [ ! -d "$WORK/wt-feat-one" ]
   [ ! -d "$WORK/wt-feat-two" ]
 }
+
+@test "worktree: a dirty PRIMARY worktree refuses cleanly, even from a clean linked one" {
+  # The guard has to check the worktree the mutations actually run in. Checking
+  # the caller's instead let a clean linked worktree pass while the primary was
+  # dirty, and `git -C <primary> checkout` then aborted under set -e with an
+  # undocumented exit 1 — or worse, succeeded and carried the uncommitted work
+  # onto the default branch.
+  init_repo
+  make_merged_branch_in_worktree "feat-wt"
+
+  # Primary sits on a feature branch with uncommitted work.
+  git checkout -q -b dirty-work
+  echo "uncommitted" > f
+
+  cd "$WORK/wt-feat-wt"
+  run "$CLI" --branch feat-wt
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"dirty"* ]]
+
+  # Nothing was touched.
+  git -C "$REPO" show-ref --verify --quiet refs/heads/feat-wt
+  [ "$(cat "$REPO/f")" = "uncommitted" ]
+}
+
+@test "worktree: --plan reports the dirty primary rather than claiming it can clean" {
+  init_repo
+  make_merged_branch_in_worktree "feat-wt"
+  git checkout -q -b dirty-work
+  echo "uncommitted" > f
+
+  cd "$WORK/wt-feat-wt"
+  run "$CLI" --plan
+  [ "$status" -eq 0 ]
+  [ "$(echo "$output" | jq -r .action)" = "refuse" ]
+  echo "$output" | jq -r .refusal_reason | grep -q "dirty"
+}

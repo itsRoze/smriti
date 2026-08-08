@@ -127,15 +127,26 @@ check_has_any_commit() {
   fi
 }
 
+# Checked in the PRIMARY worktree, because that is where the branch-lifecycle
+# commands actually run. Guarding the caller's worktree instead let a clean
+# linked worktree pass while the primary was dirty, and the subsequent
+# `git -C "$PRIMARY_WT" checkout` then either aborted under set -e with an
+# undocumented exit 1, or silently carried uncommitted work onto the default
+# branch — the exact outcome this guard exists to prevent.
+#
+# Nothing is lost by not checking the caller's own worktree: `git worktree
+# remove` refuses a dirty one, which covers that case at the right level.
 check_not_detached_head() {
-  if [ "$(git symbolic-ref --short -q HEAD 2>/dev/null)" = "" ]; then
+  resolve_primary_worktree
+  if [ "$(git -C "$PRIMARY_WT" symbolic-ref --short -q HEAD 2>/dev/null)" = "" ]; then
     echo "detached HEAD"
     return 6
   fi
 }
 
 check_dirty_tree() {
-  if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
+  resolve_primary_worktree
+  if [ -n "$(git -C "$PRIMARY_WT" status --porcelain 2>/dev/null)" ]; then
     echo "working tree is dirty — commit or stash, then re-run"
     return 2
   fi
@@ -671,7 +682,9 @@ mode_all() {
   fi
   git -C "$PRIMARY_WT" pull --quiet --ff-only 2>/dev/null || git -C "$PRIMARY_WT" pull --quiet || true
 
-  # Resolve the artifact dir once; each deleted branch's scratch is purged below.
+  # Resolved after the primary worktree is established, matching mode_branch —
+  # project_artifacts_dir shells out to smriti-slug, which is cwd-sensitive, so
+  # resolving it at a different point gave a different answer.
   local artifacts_dir
   artifacts_dir=$(project_artifacts_dir)
 

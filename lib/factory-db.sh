@@ -42,37 +42,46 @@ _require_sqlite3() {
 # Per-connection settings, chosen to be SILENT. `PRAGMA busy_timeout=N` and
 # `PRAGMA journal_mode=WAL` both echo their new value to stdout, which would
 # contaminate the result of every single query — so busy_timeout is set via the
-# `.timeout` dot-command (no output) and journal_mode is set once at init,
+# `.timeout` dot-command (no output) and journal_mode is set once at creation,
 # where it persists in the db file. foreign_keys must be re-set per connection
 # but is silent.
-_FACTORY_CONN=(".timeout 5000" "PRAGMA foreign_keys=ON;")
-
-# Applied on every first call in a process rather than tracked by a schema
-# version. Every statement in factory-schema.sql is IF NOT EXISTS, so this is
-# cheap and self-healing.
-_db_init() {
-  [ -n "${_FACTORY_DB_READY:-}" ] && return 0
-  _require_sqlite3
-  mkdir -p "$(dirname "$FACTORY_DB")"
-  chmod 700 "$(dirname "$FACTORY_DB")" 2>/dev/null || true
-
-  local schema="$SMRITI_LIB/factory-schema.sql"
-  if [ ! -f "$schema" ]; then
-    echo "${SMRITI_TOOL:-smriti-factory}: schema not found at $schema" >&2
-    exit 3
-  fi
-  # journal_mode is persistent once set; its output is discarded here.
-  sqlite3 "$FACTORY_DB" "PRAGMA journal_mode=WAL;" ".read $schema" >/dev/null
-  _FACTORY_DB_READY=1
+#
+# The schema is applied on the SAME connection as the query rather than by a
+# separate `_db_init` invocation. Every statement in factory-schema.sql is
+# IF NOT EXISTS, and re-reading the file costs ~0.2ms against ~7ms to spawn
+# another sqlite3 — so folding it in here halves the process count of every
+# command while keeping the self-healing property. (A shell-variable memo does
+# not work: `x=$(db ...)` runs in a subshell, so the flag never survives.)
+_factory_conn_args() {
+  _FACTORY_CONN=(".timeout 5000" "PRAGMA foreign_keys=ON;" ".read $SMRITI_LIB/factory-schema.sql")
 }
 
+_db_ready() {
+  _require_sqlite3
+  if [ ! -f "$FACTORY_DB" ]; then
+    mkdir -p "$(dirname "$FACTORY_DB")"
+    chmod 700 "$(dirname "$FACTORY_DB")" 2>/dev/null || true
+    # journal_mode is persistent once set; its output is discarded here.
+    sqlite3 "$FACTORY_DB" "PRAGMA journal_mode=WAL;" >/dev/null
+  fi
+  if [ ! -f "$SMRITI_LIB/factory-schema.sql" ]; then
+    echo "${SMRITI_TOOL:-smriti-factory}: schema not found at $SMRITI_LIB/factory-schema.sql" >&2
+    exit 3
+  fi
+  _factory_conn_args
+}
+
+# True when the store exists. Read-only callers use this to answer "nothing
+# here" without creating a database as a side effect of asking.
+factory_db_exists() { [ -f "$FACTORY_DB" ]; }
+
 db() {
-  _db_init
+  _db_ready
   sqlite3 "$FACTORY_DB" "${_FACTORY_CONN[@]}" "$1"
 }
 
 db_json() {
-  _db_init
+  _db_ready
   # sqlite3 -json prints nothing at all for a zero-row result; normalize to an
   # empty array so callers can hand the value straight to jq.
   local out
@@ -85,8 +94,42 @@ db_json() {
 # SELECT the caller appends (e.g. last_insert_rowid()) is returned on stdout —
 # it must share this connection, since that value is per-connection.
 db_write() {
-  _db_init
+  _db_ready
   sqlite3 "$FACTORY_DB" "${_FACTORY_CONN[@]}" "BEGIN IMMEDIATE; $1 COMMIT;"
 }
 
+# One row, as a bare JSON object (or `null`). Both helpers were hand-splicing a
+# single-row array with sed to build their `show --json` output.
+db_json_one() {
+  local out
+  out=$(db_json "$1")
+  printf '%s\n' "$(printf '%s' "$out" | sed 's/^\[//; s/\]$//')"
+}
+
 now_utc() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+
+# ─── shared helper shapes ───────────────────────────────────────────────────
+# Both consumers need these identically; keeping one copy is what stops the two
+# from drifting the way their first versions already had.
+
+die() { echo "${SMRITI_TOOL:-smriti-factory}: $1" >&2; exit "${2:-2}"; }
+
+require_num() {
+  case "$1" in
+    ''|*[!0-9]*) die "${2:-value} must be a number, got '$1'" ;;
+  esac
+}
+
+# Gated on actually being in a repo: smriti-slug falls back to `path-<hash>` of
+# the cwd when there is no repo, which would silently file work under a
+# meaningless project rather than telling the user to name one.
+current_slug() {
+  git rev-parse --show-toplevel >/dev/null 2>&1 || return 0
+  if [ -x "$SMRITI_BIN/smriti-slug" ]; then
+    "$SMRITI_BIN/smriti-slug" --print 2>/dev/null || true
+  elif command -v smriti-slug >/dev/null 2>&1; then
+    smriti-slug --print 2>/dev/null || true
+  fi
+}
+
+current_branch() { git branch --show-current 2>/dev/null || true; }

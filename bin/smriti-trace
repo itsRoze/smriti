@@ -28,12 +28,17 @@ set -e
 
 SMRITI_TOOL=smriti-trace
 
+# Follow the full symlink chain, not just one hop: a multi-hop install would
+# otherwise resolve SMRITI_LIB to the wrong directory and make every call here
+# hard-exit with "schema not found". Same loop as bin/smriti.
 _self="$0"
-[ -L "$_self" ] && _self=$(readlink "$_self")
-case "$_self" in
-  /*) ;;
-  *)  _self="$(cd "$(dirname "$0")" && pwd -P)/$(basename "$_self")" ;;
-esac
+while [ -L "$_self" ]; do
+  _target=$(readlink "$_self")
+  case "$_target" in
+    /*) _self="$_target" ;;
+    *)  _self="$(cd "$(dirname "$_self")" && pwd -P)/$_target" ;;
+  esac
+done
 SMRITI_BIN="$(cd "$(dirname "$_self")" && pwd -P)"
 SMRITI_LIB="$(cd "$SMRITI_BIN/../lib" && pwd -P)"
 unset _self
@@ -57,18 +62,7 @@ USAGE
   exit 2
 }
 
-die() { echo "$SMRITI_TOOL: $1" >&2; exit "${2:-2}"; }
-
-current_slug() {
-  git rev-parse --show-toplevel >/dev/null 2>&1 || return 0
-  if [ -x "$SMRITI_BIN/smriti-slug" ]; then
-    "$SMRITI_BIN/smriti-slug" --print 2>/dev/null || true
-  else
-    smriti-slug --print 2>/dev/null || true
-  fi
-}
-
-current_branch() { git branch --show-current 2>/dev/null || true; }
+# die, require_num, current_slug and current_branch come from factory-db.sh.
 
 # The run a bare `emit`/`end` applies to: the newest still-running run on this
 # branch. Skills are a sequential flow, so "the run I am inside" is
@@ -98,7 +92,14 @@ cmd_start() {
       *) die "unknown flag: $1" ;;
     esac
   done
-  case "$ticket" in ''|*[0-9]*) ;; *) die "--ticket must be a number" ;; esac
+  [ "$ticket" = "-" ] && ticket=""
+  if [ -n "$ticket" ]; then
+    require_num "$ticket" "--ticket"
+    # Foreign keys are enforced, so an unknown id would surface as a raw
+    # SQLITE_CONSTRAINT exit rather than something a reader can act on.
+    [ "$(db "SELECT count(*) FROM tickets WHERE id = $ticket;")" = "1" ] \
+      || die "no ticket #$ticket" 4
+  fi
 
   local slug branch uid
   slug=$(current_slug); [ -n "$slug" ] || slug="unknown"
@@ -218,10 +219,10 @@ cmd_show() {
 
   if [ "$json" -eq 1 ]; then
     local r e
-    r=$(db_json "SELECT * FROM runs WHERE run_uid = $(sql_quote "$uid");")
+    r=$(db_json_one "SELECT * FROM runs WHERE run_uid = $(sql_quote "$uid");")
     e=$(db_json "SELECT id, phase, status, note, at FROM events
                  WHERE run_uid = $(sql_quote "$uid") ORDER BY id;")
-    printf '{"run":%s,"events":%s}\n' "$(printf '%s' "$r" | sed 's/^\[//; s/\]$//')" "$e"
+    printf '{"run":%s,"events":%s}\n' "$r" "$e"
     return 0
   fi
 
@@ -247,7 +248,7 @@ cmd_tail() {
       *) die "unknown flag: $1" ;;
     esac
   done
-  case "$after" in ''|*[!0-9]*) die "--after must be a number" ;; esac
+  require_num "$after" "--after"
 
   local where="WHERE id > $after"
   [ -n "$uid" ] && where="$where AND run_uid = $(sql_quote "$uid")"

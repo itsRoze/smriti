@@ -294,3 +294,93 @@ line two"
   [ "$status" -eq 2 ]
   [[ "$output" == *"unknown command"* ]]
 }
+
+# ─── worktrees ──────────────────────────────────────────────────────────────
+
+@test "start: cuts a worktree and records the branch" {
+  echo seed > f && git add f && git commit -q -m init
+  "$CLI" add "Export to CSV" >/dev/null
+  # Command substitution, not `run`: the worktree path is stdout and the status
+  # line is stderr, and bats merges the two into $output.
+  local wt; wt=$("$CLI" start 1)
+  [ -d "$wt" ]
+  run "$CLI" show 1
+  [[ "$output" == *"t1-export-to-csv"* ]]
+  [[ "$output" == *"in_progress"* ]]
+}
+
+@test "start: cutting a worktree leaves the repo clean" {
+  # Worktrees live under .claude/worktrees/ inside the repo, so without an
+  # exclude entry the primary reads as permanently dirty and every later
+  # `smriti clean` refuses on its dirty-tree precondition.
+  echo seed > f && git add f && git commit -q -m init
+  "$CLI" add "Export to CSV" >/dev/null
+  "$CLI" start 1 >/dev/null
+
+  run git status --porcelain
+  [ -z "$output" ]
+}
+
+@test "start: is idempotent — re-starting attaches to the same worktree" {
+  echo seed > f && git add f && git commit -q -m init
+  "$CLI" add "Export to CSV" >/dev/null
+  local first second
+  first=$("$CLI" start 1)
+  second=$("$CLI" start 1)
+  [ "$first" = "$second" ]
+  [ "$(git worktree list | wc -l | tr -d ' ')" = "2" ]
+}
+
+@test "start: refuses to cut a worktree in an unrelated repo" {
+  # Falling back to the cwd unconditionally meant `start` for project A, run
+  # from repo B, silently created and recorded a worktree inside B.
+  echo seed > f && git add f && git commit -q -m init
+  "$CLI" add "Dark mode" --project some-other-project >/dev/null
+
+  run "$CLI" start 1
+  [ "$status" -eq 5 ]
+  [[ "$output" == *"don't know where project"* ]]
+  [ ! -d "$REPO/.claude/worktrees" ]
+}
+
+@test "pr: records the url and moves the ticket to in_review" {
+  "$CLI" add "Export to CSV" >/dev/null
+  run "$CLI" pr 1 "https://github.com/o/r/pull/7"
+  [ "$status" -eq 0 ]
+  run "$CLI" show 1
+  [[ "$output" == *"in_review"* ]]
+  [[ "$output" == *"pull/7"* ]]
+}
+
+@test "pr: '-' is a no-op, so callers need no guard" {
+  run "$CLI" pr - "https://github.com/o/r/pull/7"
+  [ "$status" -eq 0 ]
+}
+
+@test "current: reading before the store exists creates no database" {
+  # This runs in the preamble of every skill. Asking must not be what brings
+  # the store into being.
+  rm -f "$SMRITI_HOME/factory.db"
+  run "$CLI" current --project demo --branch main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"TICKET="* ]]
+  [ ! -f "$SMRITI_HOME/factory.db" ]
+}
+
+@test "a repo path containing a space still resolves" {
+  # An `eval printf` here used to silently eat the space and lose the repo.
+  mkdir -p "$WORK/my repo"
+  git -C "$WORK/my repo" init -q -b main
+  git -C "$WORK/my repo" config user.email "test@smriti.local"
+  git -C "$WORK/my repo" config user.name "smriti-test"
+  git -C "$WORK/my repo" remote add origin "https://github.com/test/spaced.git"
+  echo seed > "$WORK/my repo/f"
+  git -C "$WORK/my repo" add f
+  git -C "$WORK/my repo" commit -q -m init
+
+  cd "$WORK/my repo"
+  "$FAKE_BIN/smriti-slug" --print >/dev/null
+  "$CLI" add "Export" >/dev/null
+  local wt; wt=$("$CLI" start 1)
+  [ -d "$wt" ]
+}

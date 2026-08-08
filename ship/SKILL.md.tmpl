@@ -130,9 +130,7 @@ Once the PR exists, record it and move the ticket to `in_review`. It becomes
 actually happened rather than what was intended:
 
 ```bash
-if [ -n "$TICKET" ]; then
-  smriti ticket status "$TICKET" in_review >/dev/null 2>&1 || true
-fi
+smriti ticket pr "${TICKET:--}" "$PR_URL" >/dev/null 2>&1 || true
 ```
 
 ### main path ("push to main")

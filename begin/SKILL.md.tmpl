@@ -79,11 +79,12 @@ This is what makes a run visible in `smriti factory` while it is happening, and
 reviewable afterwards.
 
 ```bash
-eval "$(smriti trace start begin ${TICKET:+--ticket $TICKET} 2>/dev/null)" 2>/dev/null || true
+smriti trace start begin --ticket "${TICKET:--}" >/dev/null 2>&1 || true
 ```
 
-Then after each step: `smriti trace emit <phase> ok || true`, using the step's
-own name — `ground`, `understand`, `clarify`, `plan`, `codex`, `approve`,
+There is no run id to carry around: `emit` and `end` find the open run for this
+branch themselves. Then after each step: `smriti trace emit <phase> ok || true`,
+using the step's own name — `ground`, `understand`, `clarify`, `plan`, `codex`, `approve`,
 `implement`, `review`, `verify`. Two that carry weight:
 
 - **entering Gate 2** — `smriti trace emit approve awaiting || true`, which is

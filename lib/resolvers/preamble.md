@@ -15,7 +15,9 @@ BRANCH_SLUG="${BRANCH//\//--}"
 
 # The ticket this branch is working, if any. Empty when the branch was cut by
 # hand rather than by `smriti ticket start` — every skill must still work.
-eval "$(smriti ticket current 2>/dev/null)" 2>/dev/null
+# SLUG and BRANCH are passed in because we already have them; letting the
+# helper re-derive them would re-spawn smriti-slug on every skill invocation.
+eval "$(smriti ticket current --project "$SLUG" --branch "$BRANCH" 2>/dev/null)" 2>/dev/null
 TICKET="${TICKET:-}"
 
 # Config

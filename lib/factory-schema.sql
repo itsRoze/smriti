@@ -76,4 +76,4 @@ CREATE UNIQUE INDEX IF NOT EXISTS tickets_worktree
 CREATE INDEX IF NOT EXISTS tickets_by_project ON tickets (project_slug, status);
 CREATE INDEX IF NOT EXISTS documents_by_ticket ON documents (ticket_id);
 CREATE INDEX IF NOT EXISTS events_by_run ON events (run_uid, id);
-CREATE INDEX IF NOT EXISTS runs_by_status ON runs (status, started_at);
+CREATE INDEX IF NOT EXISTS runs_by_status ON runs (status, id DESC);
