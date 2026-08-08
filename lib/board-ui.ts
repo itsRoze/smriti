@@ -838,8 +838,14 @@ export function boardPage(): string {
       return list.map((x) => {
         const m = x.median_s || 0;
         const w = (100 * m / max).toFixed(2) + '%';
-        const ay = m ? (100 * (x.median_agent_s || 0) / m).toFixed(2) + '%' : '0%';
-        const yy = m ? (100 * (x.median_you_s || 0) / m).toFixed(2) + '%' : '0%';
+        // The three medians are computed independently, and medians do not add:
+        // median(total) is not median(agent) + median(you). So the split inside
+        // the bar is drawn as a RATIO of the two parts rather than as a fraction
+        // of the total — otherwise the bar comes up short and reads as missing
+        // data. The number beside it is the true median_s.
+        const a = x.median_agent_s || 0, y = x.median_you_s || 0, sum = a + y;
+        const ay = sum ? (100 * a / sum).toFixed(2) + '%' : '100%';
+        const yy = sum ? (100 * y / sum).toFixed(2) + '%' : '0%';
         return '<div class="row"><span class="nm">' + esc(x[key]) + '</span>' +
           '<span class="n">×' + (x.runs || x.samples || 0) + '</span>' +
           '<span class="sw" style="max-width:' + w + '"><i class="a" style="width:' + ay + '"></i>' +
