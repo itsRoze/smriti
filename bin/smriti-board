@@ -78,10 +78,25 @@ function readJsonCmd<T>(args: string[], from = TICKET): T[] | null {
   if (!r.ok) return null;
   try { return JSON.parse(r.out || '[]') as T[]; } catch { return null; }
 }
-// Same contract, for the verbs that answer with an object rather than a list
-// (`trace show --json`, `trace stats --json`).
-function readJsonObj<T>(args: string[], from = TICKET): T | null {
-  const r = sh(from, args);
+// Non-blocking reads. spawnSync freezes the single event loop for as long as
+// the child runs — this file already says so about `shAsync` — and a trace read
+// spawns sqlite3, so the timing routes must not use it: opening a ticket with
+// twenty runs would otherwise stall SSE, /api/ping and every other tab.
+async function shOut(bin: string, args: string[], timeoutMs = 15000): Promise<{ ok: boolean; out: string }> {
+  const p = Bun.spawn([bin, ...args], { stdout: 'pipe', stderr: 'ignore' });
+  const killer = setTimeout(() => p.kill(), timeoutMs);
+  try {
+    const out = await new Response(p.stdout).text();
+    return { ok: (await p.exited) === 0, out: out.trim() };
+  } catch {
+    return { ok: false, out: '' };
+  } finally {
+    clearTimeout(killer);
+  }
+}
+// null still means "the read failed", never "there is nothing".
+async function readJsonAsync<T>(args: string[], from = TICKET): Promise<T | null> {
+  const r = await shOut(from, args);
   if (!r.ok) return null;
   try { return JSON.parse(r.out || 'null') as T; } catch { return null; }
 }
@@ -110,6 +125,10 @@ type Launch = {
 };
 
 type Session = { name: string; status: string; cwd: string; pane: string };
+
+// Only what this file touches — the payload is passed through to the page
+// verbatim, and smriti-trace owns its shape.
+type Run = { run_uid: string; status: string };
 
 // Every herdr agent, so the board can show what a session is actually doing.
 // This is the only source that knows a Claude session is blocked on input —
@@ -343,25 +362,39 @@ async function cmdServer(): Promise<never> {
       if (url.pathname === '/api/state' && req.method === 'GET') {
         touch();
         const tickets = readJsonCmd(['list', '--all', '--json']);
-        // All runs, not just active ones: a card can only show "took 18m" if
-        // the finished run is in the payload. The window is recency-bounded on
-        // purpose — this list draws cards and the waiting band, where only the
-        // newest run per ticket matters. The detail overlay asks per-ticket.
-        const runs = readJsonCmd(['list', '--limit', '200', '--json'], TRACE);
+        // TWO reads, not one. Finished runs are needed so a card can say "took
+        // 18m", and a recency window is the right shape for that — but bounding
+        // the list on recency alone silently dropped an OLD run parked at a
+        // gate, and "waiting on you" showing an empty forest while a gate is
+        // actually blocking is the one failure this board must never have. The
+        // active read restores that guarantee; the window is decoration.
+        const [recent, active] = await Promise.all([
+          readJsonAsync<Run[]>(['list', '--limit', '200', '--json'], TRACE),
+          readJsonAsync<Run[]>(['list', '--active', '--json'], TRACE),
+        ]);
         const documents = readJsonCmd(['docs', '--json']);
         if (tickets === null) {
           return json({ error: 'could not read the ticket store' }, 503);
         }
-        return json({ tickets, runs: runs ?? [], documents: documents ?? [], sessions: herdrSessions() });
+        const byUid = new Map<string, Run>();
+        for (const r of [...(active ?? []), ...(recent ?? [])]) byUid.set(r.run_uid, r);
+        return json({
+          tickets,
+          runs: [...byUid.values()],
+          documents: documents ?? [],
+          sessions: herdrSessions(),
+        });
       }
 
-      // Every run for one ticket, however old. The overlay lists them all, so
-      // it must not depend on the run still being inside /api/state's window.
+      // Every run for one ticket, however old — the overlay must not depend on
+      // a run still being inside /api/state's window. The limit is explicit
+      // because cmd_list defaults to 100, and inheriting that default would
+      // reintroduce the very truncation this route exists to avoid.
       if (url.pathname === '/api/runs' && req.method === 'GET') {
         touch();
         const id = url.searchParams.get('ticket') || '';
         if (!/^\d+$/.test(id)) return json({ error: 'bad ticket' }, 400);
-        const runs = readJsonCmd(['list', '--ticket', id, '--json'], TRACE);
+        const runs = await readJsonAsync<Run[]>(['list', '--ticket', id, '--limit', '1000', '--json'], TRACE);
         if (runs === null) return json({ error: 'could not read the trace' }, 503);
         return json({ runs });
       }
@@ -374,7 +407,7 @@ async function cmdServer(): Promise<never> {
         touch();
         const uid = runDetail[1];
         if (!/^[0-9a-f]{8}$/.test(uid)) return json({ error: 'bad run id' }, 400);
-        const detail = readJsonObj(['show', uid, '--json'], TRACE);
+        const detail = await readJsonAsync(['show', uid, '--json'], TRACE);
         if (detail === null) return json({ error: 'no such run' }, 404);
         return json(detail);
       }
@@ -382,8 +415,8 @@ async function cmdServer(): Promise<never> {
       if (url.pathname === '/api/stats' && req.method === 'GET') {
         touch();
         const days = url.searchParams.get('days') || '30';
-        if (!/^\d+$/.test(days)) return json({ error: 'bad days' }, 400);
-        const stats = readJsonObj(['stats', '--days', days, '--json'], TRACE);
+        if (!/^\d{1,9}$/.test(days)) return json({ error: 'bad days' }, 400);
+        const stats = await readJsonAsync(['stats', '--days', days, '--json'], TRACE);
         if (stats === null) return json({ error: 'could not read the trace' }, 503);
         return json(stats);
       }

@@ -343,14 +343,34 @@ gated_run() {
 }
 
 @test "a clock that jumped backwards clamps to zero rather than going negative" {
+  # ended_at precedes started_at, so the run's wall clock is negative. Every
+  # segment clamps and the total collapses to 0 — never a negative number, and
+  # never more than the wall clock it is supposed to describe.
   local uid; uid=$(start_run)
   "$CLI" emit plan ok --run "$uid"
   "$CLI" end --run "$uid"
   stamp_run "$uid" '2026-08-08T09:00:00Z' "'2026-08-08T08:50:00Z'"
   stamp_event "$uid" 0 '2026-08-08T09:04:00Z'
   run "$CLI" list --json
-  [ "$(echo "$output" | jq -r '.[0].duration_s')" = "240" ]
+  [ "$(echo "$output" | jq -r '.[0].duration_s')" = "0" ]
   echo "$output" | jq -e '.[0] | .duration_s >= 0 and .agent_s >= 0 and .you_s >= 0'
+  echo "$output" | jq -e '.[0] | (.agent_s + .you_s) == .duration_s'
+}
+
+@test "an emit that lands after end cannot push the total past the wall clock" {
+  # Every trace verb is best-effort and `end` is its own step, so a late emit is
+  # a real sequence. Uncorrected it opened a segment running past ended_at, and
+  # the parts summed to more than the whole.
+  local uid; uid=$(start_run)
+  "$CLI" emit plan ok --run "$uid"
+  "$CLI" end --run "$uid"
+  "$CLI" emit review ok --run "$uid"      # arrives after the run was closed
+  stamp_run "$uid" '2026-08-08T10:00:00Z' "'2026-08-08T10:10:00Z'"
+  stamp_event "$uid" 0 '2026-08-08T10:04:00Z'
+  stamp_event "$uid" 1 '2026-08-08T10:30:00Z'
+
+  run "$CLI" list --json
+  [ "$(echo "$output" | jq -r '.[0].duration_s')" = "600" ]   # exactly the wall clock
   echo "$output" | jq -e '.[0] | (.agent_s + .you_s) == .duration_s'
 }
 
@@ -475,6 +495,80 @@ three_runs() {
   run "$CLI" stats --days 0 --json
   [ "$(echo "$output" | jq -r '.runs')" = "1" ]
   [ "$(echo "$output" | jq -r '.by_skill[0].median_s')" = "300" ]
+}
+
+# A completed run with an exact agent/you split, built from second offsets:
+#   start ─agent→ plan ok ─0→ approve awaiting ─you→ approve ok ─0→ end
+split_run() {
+  local agent="$1" you="$2" base="$3" uid
+  uid=$(start_run)
+  "$CLI" emit plan ok --run "$uid"
+  "$CLI" emit approve awaiting --run "$uid"
+  "$CLI" emit approve ok --run "$uid"
+  "$CLI" end --run "$uid"
+  local at_plan at_gate at_done
+  at_plan=$(sq "SELECT strftime('%Y-%m-%dT%H:%M:%SZ','$base','+$agent seconds');")
+  at_gate="$at_plan"
+  at_done=$(sq "SELECT strftime('%Y-%m-%dT%H:%M:%SZ','$base','+$((agent + you)) seconds');")
+  stamp_run "$uid" "$base" "'$at_done'"
+  stamp_event "$uid" 0 "$at_plan"
+  stamp_event "$uid" 1 "$at_gate"
+  stamp_event "$uid" 2 "$at_done"
+  printf '%s' "$uid"
+}
+
+@test "stats: the three medians reconcile — agent + you == total" {
+  # Ranking each column separately gives three medians of three DIFFERENT runs,
+  # and median(total) is not median(agent) + median(you) — so the table printed
+  # three numbers that invited a reader to hunt for time that was never missing.
+  split_run 100 0  '2026-08-08T01:00:00Z' >/dev/null
+  split_run 0   100 '2026-08-08T02:00:00Z' >/dev/null
+  split_run 60  60  '2026-08-08T03:00:00Z' >/dev/null
+
+  run "$CLI" stats --days 0 --json
+  [ "$(echo "$output" | jq -r '.runs')" = "3" ]
+  echo "$output" | jq -e '.by_skill[0] | (.median_agent_s + .median_you_s) == .median_s'
+  echo "$output" | jq -e 'all(.by_phase[]; (.median_agent_s + .median_you_s) == .median_s)'
+  # Totals are 100, 100, 120 -> median 100, taken from a run that really is
+  # 100 seconds, so the split reported is that run's own split.
+  [ "$(echo "$output" | jq -r '.by_skill[0].median_s')" = "100" ]
+}
+
+@test "a phase name containing a pipe does not corrupt the plain-text columns" {
+  # `phase` is free text and sqlite's list mode separates on '|', so splitting on
+  # it reported not just a truncated label but the wrong seconds beside it.
+  local uid; uid=$(start_run)
+  "$CLI" emit 'a|b' ok --run "$uid"
+  "$CLI" emit approve awaiting --run "$uid"
+  "$CLI" emit approve ok --run "$uid"
+  "$CLI" end --run "$uid"
+  stamp_run "$uid" '2026-08-08T10:00:00Z' "'2026-08-08T10:10:00Z'"
+  stamp_event "$uid" 0 '2026-08-08T10:04:00Z'
+  stamp_event "$uid" 1 '2026-08-08T10:05:00Z'
+  stamp_event "$uid" 2 '2026-08-08T10:09:00Z'
+
+  run "$CLI" show "$uid"
+  [[ "$output" == *"a|b"* ]]
+  # 4m of agent work under the pipe-named phase, and it must NOT be reported as
+  # your time — the 4m gate belongs to approve.
+  [[ "$output" == *"a|b            4m"* ]]
+  ! [[ "$output" == *"a              "* ]]
+
+  run "$CLI" stats --days 0
+  [[ "$output" == *"a|b"* ]]
+}
+
+@test "an out-of-range --days or --limit is a usage error, not silently ignored" {
+  # Digits alone are not an integer to `[ -gt ]` or to SQL. The failing test was
+  # the left arm of an && list, so set -e did not fire: the window filter was
+  # dropped and stats answered over all time under a bogus label.
+  start_run
+  run "$CLI" stats --days 99999999999999999999 --json
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"out of range"* ]]
+
+  run "$CLI" list --limit 99999999999999999999 --json
+  [ "$status" -eq 2 ]
 }
 
 @test "stats: nothing finished yet is a sentence, not an empty table" {

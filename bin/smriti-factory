@@ -20,6 +20,7 @@
 import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { realpathSync } from 'node:fs';
+import { fmtDur, sinceSecs } from '../lib/duration.ts';
 
 const TOOL_VERSION = '0.1.0';
 
@@ -78,27 +79,12 @@ type Run = {
   last_event_at?: string | null;
 };
 
-function fmtDur(secs: number): string {
-  const s = Math.max(0, Math.round(secs || 0));
-  if (s < 60) return `${s}s`;
-  if (s < 600) {
-    const m = Math.floor(s / 60);
-    const r = s % 60;
-    return r ? `${m}m ${r}s` : `${m}m`;
-  }
-  if (s < 3600) return `${Math.floor(s / 60)}m`;
-  const h = Math.floor(s / 3600);
-  const m = Math.floor((s % 3600) / 60);
-  return m ? `${h}h ${m}m` : `${h}h`;
-}
-
 // How long this gate has been sitting on you. The trace records the instant it
 // was reached; the elapsed part has to be measured now.
 function waitingFor(r: Run): string {
   if (!r.last_event_at) return '';
-  const ms = Date.parse(r.last_event_at);
-  if (!ms) return '';
-  return `, ${fmtDur((Date.now() - ms) / 1000)}`;
+  const held = sinceSecs(r.last_event_at);
+  return held ? `, ${fmtDur(held)}` : '';
 }
 
 function readJson<T>(bin: string, args: string[]): T[] {

@@ -223,13 +223,19 @@ const sql = (q: string) =>
 type ApiRun = { run_uid: string; status: string; duration_s: number; agent_s: number; you_s: number };
 
 // A ticket with a finished, gated run and a second run still going. Timestamps
-// are stamped after the fact so the assertions are exact.
+// are stamped after the fact so the assertions are exact — except the open
+// run's start, which is stamped RELATIVE to now: pinning it to a fixed instant
+// made the result depend on the wall-clock hour the suite happened to run at.
+let seedN = 0;
 function seedRuns(): { ticketId: number; doneUid: string; openUid: string } {
   const tk = (args: string[]) =>
     spawnSync(TICKET, args, { encoding: 'utf8', env: { ...process.env, SMRITI_HOME: HOME_DIR } });
-  tk(['add', 'timed work', '--project', 'demo']);
+  // A distinct title per call: every test shares one HOME_DIR, so resolving by
+  // a constant title attached every seed's runs to the first test's ticket.
+  const title = `timed work ${++seedN}`;
+  tk(['add', title, '--project', 'demo']);
   const list = JSON.parse(tk(['list', '--all', '--json']).stdout) as { id: number; title: string }[];
-  const ticketId = list.find((t) => t.title === 'timed work')!.id;
+  const ticketId = list.find((t) => t.title === title)!.id;
 
   const uidOf = (out: string) => out.trim().split('=')[1];
   const doneUid = uidOf(tr(['start', 'begin', '--ticket', String(ticketId)]).stdout);
@@ -245,7 +251,9 @@ function seedRuns(): { ticketId: number; doneUid: string; openUid: string } {
   );
 
   const openUid = uidOf(tr(['start', 'begin', '--ticket', String(ticketId)]).stdout);
-  sql(`UPDATE runs SET started_at='2026-08-08T11:00:00Z' WHERE run_uid='${openUid}';`);
+  sql(
+    `UPDATE runs SET started_at = strftime('%Y-%m-%dT%H:%M:%SZ','now','-5 minutes') WHERE run_uid='${openUid}';`,
+  );
   return { ticketId, doneUid, openUid };
 }
 
@@ -325,4 +333,40 @@ test('the new timing routes are refused without the cookie', async () => {
   for (const path of ['/api/runs?ticket=1', '/api/run/deadbeef', '/api/stats']) {
     expect((await fetch(`${base()}${path}`)).status).toBe(403);
   }
+});
+
+test('a gated run always reaches the board, however old it is', async () => {
+  // /api/state used to ask for the N most recent runs and nothing else, so a
+  // run parked at a gate that had since fallen out of that window vanished —
+  // the board rendered "nothing needs you" while a gate was actually blocking.
+  // The window is a nicety; never losing a gate is the contract.
+  const { ticketId } = seedRuns();
+  const uidOf = (out: string) => out.trim().split('=')[1];
+  const gated = uidOf(tr(['start', 'begin', '--ticket', String(ticketId)]).stdout);
+  tr(['emit', 'approve', 'awaiting', '--run', gated]);
+  // Bury it: make it the OLDEST run, then push it past any plausible window.
+  sql(
+    `UPDATE runs SET id = -1, started_at='2020-01-01T00:00:00Z' WHERE run_uid='${gated}';` +
+      `UPDATE events SET at='2020-01-01T00:05:00Z' WHERE run_uid='${gated}';`,
+  );
+
+  const s = (await (await fetch(`${base()}/api/state`, withCookie())).json()) as {
+    runs: (ApiRun & { last_phase: string; last_event_at: string })[];
+  };
+  const found = s.runs.find((r) => r.run_uid === gated);
+  expect(found).toBeDefined();
+  expect(found!.status).toBe('awaiting');
+  // And it carries what the waiting band renders.
+  expect(found!.last_phase).toBe('approve');
+  expect(found!.last_event_at).toBe('2020-01-01T00:05:00Z');
+
+  // No duplicates from merging the two reads.
+  expect(s.runs.filter((r) => r.run_uid === gated)).toHaveLength(1);
+});
+
+test('/api/stats rejects a days value too large to be an integer', async () => {
+  // Digits alone passed the guard, and the CLI then failed its `[ -gt ]` test
+  // without tripping set -e — answering over all time under a bogus label.
+  const r = await fetch(`${base()}/api/stats?days=99999999999999999999`, withCookie());
+  expect(r.status).toBe(400);
 });

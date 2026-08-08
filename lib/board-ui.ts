@@ -255,7 +255,8 @@ export function boardPage(): string {
   .run .rh{display:flex;align-items:baseline;gap:9px;flex-wrap:wrap;
     font-family:ui-monospace,Menlo,monospace;font-size:10.5px;letter-spacing:.13em;
     text-transform:uppercase;color:var(--ink-3);margin-bottom:9px}
-  .run .rh .tot{color:var(--ink);letter-spacing:.06em}
+  .run .rh .tot{color:var(--ink);letter-spacing:.06em;font-size:12px}
+  .run .rh .part{color:var(--ink-2);letter-spacing:.06em}
   .run .rh .you{color:var(--hi-text)}
   .run .rh .uid{color:var(--ink-4)}
   .bar{display:flex;height:13px;border:2px solid var(--ink-2);border-radius:7px;overflow:hidden;margin-bottom:10px;background:var(--paper)}
@@ -770,28 +771,40 @@ export function boardPage(): string {
   async function loadRuns(ticketId){
     const box = $('#runs');
     if (!box) return;
-    let runs = [];
+    let runs;
     try { runs = (await api('/api/runs?ticket=' + ticketId)).runs || []; }
-    catch { return; }   // no trace for this ticket yet is the common case, not an error
+    catch (e) {
+      // A ticket with no runs comes back as an empty list, not an error — so
+      // the only things reaching here are a broken store or a dead server.
+      // Swallowing them renders "never run" for "cannot read", which is the
+      // same lie the 503 on /api/state exists to prevent.
+      toast('could not read the trace: ' + esc(e.message), 5000);
+      return;
+    }
     if (!runs.length) return;
     box.innerHTML = runs.map((r) => runShell(r)).join('');
-    // Breakdowns are one request each, so they load after the shells rather
-    // than holding the whole section back.
-    for (const r of runs){
+    // Concurrently, not one after another: each of these spawns sqlite behind
+    // the server, and awaiting them in sequence made opening a ticket with
+    // several runs take as long as all of them put together.
+    await Promise.all(runs.map(async (r) => {
       try {
         const d = await api('/api/run/' + r.run_uid);
+        // The overlay may have been closed or reopened while this was in
+        // flight; writing into a detached node is harmless, missing one is not.
         const el = box.querySelector('[data-run="' + r.run_uid + '"] .bd');
         if (el) el.innerHTML = phaseBreakdown(d.phases || [], d.totals || {});
       } catch {}
-    }
+    }));
   }
 
   function runShell(r){
     const secs = runSecs(r);
     const live = !r.ended_at;
     const you = r.you_s || 0;
-    const split = live ? '' :
-      ' · agent <span class="tot">' + fmtDur(r.agent_s || 0) + '</span>' +
+    // Shown for a live run too. agent_s/you_s are already correct while a run
+    // is open (the terminal segment measures to now), and a run still sitting
+    // at a gate is exactly when you most want to see how much of it is yours.
+    const split = ' · agent <span class="part">' + fmtDur(r.agent_s || 0) + '</span>' +
       (you > 0 ? ' · you <span class="you">' + fmtDur(you) + '</span>' : '');
     return '<div class="run" data-run="' + esc(r.run_uid) + '">' +
       '<div class="rh"><span class="uid">' + esc(r.run_uid) + '</span>' +
@@ -825,6 +838,13 @@ export function boardPage(): string {
   }
 
   // ── pace ─────────────────────────────────────────────────────────────
+  // 0 means all time. A falsy-OR default turned that into a label claiming the
+  // last 30 days over the entire history — the one line whose whole job is to
+  // say what the medians cover.
+  function windowLabel(days){
+    const d = Number(days);
+    return Number.isFinite(d) && d > 0 ? 'last ' + d + ' days' : 'all time';
+  }
   async function openPace(){
     tapKey('p');
     $('#pacebody').innerHTML = '<h2>pace</h2><div class="m">reading the trace…</div>';
@@ -855,7 +875,7 @@ export function boardPage(): string {
     };
     const n = s.runs || 0;
     $('#pacebody').innerHTML = '<h2>pace</h2>' +
-      '<div class="m">' + n + ' completed run' + (n === 1 ? '' : 's') + ' · last ' + (s.window_days || 30) + ' days</div>' +
+      '<div class="m">' + n + ' completed run' + (n === 1 ? '' : 's') + ' · ' + windowLabel(s.window_days) + '</div>' +
       (n === 0
         ? '<div class="m">nothing finished yet — medians appear once runs complete</div>'
         : '<div class="grp"><div class="lbl">median by skill</div>' + rows(s.by_skill || [], 'skill') + '</div>' +

@@ -72,6 +72,16 @@ USAGE
 
 # die, require_num, current_slug and current_branch come from factory-db.sh.
 
+# require_num only proves a string is digits, which is not enough for values
+# that reach `[ -gt ]` or a SQL LIMIT: a 20-digit number is not an integer to
+# either. Bash's comparison fails with "integer expression expected" and — as
+# the left arm of an && list — does NOT trip set -e, so the window filter was
+# silently dropped and stats answered over all time under a bogus label.
+require_count() {
+  require_num "$1" "$2"
+  [ "${#1}" -le 9 ] || die "$2 is out of range: $1"
+}
+
 # ─── segments: where the time went ──────────────────────────────────────────
 #
 # Skills emit COMPLETION MARKS — `emit plan ok` runs *after* the plan is
@@ -111,12 +121,23 @@ USAGE
 #
 # Window functions need sqlite >= 3.25 (2018), already implied by the
 # `sqlite3 -json` that factory-db.sh depends on (3.33).
+#
+# Takes an OPTIONAL already-quoted run_uid. Pass it whenever the caller wants
+# one run: the window function blocks predicate pushdown, so without a scope
+# every read re-derives the segments of the entire history — `show` on a single
+# run was scanning every event in the database, three times over.
 segments_cte() {
-  cat <<'SQL'
+  local scope_e="" scope_r="" scope_m=""
+  if [ -n "$1" ]; then
+    scope_e="WHERE e.run_uid = $1"
+    scope_r="WHERE r.run_uid = $1"
+    scope_m="WHERE run_uid = $1"
+  fi
+  cat <<SQL
 WITH last_ev AS (
   SELECT e.run_uid, e.id, e.at, e.status, e.phase
   FROM events e
-  JOIN (SELECT run_uid, MAX(id) AS mid FROM events GROUP BY run_uid) m
+  JOIN (SELECT run_uid, MAX(id) AS mid FROM events $scope_m GROUP BY run_uid) m
     ON m.run_uid = e.run_uid AND m.mid = e.id
 ),
 raw_seg AS (
@@ -126,9 +147,14 @@ raw_seg AS (
          COALESCE(LAG(e.at) OVER w, r.started_at) AS open_at,
          LAG(e.status) OVER w                     AS open_status,
          LAG(e.phase)  OVER w                     AS open_phase,
-         e.at                                     AS close_at,
+         -- An event recorded AFTER the run was ended (every trace verb is
+         -- best-effort and \`end\` is its own step, so a late emit happens) would
+         -- otherwise push a segment past ended_at and make the parts sum to
+         -- more than the whole. Clamped, the segments still tile the run.
+         MIN(e.at, COALESCE(r.ended_at, e.at))    AS close_at,
          e.phase                                  AS close_phase
   FROM events e JOIN runs r ON r.run_uid = e.run_uid
+  $scope_e
   WINDOW w AS (PARTITION BY e.run_uid ORDER BY e.id)
   UNION ALL
   -- The terminal segment. Every run has one, so a run with no events at all
@@ -137,6 +163,7 @@ raw_seg AS (
          COALESCE(l.at, r.started_at), l.status, l.phase,
          COALESCE(r.ended_at, strftime('%Y-%m-%dT%H:%M:%SZ','now')), l.phase
   FROM runs r LEFT JOIN last_ev l ON l.run_uid = r.run_uid
+  $scope_r
 ),
 segs AS (
   SELECT run_uid, close_id, ord,
@@ -157,11 +184,19 @@ SQL
 }
 
 # Median without sqlite's median() — that builtin is too recent to lean on.
-# The portable form: rank each row within its group, then average the middle
-# one (odd n) or middle two (even n). AVG skips the NULLs the CASE produces,
-# so it averages exactly the rows the IN test selects.
+# The portable form: rank rows within their group, then average the middle one
+# (odd n) or middle two (even n). AVG skips the NULLs the CASE produces, so it
+# averages exactly the rows the IN test selects.
+#
+# Everything is ranked ONCE, by duration, and the agent/you figures are taken
+# from those same middle rows. Ranking each column separately would give three
+# medians of three different runs, and median(total) is not
+# median(agent) + median(you) — so the table would print three numbers that do
+# not reconcile, against the invariant this file states above. Sharing one
+# ranking keeps `agent + you = total` true of the reported figures too.
+MEDIAN_PICK='rn IN ((n+1)/2,(n+2)/2)'
 median_expr() {
-  printf 'CAST(ROUND(AVG(CASE WHEN %s IN ((n+1)/2,(n+2)/2) THEN %s END)) AS INTEGER)' "$1" "$2"
+  printf 'CAST(ROUND(AVG(CASE WHEN %s THEN %s END)) AS INTEGER)' "$MEDIAN_PICK" "$1"
 }
 
 # The run a bare `emit`/`end` applies to: the newest still-running run on this
@@ -289,8 +324,8 @@ cmd_list() {
       *) die "unknown flag: $1" ;;
     esac
   done
-  require_num "$limit" "--limit"
-  [ -n "$ticket" ] && require_num "$ticket" "--ticket"
+  require_count "$limit" "--limit"
+  [ -n "$ticket" ] && require_count "$ticket" "--ticket"
 
   if ! factory_db_exists; then
     [ "$json" -eq 1 ] && { echo '[]'; return 0; }
@@ -363,27 +398,32 @@ cmd_show() {
   # comes back merges into a single row rather than two — it is one phase of
   # the work, however many times the skill reported it.
   local q_uid; q_uid=$(sql_quote "$uid")
-  local phases_sql="$(segments_cte)
+  # Scoped to this run: without it every one of the queries below re-derives the
+  # segments of the whole database.
+  local cte; cte=$(segments_cte "$q_uid")
+  local phases_body="
+      FROM segs WHERE run_uid = $q_uid AND phase IS NOT NULL
+      GROUP BY phase ORDER BY MIN(ord)"
+  local phases_sql="$cte
       SELECT phase,
              SUM(CASE WHEN kind = 'agent' THEN secs ELSE 0 END) AS agent_s,
              SUM(CASE WHEN kind = 'you'   THEN secs ELSE 0 END) AS you_s,
              SUM(secs) AS total_s
-      FROM segs WHERE run_uid = $q_uid AND phase IS NOT NULL
-      GROUP BY phase ORDER BY MIN(ord)"
+      $phases_body"
 
   if [ "$json" -eq 1 ]; then
     local r e p t
     r=$(db_json_one "SELECT * FROM runs WHERE run_uid = $q_uid;")
     # Each event carries the segment it CLOSED: how long that step took, and
     # whether those seconds were the agent's or yours.
-    e=$(db_json "$(segments_cte)
+    e=$(db_json "$cte
                  SELECT e.id, e.phase, e.status, e.note, e.at,
                         COALESCE(s.secs, 0) AS elapsed_s,
                         COALESCE(s.kind, 'agent') AS kind
                  FROM events e LEFT JOIN segs s ON s.close_id = e.id
                  WHERE e.run_uid = $q_uid ORDER BY e.id;")
     p=$(db_json "$phases_sql;")
-    t=$(db_json_one "$(segments_cte)
+    t=$(db_json_one "$cte
                      SELECT COALESCE(duration_s,0) AS duration_s,
                             COALESCE(agent_s,0)    AS agent_s,
                             COALESCE(you_s,0)      AS you_s
@@ -399,23 +439,29 @@ cmd_show() {
              'ticket:  ' || coalesce('#' || ticket_id, '—') || char(10) ||
              'started: ' || started_at
       FROM runs WHERE run_uid = $q_uid;"
-  db "$(segments_cte)
-      SELECT 'took:    ' || duration_s || char(9) || agent_s || char(9) || you_s
+  db "$cte
+      SELECT duration_s || char(9) || agent_s || char(9) || you_s
       FROM run_tot WHERE run_uid = $q_uid;" \
     | awk -F'\t' "$(fmt_dur_awk)"'
-      { sub(/^took:    /, "", $1);
-        printf "took:    %s  (agent %s · you %s)\n", fmt_dur($1), fmt_dur($2), fmt_dur($3) }'
+      { printf "took:    %s  (agent %s · you %s)\n", fmt_dur($1), fmt_dur($2), fmt_dur($3) }'
   echo
   db "SELECT '  ' || at || '  ' || phase || '  ' || status || coalesce('  — ' || note, '')
       FROM events WHERE run_uid = $q_uid ORDER BY id;"
 
+  # char(9), never the default '|': a phase name is free text, and one
+  # containing a pipe would split into the wrong columns — reporting not just a
+  # truncated label but the wrong seconds against it.
   local breakdown
-  breakdown=$(db "$phases_sql;")
+  breakdown=$(db "$cte
+      SELECT phase || char(9) ||
+             SUM(CASE WHEN kind = 'you' THEN secs ELSE 0 END) || char(9) ||
+             SUM(secs)
+      $phases_body;")
   if [ -n "$breakdown" ]; then
     echo
     echo "where the time went"
-    printf '%s\n' "$breakdown" | awk -F'|' "$(fmt_dur_awk)"'
-      { d = fmt_dur($4); if ($3 > 0) d = d "  (you " fmt_dur($3) ")";
+    printf '%s\n' "$breakdown" | awk -F'\t' "$(fmt_dur_awk)"'
+      { d = fmt_dur($3); if ($2 > 0) d = d "  (you " fmt_dur($2) ")";
         printf "  %-14s %s\n", $1, d }'
   fi
 }
@@ -446,7 +492,7 @@ cmd_stats() {
       *) die "unknown flag: $1" ;;
     esac
   done
-  require_num "$days" "--days"
+  require_count "$days" "--days"
 
   if ! factory_db_exists; then
     [ "$json" -eq 1 ] && { printf '{"runs":0,"window_days":%s,"by_skill":[],"by_phase":[]}\n' "$days"; return 0; }
@@ -460,22 +506,25 @@ cmd_stats() {
   [ -n "$skill" ]   && scope="$scope AND r.skill = $(sql_quote "$skill")"
   [ -n "$project" ] && scope="$scope AND r.project_slug = $(sql_quote "$project")"
 
-  local by_skill_sql="$(segments_cte)
-    , scoped AS (SELECT r.skill, t.duration_s, t.agent_s, t.you_s
+  # The CTE chain and the final SELECT are kept apart so the plain-text read can
+  # append its own tab-joining SELECT to the same chain. `median_you_s` is the
+  # remainder rather than its own average, so the three printed figures add up
+  # exactly even after rounding.
+  local by_skill_cte="$(segments_cte)
+    , scoped AS (SELECT r.run_uid, r.skill, t.duration_s, t.agent_s, t.you_s
                  FROM runs r JOIN run_tot t ON t.run_uid = r.run_uid WHERE $scope),
       ranked AS (SELECT skill, duration_s, agent_s, you_s,
-                        ROW_NUMBER() OVER (PARTITION BY skill ORDER BY duration_s) rd,
-                        ROW_NUMBER() OVER (PARTITION BY skill ORDER BY agent_s)    ra,
-                        ROW_NUMBER() OVER (PARTITION BY skill ORDER BY you_s)      ry,
-                        COUNT(*)     OVER (PARTITION BY skill)                     n
-                 FROM scoped)
-    SELECT skill, MAX(n) AS runs,
-           $(median_expr rd duration_s) AS median_s,
-           $(median_expr ra agent_s)    AS median_agent_s,
-           $(median_expr ry you_s)      AS median_you_s
-    FROM ranked GROUP BY skill ORDER BY median_s DESC"
+                        ROW_NUMBER() OVER (PARTITION BY skill ORDER BY duration_s, run_uid) rn,
+                        COUNT(*)     OVER (PARTITION BY skill)                              n
+                 FROM scoped),
+      final AS (
+        SELECT skill AS grp, MAX(n) AS samples,
+               $(median_expr duration_s) AS median_s,
+               $(median_expr agent_s)    AS median_agent_s,
+               MAX(0, $(median_expr duration_s) - $(median_expr agent_s)) AS median_you_s
+        FROM ranked GROUP BY skill)"
 
-  local by_phase_sql="$(segments_cte)
+  local by_phase_cte="$(segments_cte)
     , per_run AS (SELECT s.run_uid, s.phase,
                          SUM(s.secs) AS total_s,
                          SUM(CASE WHEN s.kind = 'agent' THEN s.secs ELSE 0 END) AS agent_s,
@@ -484,16 +533,27 @@ cmd_stats() {
                   WHERE s.phase IS NOT NULL AND $scope
                   GROUP BY s.run_uid, s.phase),
       ranked AS (SELECT phase, total_s, agent_s, you_s,
-                        ROW_NUMBER() OVER (PARTITION BY phase ORDER BY total_s) rd,
-                        ROW_NUMBER() OVER (PARTITION BY phase ORDER BY agent_s) ra,
-                        ROW_NUMBER() OVER (PARTITION BY phase ORDER BY you_s)   ry,
-                        COUNT(*)     OVER (PARTITION BY phase)                  n
-                 FROM per_run)
-    SELECT phase, MAX(n) AS samples,
-           $(median_expr rd total_s) AS median_s,
-           $(median_expr ra agent_s) AS median_agent_s,
-           $(median_expr ry you_s)   AS median_you_s
-    FROM ranked GROUP BY phase ORDER BY median_s DESC"
+                        ROW_NUMBER() OVER (PARTITION BY phase ORDER BY total_s, run_uid) rn,
+                        COUNT(*)     OVER (PARTITION BY phase)                           n
+                 FROM per_run),
+      final AS (
+        SELECT phase AS grp, MAX(n) AS samples,
+               $(median_expr total_s) AS median_s,
+               $(median_expr agent_s) AS median_agent_s,
+               MAX(0, $(median_expr total_s) - $(median_expr agent_s)) AS median_you_s
+        FROM ranked GROUP BY phase)"
+
+  # `grp` is renamed back for the JSON contract; the two differ because a run is
+  # counted once per skill but a phase is sampled once per run.
+  local as_skill_json='SELECT grp AS skill, samples AS runs, median_s, median_agent_s, median_you_s
+                       FROM final ORDER BY median_s DESC'
+  local as_phase_json='SELECT grp AS phase, samples, median_s, median_agent_s, median_you_s
+                       FROM final ORDER BY median_s DESC'
+  # Tab-separated, never sqlite's default '|': skill and phase are free text and
+  # a pipe in either would shift every number one column left.
+  local as_text='SELECT grp || char(9) || samples || char(9) || median_s || char(9) ||
+                        median_agent_s || char(9) || median_you_s
+                 FROM final ORDER BY median_s DESC'
 
   local total
   total=$(db "$(segments_cte)
@@ -501,7 +561,9 @@ cmd_stats() {
 
   if [ "$json" -eq 1 ]; then
     printf '{"runs":%s,"window_days":%s,"by_skill":%s,"by_phase":%s}\n' \
-      "${total:-0}" "$days" "$(db_json "$by_skill_sql;")" "$(db_json "$by_phase_sql;")"
+      "${total:-0}" "$days" \
+      "$(db_json "$by_skill_cte $as_skill_json;")" \
+      "$(db_json "$by_phase_cte $as_phase_json;")"
     return 0
   fi
 
@@ -511,13 +573,12 @@ cmd_stats() {
   [ "$days" -gt 0 ] && window="last $days days"
   echo "$total completed run$([ "$total" = 1 ] || echo s) · $window"
   echo
+  local fmt='{ printf "  %-16s %-8s %-10s %s\n", $1 " (" $2 ")", fmt_dur($3), fmt_dur($4), fmt_dur($5) }'
   echo "by skill            median   agent      you"
-  db "$by_skill_sql;" | awk -F'|' "$(fmt_dur_awk)"'
-    { printf "  %-16s %-8s %-10s %s\n", $1 " (" $2 ")", fmt_dur($3), fmt_dur($4), fmt_dur($5) }'
+  db "$by_skill_cte $as_text;" | awk -F'\t' "$(fmt_dur_awk)$fmt"
   echo
   echo "by phase            median   agent      you"
-  db "$by_phase_sql;" | awk -F'|' "$(fmt_dur_awk)"'
-    { printf "  %-16s %-8s %-10s %s\n", $1 " (" $2 ")", fmt_dur($3), fmt_dur($4), fmt_dur($5) }'
+  db "$by_phase_cte $as_text;" | awk -F'\t' "$(fmt_dur_awk)$fmt"
 }
 
 # The cursor query. --after makes it a live tail; without it, full history.
