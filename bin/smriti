@@ -26,8 +26,9 @@ smriti — personal Claude Code skill stack
 
 Usage: smriti [command] [args...]
 
-Run with no arguments in a terminal to open the board — every project, every
-ticket, what is running, and what is waiting on you, in your browser.
+Run with no arguments in a terminal to open the board — every app, every
+project, every ticket, what is running, and what is waiting on you, in your
+browser.
 
 Commands:
   board               The front door: the factory board, served locally
