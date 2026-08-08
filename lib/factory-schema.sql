@@ -1,18 +1,71 @@
 -- smriti factory — the work layer's schema.
 --
--- Single source of truth. Applied idempotently by whichever helper touches
--- ~/.smriti/factory.db first; never edited in place by a migration tool. Every
--- statement must stay re-runnable (IF NOT EXISTS) because it is re-applied on
--- every db() call rather than tracked by version.
+-- Single source of truth for the CURRENT shape. Applied idempotently by
+-- whichever helper touches ~/.smriti/factory.db first. Every statement must
+-- stay re-runnable (IF NOT EXISTS) because it is re-applied on every db() call
+-- rather than tracked by version.
 --
--- Consumers: bin/smriti-ticket (tickets, documents), bin/smriti-trace (runs,
--- events). bin/smriti-factory reads through those helpers' --json output and
--- deliberately contains no SQL, so the schema never exists in two languages.
+-- This file only ever CREATES. Changing the shape of a table that already
+-- exists is beyond what an IF NOT EXISTS file can do, so that lives in
+-- _db_migrate() in lib/factory-db.sh — guarded, one-shot, and skipped entirely
+-- in steady state. The two work together: the migration brings an old database
+-- up to this shape, and this file fills in whatever is still missing.
+--
+-- Consumers: bin/smriti-repo (repositories), bin/smriti-project (projects),
+-- bin/smriti-ticket (tickets, documents), bin/smriti-trace (runs, events).
+-- bin/smriti-factory and bin/smriti-board read through those helpers' --json
+-- output and deliberately contain no SQL, so the schema never exists in two
+-- languages.
 
--- Work items. One row per thing you intend to do, in any project.
+-- ─── the entities ──────────────────────────────────────────────────────────
+--
+--   repository (an app) ──< project ──< ticket ──< document
+--                       └──────────────< ticket (loose, no project)
+--                                        ticket (an idea: no repo, no project)
+--
+-- Both edges are optional on purpose. A one-off bug belongs to an app but to no
+-- project; an idea belongs to neither and can be captured from anywhere.
+
+-- An app. Identity is the slug bin/smriti-slug derives from the git remote,
+-- so this table never invents one — it only hangs attributes off a slug that
+-- the rest of smriti already resolves from the repo you are standing in.
+CREATE TABLE IF NOT EXISTS repositories (
+  slug        TEXT PRIMARY KEY,
+  name        TEXT,
+  description TEXT,
+  created_at  TEXT NOT NULL,
+  updated_at  TEXT NOT NULL
+);
+
+-- A named body of work. Lives in one repository, or in none while it is still
+-- just an idea. Never spans two repositories: work that crosses apps is two
+-- projects, not one.
+--
+-- repo_slug carries NO foreign key, exactly like tickets.repo_slug — an app
+-- exists whether or not anyone has described it, so requiring a parent row
+-- would make `project add` fail in a repo you had simply never edited. It also
+-- keeps `repo forget` honest: that deletes the attributes row and deliberately
+-- keeps the work, which an ON DELETE SET NULL would have quietly undone by
+-- detaching every project from its app.
+CREATE TABLE IF NOT EXISTS projects (
+  id          INTEGER PRIMARY KEY,
+  repo_slug   TEXT,
+  slug        TEXT    NOT NULL,        -- handle for the CLI and #/p/<slug>
+  name        TEXT    NOT NULL,
+  description TEXT,
+  status      TEXT    NOT NULL DEFAULT 'active',   -- active | done | archived
+  created_at  TEXT    NOT NULL,
+  updated_at  TEXT    NOT NULL
+);
+
+-- Work items. One row per thing you intend to do, anywhere.
 CREATE TABLE IF NOT EXISTS tickets (
   id            INTEGER PRIMARY KEY,
-  project_slug  TEXT    NOT NULL,
+  -- NULL for an idea that has no app yet. Was called project_slug until
+  -- projects became a real entity; it always held a repository.
+  repo_slug     TEXT,
+  -- NULL for a one-off: a bug in the app that is not part of any project.
+  project_id    INTEGER REFERENCES projects(id) ON DELETE SET NULL,
   title         TEXT    NOT NULL,
   body          TEXT,
   -- idea -> ready -> in_progress -> in_review -> shipped
@@ -35,7 +88,8 @@ CREATE TABLE IF NOT EXISTS tickets (
 CREATE TABLE IF NOT EXISTS documents (
   id           INTEGER PRIMARY KEY,
   ticket_id    INTEGER REFERENCES tickets(id) ON DELETE SET NULL,
-  project_slug TEXT    NOT NULL,
+  repo_slug    TEXT,
+  project_id   INTEGER REFERENCES projects(id) ON DELETE SET NULL,
   type         TEXT    NOT NULL,        -- plan | debug | design | audit
   path         TEXT    NOT NULL UNIQUE, -- absolute path on disk
   branch       TEXT,
@@ -47,7 +101,8 @@ CREATE TABLE IF NOT EXISTS runs (
   id           INTEGER PRIMARY KEY,
   run_uid      TEXT    NOT NULL UNIQUE, -- referenced across processes
   ticket_id    INTEGER REFERENCES tickets(id) ON DELETE SET NULL,
-  project_slug TEXT    NOT NULL,
+  repo_slug    TEXT,
+  project_id   INTEGER REFERENCES projects(id) ON DELETE SET NULL,
   skill        TEXT    NOT NULL,        -- begin | debug | ship | clean
   branch       TEXT,
   status       TEXT    NOT NULL,        -- running | awaiting | done | failed
@@ -66,14 +121,23 @@ CREATE TABLE IF NOT EXISTS events (
   at      TEXT NOT NULL
 );
 
+-- A project's handle is unique within its app — two apps may both have a
+-- "cleanup" project. coalesce() rather than the bare column because SQLite
+-- treats NULLs as distinct, which would let repo-less ideas collide freely.
+CREATE UNIQUE INDEX IF NOT EXISTS projects_slug
+  ON projects (coalesce(repo_slug, ''), slug);
+CREATE INDEX IF NOT EXISTS projects_by_repo ON projects (repo_slug, status);
+
 -- A live branch belongs to at most one ticket. Partial, because the many
 -- not-yet-started tickets all have NULL branch and must not collide.
 CREATE UNIQUE INDEX IF NOT EXISTS tickets_active_branch
-  ON tickets (project_slug, branch) WHERE branch IS NOT NULL;
+  ON tickets (repo_slug, branch) WHERE branch IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS tickets_worktree
   ON tickets (worktree_path) WHERE worktree_path IS NOT NULL;
 
-CREATE INDEX IF NOT EXISTS tickets_by_project ON tickets (project_slug, status);
+CREATE INDEX IF NOT EXISTS tickets_by_repo ON tickets (repo_slug, status);
+CREATE INDEX IF NOT EXISTS tickets_by_project ON tickets (project_id);
 CREATE INDEX IF NOT EXISTS documents_by_ticket ON documents (ticket_id);
+CREATE INDEX IF NOT EXISTS documents_by_project ON documents (project_id);
 CREATE INDEX IF NOT EXISTS events_by_run ON events (run_uid, id);
 CREATE INDEX IF NOT EXISTS runs_by_status ON runs (status, id DESC);

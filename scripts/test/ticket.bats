@@ -13,9 +13,11 @@ setup() {
   FAKE_BIN="$WORK/fake-bin"
   REPO="$WORK/repo"
   mkdir -p "$FAKE_BIN" "$REPO"
-  ln -s "$ROOT/bin/smriti-ticket" "$FAKE_BIN/smriti-ticket"
-  ln -s "$ROOT/bin/smriti-slug"   "$FAKE_BIN/smriti-slug"
+  ln -s "$ROOT/bin/smriti-ticket"  "$FAKE_BIN/smriti-ticket"
+  ln -s "$ROOT/bin/smriti-project" "$FAKE_BIN/smriti-project"
+  ln -s "$ROOT/bin/smriti-slug"    "$FAKE_BIN/smriti-slug"
   CLI="$FAKE_BIN/smriti-ticket"
+  PROJECT="$FAKE_BIN/smriti-project"
 
   export SMRITI_HOME="$WORK/state"
   mkdir -p "$SMRITI_HOME"
@@ -58,21 +60,38 @@ teardown() {
   [[ "$output" == *"added: #2"* ]]
 }
 
-@test "add: outside a git repo requires --project" {
+@test "add: outside a git repo captures an idea rather than refusing" {
+  # This used to be a hard error, which made a stray thought impossible to
+  # capture at the moment you had it. A ticket with no app is now a real state.
   cd "$WORK"
   run "$CLI" add "orphan"
-  [ "$status" -eq 2 ]
-  [[ "$output" == *"--project"* ]]
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"no app yet"* ]]
 
-  run "$CLI" add "orphan" --project other-thing
+  run "$CLI" add "orphan two" --repo other-thing
   [ "$status" -eq 0 ]
   [[ "$output" == *"other-thing"* ]]
 }
 
-@test "add: rejects a project name that could escape the store" {
-  run "$CLI" add "x" --project "../evil"
+@test "add: an idea has a null app, and --repo - says so explicitly" {
+  cd "$WORK"
+  "$CLI" add "orphan" >/dev/null
+  run "$CLI" list --repo -
+  [[ "$output" == *"orphan"* ]]
+
+  # Inside a repo, --repo - still means "no app", not "derive one".
+  cd "$REPO"
+  "$CLI" add "deliberate idea" --repo - >/dev/null
+  run "$CLI" list --repo -
+  [[ "$output" == *"deliberate idea"* ]]
+  run "$CLI" list
+  ! [[ "$output" == *"deliberate idea"* ]]
+}
+
+@test "add: rejects an app name that could escape the store" {
+  run "$CLI" add "x" --repo "../evil"
   [ "$status" -eq 2 ]
-  [[ "$output" == *"invalid project"* ]]
+  [[ "$output" == *"invalid --repo"* ]]
 }
 
 @test "add: empty title is refused" {
@@ -130,9 +149,9 @@ line two"
   [[ "$output" == *"closed one"* ]]
 }
 
-@test "list: scopes to the current repo, --all crosses projects" {
+@test "list: scopes to the current repo, --all crosses apps" {
   "$CLI" add "mine"
-  "$CLI" add "theirs" --project other-project
+  "$CLI" add "theirs" --repo other-app
 
   run "$CLI" list
   [[ "$output" == *"mine"* ]]
@@ -161,7 +180,7 @@ line two"
   [ "$status" -eq 0 ]
   # No stray pragma output may precede the JSON, or jq fails here. That is the
   # regression this asserts: PRAGMA busy_timeout/journal_mode echo their values.
-  echo "$output" | jq -e '.[0] | .id and .title and .status and .project_slug'
+  echo "$output" | jq -e '.[0] | .id and .title and .status and .repo_slug'
   [ "$(echo "$output" | jq -r '.[0].title')" = "Export to CSV" ]
 }
 
@@ -337,14 +356,14 @@ line two"
 }
 
 @test "start: refuses to cut a worktree in an unrelated repo" {
-  # Falling back to the cwd unconditionally meant `start` for project A, run
-  # from repo B, silently created and recorded a worktree inside B.
+  # Falling back to the cwd unconditionally meant `start` for app A, run from
+  # repo B, silently created and recorded a worktree inside B.
   echo seed > f && git add f && git commit -q -m init
-  "$CLI" add "Dark mode" --project some-other-project >/dev/null
+  "$CLI" add "Dark mode" --repo some-other-app >/dev/null
 
   run "$CLI" start 1
   [ "$status" -eq 5 ]
-  [[ "$output" == *"don't know where project"* ]]
+  [[ "$output" == *"don't know where app"* ]]
   [ ! -d "$REPO/.claude/worktrees" ]
 }
 
@@ -522,4 +541,115 @@ two"
   [ "$status" -eq 2 ]
   run "$CLI" add "x" --priority 3
   [ "$status" -eq 0 ]
+}
+
+# ─── re-filing ──────────────────────────────────────────────────────────────
+# "Tickets explicitly attached to projects" is only true if a ticket filed in
+# the wrong place can be moved — in both directions, with its paper trail.
+
+tdb() { sqlite3 "$SMRITI_HOME/factory.db" "$1"; }
+
+# `worktree add` needs a commit to branch from.
+seed_commit() { echo seed > f && git add f && git commit -q -m init; }
+
+@test "edit --project: files a loose ticket into a project and infers its app" {
+  "$PROJECT" add "Search v2" >/dev/null
+  "$CLI" add "index it" >/dev/null
+
+  run "$CLI" edit 1 --project search-v2
+  [ "$status" -eq 0 ]
+  [ "$(tdb "SELECT project_id FROM tickets WHERE id=1;")" = "1" ]
+  [ "$(tdb "SELECT repo_slug FROM tickets WHERE id=1;")" = "test-demo" ]
+}
+
+@test "edit --project: the paper trail and run history follow the ticket" {
+  # documents and runs each carry their OWN copy of repo_slug/project_id, so a
+  # move that touched only the ticket row would strand them.
+  "$PROJECT" add "Search v2" >/dev/null
+  "$CLI" add "index it" >/dev/null
+  "$CLI" doc 1 --type plan --path "$WORK/a-plan-1.md" >/dev/null
+
+  "$CLI" edit 1 --project search-v2 >/dev/null
+  [ "$(tdb "SELECT project_id FROM documents WHERE id=1;")" = "1" ]
+}
+
+@test "edit --no-project: takes it back out, leaving it loose in the app" {
+  "$PROJECT" add "Search v2" >/dev/null
+  "$CLI" add "index it" --project search-v2 >/dev/null
+  "$CLI" doc 1 --type plan --path "$WORK/a-plan-1.md" >/dev/null
+
+  run "$CLI" edit 1 --no-project
+  [ "$status" -eq 0 ]
+  [ "$(tdb "SELECT coalesce(project_id,'NULL') FROM tickets WHERE id=1;")" = "NULL" ]
+  [ "$(tdb "SELECT coalesce(project_id,'NULL') FROM documents WHERE id=1;")" = "NULL" ]
+  # It stays in the app; only the grouping was removed.
+  [ "$(tdb "SELECT repo_slug FROM tickets WHERE id=1;")" = "test-demo" ]
+}
+
+@test "edit: --project and --no-project together is a usage error" {
+  "$PROJECT" add "Search v2" >/dev/null
+  "$CLI" add "index it" >/dev/null
+  run "$CLI" edit 1 --project search-v2 --no-project
+  [ "$status" -eq 2 ]
+}
+
+@test "edit --repo: moves an idea into an app" {
+  cd "$WORK"
+  "$CLI" add "someday" >/dev/null
+  [ "$(tdb "SELECT coalesce(repo_slug,'NULL') FROM tickets WHERE id=1;")" = "NULL" ]
+
+  run "$CLI" edit 1 --repo test-demo
+  [ "$status" -eq 0 ]
+  [ "$(tdb "SELECT repo_slug FROM tickets WHERE id=1;")" = "test-demo" ]
+}
+
+@test "edit --repo: refuses to move a started ticket, naming the branch" {
+  seed_commit
+  # Its worktree was cut in the OLD app's repo. `start` would reattach that
+  # tree under the new slug and silently work in the wrong codebase.
+  "$CLI" add "index it" >/dev/null
+  "$CLI" start 1 >/dev/null
+
+  run "$CLI" edit 1 --repo other-app
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"t1-index-it"* ]]
+  [[ "$output" == *"started"* ]]
+  [ "$(tdb "SELECT repo_slug FROM tickets WHERE id=1;")" = "test-demo" ]
+}
+
+@test "edit --project: a started ticket can still be grouped within its own app" {
+  seed_commit
+  # Only the APP is immovable while a worktree exists; filing it under a
+  # project in the same app moves no code.
+  "$PROJECT" add "Search v2" >/dev/null
+  "$CLI" add "index it" >/dev/null
+  "$CLI" start 1 >/dev/null
+
+  run "$CLI" edit 1 --project search-v2
+  [ "$status" -eq 0 ]
+  [ "$(tdb "SELECT project_id FROM tickets WHERE id=1;")" = "1" ]
+}
+
+@test "start: an idea with no app says what to do instead of failing obscurely" {
+  cd "$WORK"
+  "$CLI" add "someday" >/dev/null
+  run "$CLI" start 1
+  [ "$status" -eq 5 ]
+  [[ "$output" == *"no app yet"* ]]
+}
+
+@test "current: reports the project a ticket belongs to" {
+  seed_commit
+  "$PROJECT" add "Search v2" >/dev/null
+  "$CLI" add "index it" --project search-v2 >/dev/null
+  "$CLI" start 1 >/dev/null
+
+  cd "$(tdb "SELECT worktree_path FROM tickets WHERE id=1;")"
+  run "$CLI" current
+  [ "$status" -eq 0 ]
+  # The preamble sources this, so assert on what an eval yields rather than on
+  # the wire format: %q escapes the space in a project name.
+  eval "$output"
+  [ "$TICKET" = "1" ]
+  [ "$TICKET_PROJECT" = "Search v2" ]
 }

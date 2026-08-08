@@ -35,8 +35,12 @@ _smriti() {
   if (( CURRENT == 3 )); then
     case "$subcmd" in
       project)
-        local -a project_cmds=(new list current forget rename)
+        local -a project_cmds=(add list show edit done rm)
         _describe 'project subcommand' project_cmds
+        ;;
+      repo)
+        local -a repo_cmds=(new list show edit current forget rename)
+        _describe 'repo subcommand' repo_cmds
         ;;
       board)
         local -a board_cmds=(open stop --url)

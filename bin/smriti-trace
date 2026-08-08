@@ -72,7 +72,7 @@ implicit_run() {
   slug=$(current_slug); branch=$(current_branch)
   [ -n "$slug" ] || return 0
   db "SELECT run_uid FROM runs
-      WHERE project_slug = $(sql_quote "$slug")
+      WHERE repo_slug = $(sql_quote "$slug")
         AND branch IS $(sql_quote_or_null "$branch")
         AND status IN ('running','awaiting')
       ORDER BY id DESC LIMIT 1;"
@@ -108,8 +108,19 @@ cmd_start() {
   # will not collide.
   uid=$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')
 
-  db_write "INSERT INTO runs (run_uid, ticket_id, project_slug, skill, branch, status, started_at)
+  # A run inherits the ticket's filing: same app, same project. Without this a
+  # run started inside a worktree would be filed by cwd alone and drift from the
+  # ticket it is tracing.
+  local project_sql="NULL"
+  if [ -n "$ticket" ]; then
+    project_sql=$(db "SELECT coalesce(project_id,'NULL') FROM tickets WHERE id = $ticket;")
+    local t_repo; t_repo=$(db "SELECT coalesce(repo_slug,'') FROM tickets WHERE id = $ticket;")
+    [ -n "$t_repo" ] && slug="$t_repo"
+  fi
+
+  db_write "INSERT INTO runs (run_uid, ticket_id, repo_slug, project_id, skill, branch, status, started_at)
             VALUES ($(sql_quote "$uid"), $(sql_quote_or_null "$ticket"), $(sql_quote "$slug"),
+                    ${project_sql:-NULL},
                     $(sql_quote "$skill"), $(sql_quote_or_null "$branch"), 'running',
                     $(sql_quote "$(now_utc)"));"
   printf 'RUN_UID=%s\n' "$uid"
@@ -197,7 +208,7 @@ cmd_list() {
   [ "$active" -eq 1 ] && where="$where AND status IN ('running','awaiting')"
 
   if [ "$json" -eq 1 ]; then
-    db_json "SELECT run_uid, ticket_id, project_slug, skill, branch, status, started_at, ended_at,
+    db_json "SELECT run_uid, ticket_id, repo_slug, project_id, skill, branch, status, started_at, ended_at,
                     (SELECT phase FROM events e WHERE e.run_uid = runs.run_uid
                      ORDER BY e.id DESC LIMIT 1) AS last_phase
              FROM runs $where ORDER BY id DESC LIMIT 100;"
@@ -206,7 +217,7 @@ cmd_list() {
 
   local rows
   rows=$(db "SELECT run_uid || char(9) || status || char(9) || skill || char(9) ||
-                    project_slug || char(9) || coalesce(branch,'—')
+                    coalesce(repo_slug,'—') || char(9) || coalesce(branch,'—')
              FROM runs $where ORDER BY id DESC LIMIT 100;")
   if [ -z "$rows" ]; then echo "no runs recorded yet"; return 0; fi
   printf '%s\n' "$rows" | awk -F'\t' '{ printf "%-10s %-10s %-8s %-20s %s\n", $1, $2, $3, $4, $5 }'
@@ -234,7 +245,7 @@ cmd_show() {
   fi
 
   db "SELECT run_uid || '  ' || skill || '  (' || status || ')' || char(10) ||
-             'project: ' || project_slug || char(10) ||
+             'app:     ' || coalesce(repo_slug,'—') || char(10) ||
              'branch:  ' || coalesce(branch,'—') || char(10) ||
              'ticket:  ' || coalesce('#' || ticket_id, '—') || char(10) ||
              'started: ' || started_at
