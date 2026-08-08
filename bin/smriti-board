@@ -94,16 +94,75 @@ function openInBrowser(url: string): void {
 // defensive — any failure lands on the printed command, which always works.
 // The board never fails a start because the backend did.
 
-type Launch = { method: 'herdr' | 'manual'; attach: string };
+type Launch = { method: 'herdr' | 'manual'; attach: string; existing?: boolean; agentStatus?: string };
+
+// Is there already a herdr agent for this ticket? Without this check, starting
+// an already-in-progress ticket tried to spawn a SECOND agent under the same
+// name — the launch failed and the board fell back to a paste command, telling
+// you to run claude by hand for a session that was already open.
+type Session = { name: string; status: string; cwd: string };
+
+// Every herdr agent, so the board can show what a session is actually doing.
+// This is the only source that knows a Claude session is blocked on input —
+// smriti's trace only sees /begin's own gates.
+function herdrSessions(): Session[] {
+  if (!Bun.which('herdr')) return [];
+  const r = sh('herdr', ['agent', 'list'], 8000);
+  if (!r.ok) return [];
+  try {
+    return (JSON.parse(r.out)?.result?.agents ?? [])
+      .filter((a: { name?: string }) => a?.name)
+      .map((a: { name: string; agent_status?: string; cwd?: string }) => ({
+        name: a.name,
+        status: a.agent_status ?? 'unknown',
+        cwd: a.cwd ?? '',
+      }));
+  } catch { return []; }
+}
+
+function existingAgent(name: string): { found: boolean; status?: string } {
+  if (!Bun.which('herdr')) return { found: false };
+  const r = sh('herdr', ['agent', 'list'], 8000);
+  if (!r.ok) return { found: false };
+  try {
+    const agents = JSON.parse(r.out)?.result?.agents ?? [];
+    const hit = agents.find((a: { name?: string }) => a?.name === name);
+    if (hit) return { found: true, status: hit.agent_status ?? hit.status ?? undefined };
+  } catch {}
+  return { found: false };
+}
+
+// `ask` (default) runs claude normally, so it stops for permission the way it
+// would if you launched it yourself. `bypass` passes
+// --dangerously-skip-permissions, which is what you want for work you intend to
+// leave running — and is a genuine loosening, so it is opt-in and never assumed:
+//   smriti config set board_permissions bypass
+function permissionMode(): 'ask' | 'bypass' {
+  const r = sh(join(SMRITI_BIN, 'smriti-config'), ['get', 'board_permissions'], 5000);
+  return r.out.trim() === 'bypass' ? 'bypass' : 'ask';
+}
 
 function launchSession(dir: string, ticketId: number): Launch {
   const prompt = `/begin ticket:${ticketId}`;
   const name = `t${ticketId}`;
+  const claudeArgs = permissionMode() === 'bypass'
+    ? ['claude', '--dangerously-skip-permissions', prompt]
+    : ['claude', prompt];
+
+  // Already running (or already run) — hand back the way in rather than
+  // starting a duplicate.
+  const prior = existingAgent(name);
+  if (prior.found) {
+    return { method: 'herdr', attach: `herdr agent attach ${name}`, existing: true, agentStatus: prior.status };
+  }
   // Single-quoted with any ' doubled: repo paths with spaces are a supported
   // case elsewhere in this repo, and an unquoted cd silently lands you in the
   // wrong directory rather than failing loudly.
   const q = (v: string) => `'${v.replace(/'/g, `'\\''`)}'`;
-  const manual = { method: 'manual' as const, attach: `cd ${q(dir)} && claude ${q(prompt)}` };
+  const manual = {
+    method: 'manual' as const,
+    attach: `cd ${q(dir)} && ${claudeArgs.map(q).join(' ')}`,
+  };
 
   if (Bun.which('herdr')) {
     try {
@@ -127,7 +186,7 @@ function launchSession(dir: string, ticketId: number): Launch {
         // rejects it as agent_pane_busy. Retry briefly rather than giving up —
         // in testing this succeeded on the second attempt, a second later.
         for (let i = 0; i < 8; i++) {
-          const st = sh('herdr', ['agent', 'start', name, '--kind', 'claude', '--pane', pane, '--', 'claude', prompt], 45000);
+          const st = sh('herdr', ['agent', 'start', name, '--kind', 'claude', '--pane', pane, '--', ...claudeArgs], 45000);
           if (st.ok && !/"error"/.test(st.out)) {
             return { method: 'herdr', attach: `herdr agent attach ${name}` };
           }
@@ -218,7 +277,7 @@ async function cmdServer(): Promise<never> {
         if (tickets === null) {
           return json({ error: 'could not read the ticket store' }, 503);
         }
-        return json({ tickets, runs: runs ?? [], documents: documents ?? [] });
+        return json({ tickets, runs: runs ?? [], documents: documents ?? [], sessions: herdrSessions() });
       }
 
       if (url.pathname.startsWith('/api/doc/') && req.method === 'GET') {
@@ -256,6 +315,25 @@ async function cmdServer(): Promise<never> {
         const id = Number(start[1]);
         const r = sh(TICKET, ['start', String(id)], 30000);
         if (!r.ok) return json({ error: r.errOut || 'could not start' }, 500);
+        const dir = r.out.split('\n')[0].trim();
+        const launch = launchSession(dir, id);
+        broadcast();
+        return json({ path: dir, ...launch });
+      }
+
+      // Explicitly restart a finished session: tear the old agent down first,
+      // because herdr will not reuse the name while it exists.
+      const restart = url.pathname.match(/^\/api\/tickets\/(\d+)\/restart$/);
+      if (restart && req.method === 'POST') {
+        touch();
+        const id = Number(restart[1]);
+        // herdr 0.8 has no `agent stop`; the verbs are list/get/read/send-keys/
+        // prompt/rename/focus/wait/attach. Renaming the old agent frees the
+        // name and keeps its pane around, which is what you want — the point of
+        // a restart is a fresh session, not destroying the previous transcript.
+        if (Bun.which('herdr')) sh('herdr', ['agent', 'rename', `t${id}`, `t${id}-prev`], 10000);
+        const r = sh(TICKET, ['start', String(id)], 30000);
+        if (!r.ok) return json({ error: r.errOut || 'could not restart' }, 500);
         const dir = r.out.split('\n')[0].trim();
         const launch = launchSession(dir, id);
         broadcast();

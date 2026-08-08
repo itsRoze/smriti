@@ -332,7 +332,7 @@ export function boardPage(): string {
   const $ = (s) => document.querySelector(s);
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
-  let S = { tickets: [], runs: [], documents: [] };
+  let S = { tickets: [], runs: [], documents: [], sessions: [] };
   let sel = -1;            // index into flat selectable list
   let flat = [];           // [{id, kind}] in DOM order
   let detailId = null;
@@ -357,6 +357,10 @@ export function boardPage(): string {
   const HUES = ['#2E5C43','#3F7355','#E2703A','#58906B','#8A6FB5','#4C7FA8'];
 
   function runFor(t){ return S.runs.find((r) => r.ticket_id === t.id); }
+  // The live agent for a ticket, if herdr has one. 'blocked' means the session
+  // is sitting at a prompt waiting for you — a permission request, a question,
+  // a gate. Nothing else in smriti can see that.
+  function sessionFor(t){ return (S.sessions || []).find((x) => x.name === 't' + t.id); }
   function docsFor(t){ return S.documents.filter((d) => d.ticket_id === t.id); }
 
   function toast(msg, ms=2600){
@@ -371,17 +375,26 @@ export function boardPage(): string {
   function render(){
     const open = S.tickets.filter((t) => t.status !== 'shipped' && t.status !== 'cancelled');
     const waiting = S.runs.filter((r) => r.status === 'awaiting');
+    // A session stalled at a prompt belongs in "waiting on you" just as much as
+    // a /begin gate does — it is the same fact, reported by herdr instead.
+    const blocked = S.tickets.filter((t) => (sessionFor(t) || {}).status === 'blocked');
     const running = S.runs.filter((r) => r.status === 'running');
     const day = new Date().toLocaleDateString(undefined,{weekday:'long'});
     $('#eye').innerHTML = esc(day) + ' · <b>' + open.length + '</b> open' +
       (running.length ? ' · <b>' + running.length + '</b> running' : '') +
-      (waiting.length ? ' · <b>' + waiting.length + '</b> waiting' : '');
+      ((waiting.length + blocked.length) ? ' · <b>' + (waiting.length + blocked.length) + '</b> waiting' : '');
 
     // waiting band
     let w = '<div class="lab">waiting on you</div><div class="box wait">';
-    if (!waiting.length){
+    for (const t of blocked){
+      w += '<div class="item" data-tid="' + t.id + '">' +
+        '<div><span class="h">' + esc(t.title) + '</span></div>' +
+        '<div class="sub">' + esc(t.project_slug) + ' · #' + t.id +
+        ' · <b>session is asking for something</b></div></div>';
+    }
+    if (!waiting.length && !blocked.length){
       w += '<div class="empty">nothing needs you — the forest is quiet ✌︎</div>';
-    } else {
+    } else if (waiting.length) {
       for (const r of waiting){
         const t = S.tickets.find((x) => x.id === r.ticket_id);
         const title = t ? t.title : (r.skill + ' on ' + (r.branch || '?'));
@@ -401,6 +414,7 @@ export function boardPage(): string {
       byProj.get(t.project_slug).push(t);
     }
     flat = [];
+    for (const t of blocked) flat.push({ id: t.id, kind: 'wait' });
     for (const r of waiting) if (r.ticket_id) flat.push({ id: r.ticket_id, kind: 'wait' });
 
     let html = '';
@@ -428,8 +442,10 @@ export function boardPage(): string {
       for (const t of items){
         const run = runFor(t);
         const stateCls = run && run.status === 'running' ? 'live' : (CLS[t.status] || '');
-        const st = run && run.status === 'running'
-          ? esc((run.last_phase || 'working') + ' · running')
+        const sess = sessionFor(t);
+        const st = sess && sess.status === 'blocked' ? 'asking you'
+          : sess && sess.status === 'working' ? 'working'
+          : run && run.status === 'running' ? esc((run.last_phase || 'working') + ' · running')
           : esc(STATUS[t.status] || t.status);
         html += '<div class="box card ' + stateCls + '" data-tid="' + t.id + '" style="animation-delay:' + (cardIdx++ * 45) + 'ms">' +
           (t.status === 'shipped' ? '<span class="tick">✓</span>' : '') +
@@ -484,7 +500,9 @@ export function boardPage(): string {
   async function startTicket(t){
     if (!t) return;
     tapKey('s');
-    toast('cutting a worktree for <b>#' + t.id + '</b>…', 8000);
+    const live = t.status === 'in_progress' && t.worktree_path;
+    toast(live ? 'finding the session for <b>#' + t.id + '</b>…'
+               : 'cutting a worktree for <b>#' + t.id + '</b>…', 8000);
     try {
       const res = await api('/api/tickets/' + t.id + '/start', { method: 'POST', body: '{}' });
       openDetail(t.id, res);
@@ -529,7 +547,12 @@ export function boardPage(): string {
       (t.body ? esc(t.body) : '<span class="ghost">add a description…</span>') + '</div>';
     h += '<textarea class="descedit" id="descedit" placeholder="what this actually is, and why">' + esc(t.body || '') + '</textarea>';
     h += '<div class="acts">';
-    if (t.status !== 'shipped' && t.status !== 'cancelled') h += '<button class="btn go" data-act="start">start ⏎</button>';
+    // "start" on something already building is a lie — and it used to try to
+    // spawn a second session under the same name.
+    const live = t.status === 'in_progress' && t.worktree_path;
+    if (t.status !== 'shipped' && t.status !== 'cancelled')
+      h += '<button class="btn go" data-act="start">' + (live ? 'attach ⏎' : 'start ⏎') + '</button>';
+    if (live) h += '<button class="btn" data-act="restart">restart session</button>';
     if (t.status !== 'shipped' && t.status !== 'cancelled') h += '<button class="btn" data-act="done">mark done</button>';
     if (t.status !== 'cancelled') h += '<button class="btn" data-act="cancel">cancel</button>';
     else h += '<button class="btn" data-act="revive">bring it back</button>';
@@ -573,6 +596,13 @@ export function boardPage(): string {
           if (ev.key === 'Enter' && (ev.metaKey || ev.ctrlKey)) ta.blur();
         };
       }
+      if (act === 'restart'){
+        toast('restarting the session for <b>#' + t.id + '</b>…', 8000);
+        try {
+          const res = await api('/api/tickets/' + t.id + '/restart', { method: 'POST', body: '{}' });
+          openDetail(t.id, res); refresh();
+        } catch (e) { toast('could not restart: ' + esc(e.message)); }
+      }
       if (act === 'cancel'){
         try { await api('/api/tickets/' + t.id + '/cancel', { method: 'POST', body: '{}' });
               toast('#' + t.id + ' cancelled — still there under all'); closeAll(); refresh(); }
@@ -604,8 +634,19 @@ export function boardPage(): string {
   function showAttach(res){
     const a = $('#attach'); if (!a) return;
     a.classList.add('on');
+    // Distinguish "I just started this" from "this was already open" —
+    // reporting a start that did not happen is the thing that confused the
+    // board into offering start on work already in progress.
+    // herdr reports what the agent is actually doing, so say that rather than
+    // implying we just started something.
+    const st = res.agentStatus;
+    const existingNote =
+      st === 'blocked' ? 'that session is waiting on you — jump to it with:'
+      : st === 'working' ? 'that session is working — jump to it with:'
+      : st === 'done' ? 'that session finished — attach to see it, or restart:'
+      : 'session is already open — jump to it with:';
     const notes = {
-      herdr: 'session started under herdr — jump to it with:',
+      herdr: res.existing ? existingNote : 'session started under herdr — jump to it with:',
       manual: 'worktree is ready — run this in a terminal:',
     };
     a.innerHTML = '<div class="note">' + esc(notes[res.method] || 'ready:') + '</div>' +
