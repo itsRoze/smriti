@@ -212,15 +212,14 @@ appears in "waiting on you" alongside `/begin`'s own gates. That matters because
 a session stopped at a permission prompt is invisible to smriti's trace, which
 only sees gates it created.
 
-Sessions run with normal permissions by default, so claude stops and asks the
-way it would if you launched it yourself. For work you intend to leave running:
+Sessions start with `--dangerously-skip-permissions`, because the point of
+starting work from the board is being able to walk away from it — a session that
+stops to ask is a session sitting idle until you happen to look. To make claude
+ask the way it would if you launched it by hand:
 
 ```bash
-smriti config set board_permissions bypass
+smriti config set board_permissions ask
 ```
-
-That passes `--dangerously-skip-permissions`. It is a real loosening, so it is
-opt-in and never assumed.
 
 `/begin`, `/debug`, `/ship` and `/clean` pick the ticket up from the branch, so
 status tracking costs nothing: `/ship` moves it to in review and records the
