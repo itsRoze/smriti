@@ -51,7 +51,7 @@ _smriti() {
         _describe 'ticket subcommand' ticket_cmds
         ;;
       trace)
-        local -a trace_cmds=(start emit end list show tail)
+        local -a trace_cmds=(start emit end list show tail stats)
         _describe 'trace subcommand' trace_cmds
         ;;
       browse)

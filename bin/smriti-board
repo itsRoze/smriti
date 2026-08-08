@@ -78,6 +78,13 @@ function readJsonCmd<T>(args: string[], from = TICKET): T[] | null {
   if (!r.ok) return null;
   try { return JSON.parse(r.out || '[]') as T[]; } catch { return null; }
 }
+// Same contract, for the verbs that answer with an object rather than a list
+// (`trace show --json`, `trace stats --json`).
+function readJsonObj<T>(args: string[], from = TICKET): T | null {
+  const r = sh(from, args);
+  if (!r.ok) return null;
+  try { return JSON.parse(r.out || 'null') as T; } catch { return null; }
+}
 function openInBrowser(url: string): void {
   const opener = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open';
   spawnSync(opener, [url], { stdio: 'ignore' });
@@ -336,12 +343,49 @@ async function cmdServer(): Promise<never> {
       if (url.pathname === '/api/state' && req.method === 'GET') {
         touch();
         const tickets = readJsonCmd(['list', '--all', '--json']);
-        const runs = readJsonCmd(['list', '--active', '--json'], TRACE);
+        // All runs, not just active ones: a card can only show "took 18m" if
+        // the finished run is in the payload. The window is recency-bounded on
+        // purpose — this list draws cards and the waiting band, where only the
+        // newest run per ticket matters. The detail overlay asks per-ticket.
+        const runs = readJsonCmd(['list', '--limit', '200', '--json'], TRACE);
         const documents = readJsonCmd(['docs', '--json']);
         if (tickets === null) {
           return json({ error: 'could not read the ticket store' }, 503);
         }
         return json({ tickets, runs: runs ?? [], documents: documents ?? [], sessions: herdrSessions() });
+      }
+
+      // Every run for one ticket, however old. The overlay lists them all, so
+      // it must not depend on the run still being inside /api/state's window.
+      if (url.pathname === '/api/runs' && req.method === 'GET') {
+        touch();
+        const id = url.searchParams.get('ticket') || '';
+        if (!/^\d+$/.test(id)) return json({ error: 'bad ticket' }, 400);
+        const runs = readJsonCmd(['list', '--ticket', id, '--json'], TRACE);
+        if (runs === null) return json({ error: 'could not read the trace' }, 503);
+        return json({ runs });
+      }
+
+      // One run's phase breakdown. The uid comes from the client, so it is
+      // validated against the shape `trace start` mints before it reaches the
+      // CLI — the same discipline as the numeric guard on /api/doc/:id.
+      const runDetail = url.pathname.match(/^\/api\/run\/(.+)$/);
+      if (runDetail && req.method === 'GET') {
+        touch();
+        const uid = runDetail[1];
+        if (!/^[0-9a-f]{8}$/.test(uid)) return json({ error: 'bad run id' }, 400);
+        const detail = readJsonObj(['show', uid, '--json'], TRACE);
+        if (detail === null) return json({ error: 'no such run' }, 404);
+        return json(detail);
+      }
+
+      if (url.pathname === '/api/stats' && req.method === 'GET') {
+        touch();
+        const days = url.searchParams.get('days') || '30';
+        if (!/^\d+$/.test(days)) return json({ error: 'bad days' }, 400);
+        const stats = readJsonObj(['stats', '--days', days, '--json'], TRACE);
+        if (stats === null) return json({ error: 'could not read the trace' }, 503);
+        return json(stats);
       }
 
       if (url.pathname.startsWith('/api/doc/') && req.method === 'GET') {

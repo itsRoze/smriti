@@ -209,3 +209,120 @@ test('a second start attaches instead of spawning a duplicate session', async ()
   });
   expect(a.status).toBe(b.status);
 });
+
+// ─── durations ────────────────────────────────────────────────────────────
+// The board renders elapsed, totals and a phase breakdown, so the routes that
+// carry those numbers are as load-bearing as the ones that carry tickets.
+
+const TRACE = join(REPO_ROOT, 'bin', 'smriti-trace');
+const tr = (args: string[]) =>
+  spawnSync(TRACE, args, { encoding: 'utf8', env: { ...process.env, SMRITI_HOME: HOME_DIR } });
+const sql = (q: string) =>
+  spawnSync('sqlite3', [join(HOME_DIR, 'factory.db'), q], { encoding: 'utf8' });
+
+type ApiRun = { run_uid: string; status: string; duration_s: number; agent_s: number; you_s: number };
+
+// A ticket with a finished, gated run and a second run still going. Timestamps
+// are stamped after the fact so the assertions are exact.
+function seedRuns(): { ticketId: number; doneUid: string; openUid: string } {
+  const tk = (args: string[]) =>
+    spawnSync(TICKET, args, { encoding: 'utf8', env: { ...process.env, SMRITI_HOME: HOME_DIR } });
+  tk(['add', 'timed work', '--project', 'demo']);
+  const list = JSON.parse(tk(['list', '--all', '--json']).stdout) as { id: number; title: string }[];
+  const ticketId = list.find((t) => t.title === 'timed work')!.id;
+
+  const uidOf = (out: string) => out.trim().split('=')[1];
+  const doneUid = uidOf(tr(['start', 'begin', '--ticket', String(ticketId)]).stdout);
+  tr(['emit', 'plan', 'ok', '--run', doneUid]);
+  tr(['emit', 'approve', 'awaiting', '--run', doneUid]);
+  tr(['emit', 'implement', 'ok', '--run', doneUid]);
+  tr(['end', '--run', doneUid]);
+  sql(
+    `UPDATE runs SET started_at='2026-08-08T10:00:00Z', ended_at='2026-08-08T10:20:00Z' WHERE run_uid='${doneUid}';` +
+      `UPDATE events SET at='2026-08-08T10:04:00Z' WHERE run_uid='${doneUid}' AND phase='plan';` +
+      `UPDATE events SET at='2026-08-08T10:06:00Z' WHERE run_uid='${doneUid}' AND phase='approve';` +
+      `UPDATE events SET at='2026-08-08T10:16:00Z' WHERE run_uid='${doneUid}' AND phase='implement';`,
+  );
+
+  const openUid = uidOf(tr(['start', 'begin', '--ticket', String(ticketId)]).stdout);
+  sql(`UPDATE runs SET started_at='2026-08-08T11:00:00Z' WHERE run_uid='${openUid}';`);
+  return { ticketId, doneUid, openUid };
+}
+
+test('/api/state carries finished runs with their durations, not just active ones', async () => {
+  // The board asked for --active only, so a finished run was simply absent —
+  // and a card can't say "took 20m" about a run it never receives.
+  const { doneUid, openUid } = seedRuns();
+  const s = (await (await fetch(`${base()}/api/state`, withCookie())).json()) as { runs: ApiRun[] };
+
+  const done = s.runs.find((r) => r.run_uid === doneUid)!;
+  expect(done).toBeDefined();
+  expect(done.status).toBe('done');
+  expect(done.duration_s).toBe(1200);
+  expect(done.you_s).toBe(600); // 10:06 -> 10:16, the gate
+  expect(done.agent_s).toBe(600);
+  expect(done.agent_s + done.you_s).toBe(done.duration_s);
+
+  // The open one is still there, and its duration is measured to now.
+  const open = s.runs.find((r) => r.run_uid === openUid)!;
+  expect(open.status).toBe('running');
+  expect(open.duration_s).toBeGreaterThan(0);
+});
+
+test('/api/runs returns every run for a ticket', async () => {
+  const { ticketId, doneUid, openUid } = seedRuns();
+  const r = await fetch(`${base()}/api/runs?ticket=${ticketId}`, withCookie());
+  expect(r.status).toBe(200);
+  const uids = ((await r.json()) as { runs: ApiRun[] }).runs.map((x) => x.run_uid);
+  expect(uids).toContain(doneUid);
+  expect(uids).toContain(openUid);
+});
+
+test('/api/run/:uid returns the phase breakdown', async () => {
+  const { doneUid } = seedRuns();
+  const r = await fetch(`${base()}/api/run/${doneUid}`, withCookie());
+  expect(r.status).toBe(200);
+  const d = (await r.json()) as {
+    totals: { duration_s: number; agent_s: number; you_s: number };
+    phases: { phase: string; total_s: number; you_s: number }[];
+  };
+  expect(d.totals.duration_s).toBe(1200);
+  expect(d.phases.map((p) => p.phase)).toEqual(['plan', 'approve', 'implement']);
+  // The gate's ten minutes belong to approve, not to the phase that followed it.
+  expect(d.phases.find((p) => p.phase === 'approve')!.you_s).toBe(600);
+  expect(d.phases.find((p) => p.phase === 'implement')!.you_s).toBe(0);
+});
+
+test('run and ticket ids from the client are validated before reaching the CLI', async () => {
+  for (const bad of ['../../etc/passwd', '; rm -rf /', 'ZZZZZZZZ', 'deadbeef0']) {
+    const r = await fetch(`${base()}/api/run/${encodeURIComponent(bad)}`, withCookie());
+    expect(r.status).toBe(400);
+  }
+  for (const bad of ['1; DROP TABLE runs', 'abc', '']) {
+    const r = await fetch(`${base()}/api/runs?ticket=${encodeURIComponent(bad)}`, withCookie());
+    expect(r.status).toBe(400);
+  }
+  const days = await fetch(`${base()}/api/stats?days=1%20OR%201=1`, withCookie());
+  expect(days.status).toBe(400);
+});
+
+test('/api/stats answers with medians per skill and per phase', async () => {
+  seedRuns();
+  const r = await fetch(`${base()}/api/stats?days=0`, withCookie());
+  expect(r.status).toBe(200);
+  const s = (await r.json()) as {
+    runs: number;
+    by_skill: { skill: string; median_s: number }[];
+    by_phase: { phase: string; median_you_s: number }[];
+  };
+  expect(s.runs).toBeGreaterThan(0);
+  expect(s.by_skill.some((x) => x.skill === 'begin')).toBe(true);
+  // The distinction the whole ticket is about, surviving all the way to HTTP.
+  expect(s.by_phase.find((p) => p.phase === 'approve')!.median_you_s).toBeGreaterThan(0);
+});
+
+test('the new timing routes are refused without the cookie', async () => {
+  for (const path of ['/api/runs?ticket=1', '/api/run/deadbeef', '/api/stats']) {
+    expect((await fetch(`${base()}${path}`)).status).toBe(403);
+  }
+});

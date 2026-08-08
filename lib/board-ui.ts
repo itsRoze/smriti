@@ -151,6 +151,8 @@ export function boardPage(): string {
   .card .t{font-size:19px;line-height:1.34;margin-bottom:10px;text-wrap:balance}
   .card .foot{display:flex;align-items:center;gap:9px;margin-top:auto}
   .card .id{font-family:ui-monospace,Menlo,monospace;font-size:10.5px;color:var(--ink-3)}
+  .card .ago{font-family:ui-monospace,Menlo,monospace;font-size:10px;color:var(--ink-4);margin-left:auto}
+  .card.live .ago{color:var(--orange)}
   .card .st{
     font-family:ui-monospace,Menlo,monospace;font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;
     padding:3px 9px 4px;border:2px solid var(--ink-3);color:var(--ink-2);
@@ -246,6 +248,56 @@ export function boardPage(): string {
   .docview ul,.docview ol{padding-left:22px}
   .docview a{color:var(--pine-b)}
 
+  /* Where the time went. Pine ink is the agent's time; highlighter wash is
+     yours — the same two meanings the board already gives those colours. */
+  .runs{display:grid;gap:12px;margin-bottom:16px}
+  .run{border:2.5px dashed var(--ink-4);border-radius:14px 11px 15px 12px/12px 15px 11px 14px;padding:12px 15px 13px}
+  .run .rh{display:flex;align-items:baseline;gap:9px;flex-wrap:wrap;
+    font-family:ui-monospace,Menlo,monospace;font-size:10.5px;letter-spacing:.13em;
+    text-transform:uppercase;color:var(--ink-3);margin-bottom:9px}
+  .run .rh .tot{color:var(--ink);letter-spacing:.06em}
+  .run .rh .you{color:var(--hi-text)}
+  .run .rh .uid{color:var(--ink-4)}
+  .bar{display:flex;height:13px;border:2px solid var(--ink-2);border-radius:7px;overflow:hidden;margin-bottom:10px;background:var(--paper)}
+  .bar i{display:block;height:100%;border-right:1.5px solid var(--paper)}
+  .bar i:last-child{border-right:0}
+  .bar i.a{background:var(--pine-c)}
+  .bar i.y{background:rgba(var(--hi-rgb),.9)}
+  .phz{display:grid;gap:3px}
+  .phz .p{display:flex;align-items:baseline;gap:10px;font-family:ui-monospace,Menlo,monospace;font-size:11.5px;color:var(--ink-2)}
+  .phz .p .nm{min-width:88px;color:var(--ink-3)}
+  .phz .p .d{color:var(--ink)}
+  .phz .p .yw{color:var(--hi-text)}
+  .phz .p .sw{flex:1;height:5px;border-radius:3px;background:rgba(var(--sh),.10);overflow:hidden;display:flex;max-width:180px}
+  .phz .p .sw i{display:block;height:100%}
+  .phz .p .sw i.a{background:var(--pine-c)}
+  .phz .p .sw i.y{background:rgba(var(--hi-rgb),.9)}
+
+  /* pace: medians across runs */
+  .pace{padding:22px 26px 26px}
+  .pace h2{font-size:26px;font-weight:400;margin:0 0 6px}
+  .pace .m{font-family:ui-monospace,Menlo,monospace;font-size:10.5px;letter-spacing:.15em;
+    text-transform:uppercase;color:var(--ink-3);margin-bottom:18px}
+  .pace .grp{margin-bottom:20px}
+  .pace .grp > .lbl{font-family:ui-monospace,Menlo,monospace;font-size:9.5px;letter-spacing:.16em;
+    text-transform:uppercase;color:var(--ink-3);margin-bottom:8px}
+  .pace .row{display:flex;align-items:baseline;gap:10px;padding:4px 0;
+    font-family:ui-monospace,Menlo,monospace;font-size:12.5px;color:var(--ink-2);
+    border-bottom:1.5px dotted var(--ink-4)}
+  .pace .row:last-child{border-bottom:0}
+  .pace .row .nm{min-width:104px;color:var(--ink)}
+  .pace .row .n{color:var(--ink-4);font-size:10.5px}
+  .pace .row .sw{flex:1;height:7px;border-radius:4px;background:rgba(var(--sh),.10);overflow:hidden;display:flex;min-width:60px}
+  .pace .row .sw i{display:block;height:100%}
+  .pace .row .sw i.a{background:var(--pine-c)}
+  .pace .row .sw i.y{background:rgba(var(--hi-rgb),.9)}
+  .pace .row .d{min-width:64px;text-align:right;color:var(--ink)}
+  .pace .legend{font-size:13px;color:var(--ink-3);display:flex;gap:16px;align-items:center}
+  .pace .legend b{font-weight:400;color:var(--ink-2)}
+  .pace .legend s{display:inline-block;width:13px;height:9px;border-radius:3px;margin-right:5px;text-decoration:none;vertical-align:middle}
+  .pace .legend s.a{background:var(--pine-c)}
+  .pace .legend s.y{background:rgba(var(--hi-rgb),.9)}
+
   .attach{
     border:2.5px solid var(--pine-b);border-radius:12px;background:var(--attach-bg);
     padding:12px 16px;margin-top:14px;display:none;
@@ -303,6 +355,7 @@ export function boardPage(): string {
   <span><span class="k" data-k="c">C</span>capture</span>
   <span><span class="k" data-k="d">D</span>done</span>
   <span><span class="k" data-k="k">⌘K</span>anything</span>
+  <span><span class="k" data-k="p">P</span>pace</span>
   <span><span class="k" data-k="t">T</span>theme</span>
   <span><span class="k" data-k="?">?</span>keys</span>
 </div>
@@ -314,13 +367,16 @@ export function boardPage(): string {
 
 <div class="veil" id="detv"><div class="box b2 panel"><div class="detail" id="detbody"></div></div></div>
 
+<div class="veil" id="pacev"><div class="box b4 panel"><div class="pace" id="pacebody"></div></div></div>
+
 <div class="veil" id="helpv"><div class="box b3 panel">
   <div class="detail"><h2>keys</h2></div>
   <div class="helpgrid">
     <div><b>↑↓ / jk</b> — move</div><div><b>⏎</b> — open ticket</div>
     <div><b>s</b> — start work</div><div><b>c</b> — capture a ticket</div>
     <div><b>d</b> — mark done</div><div><b>⌘K / /</b> — palette</div>
-    <div><b>esc</b> — close</div><div><b>t</b> — light / dark</div><div><b>?</b> — this</div>
+    <div><b>p</b> — pace (medians)</div><div><b>esc</b> — close</div>
+    <div><b>t</b> — light / dark</div><div><b>?</b> — this</div>
   </div>
 </div></div>
 
@@ -355,6 +411,38 @@ export function boardPage(): string {
   // "park it out of the way" promises.
   const ORDER = ['in_review','in_progress','ready','idea','shipped','cancelled'];
   const HUES = ['#2E5C43','#3F7355','#E2703A','#58906B','#8A6FB5','#4C7FA8'];
+
+  // ── time ─────────────────────────────────────────────────────────────
+  // Durations arrive precomputed from smriti-trace (which owns the SQL); the
+  // page only formats them. The one thing computed here is elapsed for a run
+  // still going, because that has to keep moving between refreshes.
+  function fmtDur(s){
+    s = Math.max(0, Math.round(Number(s) || 0));
+    if (s < 60) return s + 's';
+    if (s < 600){ const m = Math.floor(s/60), r = s%60; return r ? m + 'm ' + r + 's' : m + 'm'; }
+    if (s < 3600) return Math.floor(s/60) + 'm';
+    const h = Math.floor(s/3600), m = Math.floor((s%3600)/60);
+    return m ? h + 'h ' + m + 'm' : h + 'h';
+  }
+  function fmtAgo(iso){
+    const ms = Date.parse(iso);
+    if (!ms) return '';
+    const s = Math.round((Date.now() - ms) / 1000);
+    if (s < 45) return 'just now';
+    if (s < 3600) return Math.round(s/60) + 'm ago';
+    if (s < 86400) return Math.round(s/3600) + 'h ago';
+    return Math.round(s/86400) + 'd ago';
+  }
+  function sinceSecs(iso){
+    const ms = Date.parse(iso);
+    return ms ? Math.max(0, Math.round((Date.now() - ms) / 1000)) : 0;
+  }
+  // A run's duration as of RIGHT NOW. Finished runs are fixed and come straight
+  // from the trace; an open one is measured from its start, so the number on
+  // screen keeps up with the clock instead of freezing at the last poll.
+  function runSecs(r){
+    return r.ended_at ? (r.duration_s || 0) : sinceSecs(r.started_at);
+  }
 
   function runFor(t){ return S.runs.find((r) => r.ticket_id === t.id); }
   // The live agent for a ticket, if herdr has one. 'blocked' means the session
@@ -403,10 +491,17 @@ export function boardPage(): string {
       for (const r of waiting){
         const t = S.tickets.find((x) => x.id === r.ticket_id);
         const title = t ? t.title : (r.skill + ' on ' + (r.branch || '?'));
+        // How long this gate has been sitting on you — the number the whole
+        // agent-time/your-time split exists to make visible, put where you
+        // already look. Ticks with the clock rather than with the poll.
+        const held = r.last_event_at
+          ? ' · <span data-live="wait" data-since="' + esc(r.last_event_at) + '">' +
+            fmtDur(sinceSecs(r.last_event_at)) + '</span>'
+          : '';
         w += '<div class="item" data-tid="' + (t ? t.id : '') + '">' +
           '<div><span class="h">' + esc(title) + '</span></div>' +
           '<div class="sub">' + esc(r.project_slug) + (t ? ' · #' + t.id : '') +
-          ' · <b>' + esc(r.last_phase || 'gate') + ' — needs a decision</b></div></div>';
+          ' · <b>' + esc(r.last_phase || 'gate') + ' — needs a decision</b>' + held + '</div></div>';
       }
     }
     w += '</div>';
@@ -452,10 +547,21 @@ export function boardPage(): string {
           : sess && sess.status === 'working' ? 'working'
           : run && run.status === 'running' ? esc((run.last_phase || 'working') + ' · running')
           : esc(STATUS[t.status] || t.status);
+        // Running work shows elapsed, ticking; everything else shows when it
+        // last moved. A card that says nothing about time is the thing this
+        // whole ticket is about.
+        const ago = run && !run.ended_at
+          ? '<span class="ago" data-live="run" data-since="' + esc(run.started_at) + '">⏱ ' +
+            fmtDur(runSecs(run)) + '</span>'
+          : (() => {
+              const at = (run && run.ended_at) || t.updated_at;
+              const rel = at ? fmtAgo(at) : '';
+              return rel ? '<span class="ago" data-live="ago" data-since="' + esc(at) + '">' + rel + '</span>' : '';
+            })();
         html += '<div class="box card ' + stateCls + '" data-tid="' + t.id + '" style="animation-delay:' + (cardIdx++ * 45) + 'ms">' +
           (t.status === 'shipped' ? '<span class="tick">✓</span>' : '') +
           '<div class="t">' + esc(t.title) + '</div>' +
-          '<div class="foot"><span class="id">#' + t.id + '</span><span class="st">' + st + '</span></div></div>';
+          '<div class="foot"><span class="id">#' + t.id + '</span><span class="st">' + st + '</span>' + ago + '</div></div>';
         flat.push({ id: t.id, kind: 'card' });
       }
       html += '</div></div>';
@@ -472,6 +578,23 @@ export function boardPage(): string {
   function recentlyShipped(t){
     return t.status === 'shipped' && (Date.now() - Date.parse(t.updated_at)) < 36e5 * 24;
   }
+
+  // The second hand. Rewrites the text of the time elements ONLY — no re-render
+  // — so it cannot race the SSE refresh or fight the selection. Stops entirely
+  // while the tab is hidden, since nobody is reading a clock they can't see.
+  function tick(){
+    if (document.hidden) return;
+    for (const el of document.querySelectorAll('[data-live]')){
+      const since = el.dataset.since;
+      if (!since) continue;
+      const mode = el.dataset.live;
+      const next = mode === 'ago' ? fmtAgo(since)
+        : mode === 'run' ? '⏱ ' + fmtDur(sinceSecs(since))
+        : fmtDur(sinceSecs(since));
+      if (el.textContent !== next) el.textContent = next;
+    }
+  }
+  setInterval(tick, 1000);
 
   function paintSel(){
     document.querySelectorAll('.card.sel,.item.sel').forEach((e) => e.classList.remove('sel'));
@@ -576,9 +699,11 @@ export function boardPage(): string {
         '<div class="doc" data-doc="' + d.id + '"><span class="tag">' + esc(d.type) + '</span><span>' + esc(d.path.split('/').pop()) + '</span></div>'
       ).join('') + '</div><div class="docview" id="docview"></div>';
     }
+    h += '<div class="runs" id="runs"></div>';
     h += '<div class="attach" id="attach"></div>';
     $('#detbody').innerHTML = h;
     $('#detv').classList.add('on');
+    loadRuns(t.id);
     if (startRes) showAttach(startRes);
     const saveDesc = async () => {
       const ta = $('#descedit');
@@ -638,6 +763,101 @@ export function boardPage(): string {
       } catch (e) { toast('could not read the file: ' + esc(e.message)); }
     }));
   }
+  // ── where the time went ──────────────────────────────────────────────
+  // Fetched PER TICKET rather than filtered out of S.runs: /api/state carries
+  // a recency-bounded window (enough to draw cards), so an older run would
+  // simply be missing here — the one place that promises every run.
+  async function loadRuns(ticketId){
+    const box = $('#runs');
+    if (!box) return;
+    let runs = [];
+    try { runs = (await api('/api/runs?ticket=' + ticketId)).runs || []; }
+    catch { return; }   // no trace for this ticket yet is the common case, not an error
+    if (!runs.length) return;
+    box.innerHTML = runs.map((r) => runShell(r)).join('');
+    // Breakdowns are one request each, so they load after the shells rather
+    // than holding the whole section back.
+    for (const r of runs){
+      try {
+        const d = await api('/api/run/' + r.run_uid);
+        const el = box.querySelector('[data-run="' + r.run_uid + '"] .bd');
+        if (el) el.innerHTML = phaseBreakdown(d.phases || [], d.totals || {});
+      } catch {}
+    }
+  }
+
+  function runShell(r){
+    const secs = runSecs(r);
+    const live = !r.ended_at;
+    const you = r.you_s || 0;
+    const split = live ? '' :
+      ' · agent <span class="tot">' + fmtDur(r.agent_s || 0) + '</span>' +
+      (you > 0 ? ' · you <span class="you">' + fmtDur(you) + '</span>' : '');
+    return '<div class="run" data-run="' + esc(r.run_uid) + '">' +
+      '<div class="rh"><span class="uid">' + esc(r.run_uid) + '</span>' +
+      '<span>' + esc(r.skill) + '</span><span>' + esc(r.status) + '</span>' +
+      '<span class="tot"' + (live ? ' data-live="dur" data-since="' + esc(r.started_at) + '"' : '') + '>' +
+      fmtDur(secs) + '</span>' + split + '</div>' +
+      '<div class="bd"></div></div>';
+  }
+
+  // A stacked bar over the phases in order, then the same numbers as rows.
+  // Pine ink is the agent's time, highlighter wash is yours — the two colours
+  // already carry those meanings everywhere else on this page.
+  function phaseBreakdown(phases, totals){
+    const total = Number(totals.duration_s) || phases.reduce((a, p) => a + (p.total_s || 0), 0);
+    if (!total || !phases.length) return '';
+    const pct = (n) => (100 * (n || 0) / total).toFixed(2) + '%';
+    const bar = '<div class="bar">' + phases.map((p) =>
+      (p.agent_s > 0 ? '<i class="a" style="width:' + pct(p.agent_s) + '" title="' + esc(p.phase) + ' — agent"></i>' : '') +
+      (p.you_s > 0 ? '<i class="y" style="width:' + pct(p.you_s) + '" title="' + esc(p.phase) + ' — you"></i>' : '')
+    ).join('') + '</div>';
+    const rows = phases.map((p) => {
+      const t = p.total_s || 0;
+      const aw = t ? (100 * (p.agent_s || 0) / t).toFixed(2) + '%' : '0%';
+      const yw = t ? (100 * (p.you_s || 0) / t).toFixed(2) + '%' : '0%';
+      return '<div class="p"><span class="nm">' + esc(p.phase) + '</span>' +
+        '<span class="sw"><i class="a" style="width:' + aw + '"></i><i class="y" style="width:' + yw + '"></i></span>' +
+        '<span class="d">' + fmtDur(t) + '</span>' +
+        (p.you_s > 0 ? '<span class="yw">you ' + fmtDur(p.you_s) + '</span>' : '') + '</div>';
+    }).join('');
+    return bar + '<div class="phz">' + rows + '</div>';
+  }
+
+  // ── pace ─────────────────────────────────────────────────────────────
+  async function openPace(){
+    tapKey('p');
+    $('#pacebody').innerHTML = '<h2>pace</h2><div class="m">reading the trace…</div>';
+    $('#pacev').classList.add('on');
+    let s;
+    try { s = await api('/api/stats?days=30'); }
+    catch (e) { $('#pacebody').innerHTML = '<h2>pace</h2><div class="m">could not read the trace</div>'; return; }
+    const rows = (list, key) => {
+      if (!list.length) return '<div class="row"><span class="nm">—</span></div>';
+      const max = Math.max(...list.map((x) => x.median_s || 0)) || 1;
+      return list.map((x) => {
+        const m = x.median_s || 0;
+        const w = (100 * m / max).toFixed(2) + '%';
+        const ay = m ? (100 * (x.median_agent_s || 0) / m).toFixed(2) + '%' : '0%';
+        const yy = m ? (100 * (x.median_you_s || 0) / m).toFixed(2) + '%' : '0%';
+        return '<div class="row"><span class="nm">' + esc(x[key]) + '</span>' +
+          '<span class="n">×' + (x.runs || x.samples || 0) + '</span>' +
+          '<span class="sw" style="max-width:' + w + '"><i class="a" style="width:' + ay + '"></i>' +
+          '<i class="y" style="width:' + yy + '"></i></span>' +
+          '<span class="d">' + fmtDur(m) + '</span></div>';
+      }).join('');
+    };
+    const n = s.runs || 0;
+    $('#pacebody').innerHTML = '<h2>pace</h2>' +
+      '<div class="m">' + n + ' completed run' + (n === 1 ? '' : 's') + ' · last ' + (s.window_days || 30) + ' days</div>' +
+      (n === 0
+        ? '<div class="m">nothing finished yet — medians appear once runs complete</div>'
+        : '<div class="grp"><div class="lbl">median by skill</div>' + rows(s.by_skill || [], 'skill') + '</div>' +
+          '<div class="grp"><div class="lbl">median by phase</div>' + rows(s.by_phase || [], 'phase') + '</div>' +
+          '<div class="legend"><span><s class="a"></s><b>agent time</b></span>' +
+          '<span><s class="y"></s><b>your time</b> — waiting at a gate</span></div>');
+  }
+
   function showAttach(res){
     const a = $('#attach'); if (!a) return;
     a.classList.add('on');
@@ -693,7 +913,7 @@ export function boardPage(): string {
   }
 
   function closeAll(){
-    ['palv','detv','helpv'].forEach((id) => $('#' + id).classList.remove('on'));
+    ['palv','detv','helpv','pacev'].forEach((id) => $('#' + id).classList.remove('on'));
     detailId = null;
   }
 
@@ -722,6 +942,7 @@ export function boardPage(): string {
       case 'd': markDone(t); break;
       case 'c': case '/': e.preventDefault(); tapKey('c'); palOpen(); break;
       case '?': tapKey('?'); $('#helpv').classList.add('on'); break;
+      case 'p': openPace(); break;
       case 't': toggleTheme(); break;
       case 'r': refresh(); toast('refreshed'); break;
     }

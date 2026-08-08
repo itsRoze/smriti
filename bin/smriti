@@ -33,7 +33,7 @@ Commands:
   board               The front door: the factory board, served locally
   ticket              Work items: add, list, show, start, edit, cancel, rm, done
   project             Manage tracked projects (list, current, forget, new, rename)
-  trace               Run trace: start, emit, end, list, show, tail
+  trace               Run trace: start, emit, end, list, show, tail, stats
   factory             Scriptable listing of tickets and runs (--list)
   clean               Post-merge tidy: delete merged branches and their worktrees
   browse              Browser audit CLI (install, login, audit, update)
