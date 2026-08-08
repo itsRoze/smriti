@@ -124,6 +124,7 @@ export function boardPage(): string {
   .wait .empty{font-size:19px;color:var(--ink-3);padding:6px}
 
   .trees{display:block;width:100%;height:auto;margin:6px 0 -2px;opacity:.95}
+  .trees.off{display:none}
 
   .plot{margin-top:34px}
   .phead{display:flex;align-items:center;gap:12px;margin-bottom:12px;cursor:pointer}
@@ -680,7 +681,7 @@ export function boardPage(): string {
     let h = '<button class="back" data-back><span class="arr">←</span> back to the board</button>';
     h += '<div class="box slab">' +
       '<div class="bigsig" style="color:' + hue + ';border-color:' + hue + '">' + esc(sigFor(slug)) + '</div>' +
-      '<div class="who"><h1>' + esc(repo.name || appLabel(slug)) + '</h1>' +
+      '<div class="who"><h1>' + esc(repo.name && repo.name !== slug ? repo.name : appLabel(slug)) + '</h1>' +
       '<div class="path">' + esc(slug) + (repo.repo_path ? ' · ' + esc(repo.repo_path) : ' · <i>no repo on this machine</i>') + '</div>' +
       '<div class="tally">' + tallyHtml(items) +
         (projs.length ? '<div><b>' + projs.length + '</b> projects</div>' : '') +
@@ -820,6 +821,8 @@ export function boardPage(): string {
 
     // Selection belongs to the view that drew it.
     flat = []; sel = -1;
+    // The treeline is the board's horizon, not a page ornament.
+    document.querySelector('.trees').classList.toggle('off', view.kind !== 'board');
     if (view.kind === 'app') renderApp(view.slug);
     else if (view.kind === 'project') renderProject(view.id);
     else renderBoard();
