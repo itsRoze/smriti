@@ -132,14 +132,18 @@ function existingAgent(name: string): { found: boolean; status?: string } {
   return { found: false };
 }
 
-// `ask` (default) runs claude normally, so it stops for permission the way it
-// would if you launched it yourself. `bypass` passes
-// --dangerously-skip-permissions, which is what you want for work you intend to
-// leave running — and is a genuine loosening, so it is opt-in and never assumed:
-//   smriti config set board_permissions bypass
+// Default is `bypass` (--dangerously-skip-permissions), because the whole point
+// of starting work from the board is walking away from it: a session that stops
+// to ask is a session that sits there until you notice. The board surfaces a
+// blocked agent now, so a stall is visible rather than silent — but not stalling
+// is better than being told about it.
+//
+// Opt out per machine when you want claude to ask the way it would if you
+// launched it yourself:
+//   smriti config set board_permissions ask
 function permissionMode(): 'ask' | 'bypass' {
   const r = sh(join(SMRITI_BIN, 'smriti-config'), ['get', 'board_permissions'], 5000);
-  return r.out.trim() === 'bypass' ? 'bypass' : 'ask';
+  return r.out.trim() === 'ask' ? 'ask' : 'bypass';
 }
 
 function launchSession(dir: string, ticketId: number): Launch {
