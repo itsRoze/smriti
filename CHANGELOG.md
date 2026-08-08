@@ -10,6 +10,8 @@ The work layer. smriti had no concept of *work*: the flow started at a free-text
 - **`smriti trace`** — runs and phase events, so a run is watchable while it happens and reviewable afterwards. `events.id` is the cursor: one query serves both a live tail and full history.
 - **Documents are indexed against their ticket.** Plans, debug docs and audits register where they live as they're written; the markdown on disk stays the source of truth and the filename contract is untouched.
 - **Worktree per ticket.** `smriti ticket start` cuts one, so several tickets can be in flight without colliding.
+- **`smriti ticket edit|cancel|rm`** — a ticket's description is editable (inline on the board, `⌘⏎` to save); `cancel` parks work reversibly and keeps its paper trail; `rm` deletes the ticket and its index rows but never the markdown on disk.
+- **Light and dark.** The board ships both grounds — marker on paper, chalk on slate — following the OS by default, with `t` to override.
 - **A project-scoped `/code-review`.** Claude Code's built-in is compiled in as manual-invocation-only, so `/begin`'s review step could never reach it and silently did nothing. The replacement is model-invocable and reads `principles.md`, so findings cite the tier they violate.
 
 ### Changed

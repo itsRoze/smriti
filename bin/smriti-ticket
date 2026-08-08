@@ -7,6 +7,9 @@
 #   smriti ticket list [--project S] [--status S] [--all] [--json]
 #   smriti ticket show <id> [--json]
 #   smriti ticket start <id>                  cut/attach a worktree; prints its path
+#   smriti ticket edit <id> [--title T] [--body T] [--priority N]
+#   smriti ticket cancel <id>                 park it out of the way, reversibly
+#   smriti ticket rm <id> [--yes]             delete it and its document rows
 #   smriti ticket pr <id> <url>               record the PR and move to in_review
 #   smriti ticket status <id> <status>        idea|ready|in_progress|in_review|shipped
 #   smriti ticket done <id>                   shorthand for `status <id> shipped`
@@ -49,7 +52,7 @@ unset _self
 # shellcheck source=../lib/factory-db.sh
 . "$SMRITI_LIB/factory-db.sh"
 
-VALID_STATUSES="idea ready in_progress in_review shipped"
+VALID_STATUSES="idea ready in_progress in_review shipped cancelled"
 VALID_DOC_TYPES="plan debug design audit"
 
 usage() {
@@ -59,6 +62,9 @@ usage:
   smriti ticket list [--project S] [--status S] [--all] [--json]
   smriti ticket show <id> [--json]
   smriti ticket start <id>
+  smriti ticket edit <id> [--title T] [--body T] [--priority N]
+  smriti ticket cancel <id>
+  smriti ticket rm <id> [--yes]
   smriti ticket pr <id> <url>
   smriti ticket status <id> <idea|ready|in_progress|in_review|shipped>
   smriti ticket done <id>
@@ -183,7 +189,7 @@ cmd_list() {
     where="$where AND status = $(sql_quote "$status")"
   elif [ "$all" -eq 0 ]; then
     # Shipped work is history; it clutters the working view unless asked for.
-    where="$where AND status != 'shipped'"
+    where="$where AND status NOT IN ('shipped','cancelled')"
   fi
 
   local order="ORDER BY priority DESC, id ASC"
@@ -398,6 +404,93 @@ cmd_status() {
   echo "#$id → $status"
 }
 
+# A description is what you write when the title was not enough. Editable
+# because the first line you type is rarely the last word on a piece of work.
+cmd_edit() {
+  [ $# -ge 1 ] || usage
+  local id="$1"; shift
+  require_id "$id"
+  ticket_exists "$id" || die "no ticket #$id" 4
+
+  local sets="" title="" body="" priority="" have=0 clear_body=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --title)    [ $# -ge 2 ] || die "--title requires a value";    title="$2";    have=1; shift 2 ;;
+      --body)     [ $# -ge 2 ] || die "--body requires a value";     body="$2";     have=1; shift 2
+                  [ -z "$body" ] && clear_body=1 ;;
+      --priority) [ $# -ge 2 ] || die "--priority requires a value"; priority="$2"; have=1; shift 2 ;;
+      *) die "unknown flag: $1" ;;
+    esac
+  done
+  [ "$have" -eq 1 ] || die "nothing to change — pass --title, --body or --priority"
+
+  if [ -n "$title" ]; then
+    case "$title" in
+      *$'\n'*) die "title must be a single line — put detail in --body" ;;
+    esac
+    sets="$sets title = $(sql_quote "$title"),"
+  fi
+  # An explicitly empty --body clears the description rather than storing "".
+  if [ "$clear_body" -eq 1 ]; then
+    sets="$sets body = NULL,"
+  elif [ -n "$body" ]; then
+    sets="$sets body = $(sql_quote "$body"),"
+  fi
+  if [ -n "$priority" ]; then
+    require_num "$priority" "--priority"
+    sets="$sets priority = $priority,"
+  fi
+
+  db_write "UPDATE tickets SET $sets updated_at = $(sql_quote "$(now_utc)") WHERE id = $id;"
+  echo "#$id updated"
+}
+
+# Cancel is reversible and keeps the paper trail; rm is not. Two verbs because
+# "I am not doing this" and "this should never have existed" are different
+# intentions, and only one of them deserves a confirmation prompt.
+cmd_cancel() {
+  [ $# -ge 1 ] || usage
+  require_id "$1"
+  ticket_exists "$1" || die "no ticket #$1" 4
+  db_write "UPDATE tickets SET status = 'cancelled', updated_at = $(sql_quote "$(now_utc)") WHERE id = $1;"
+  echo "#$1 → cancelled  (smriti ticket status $1 ready brings it back)"
+}
+
+cmd_rm() {
+  [ $# -ge 1 ] || usage
+  local id="$1"; shift
+  require_id "$id"
+  local yes=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --yes|-y) yes=1; shift ;;
+      *) die "unknown flag: $1" ;;
+    esac
+  done
+  ticket_exists "$id" || die "no ticket #$id" 4
+
+  local title docs
+  title=$(db "SELECT title FROM tickets WHERE id = $id;")
+  docs=$(db "SELECT count(*) FROM documents WHERE ticket_id = $id;")
+
+  if [ "$yes" -ne 1 ]; then
+    if [ ! -t 0 ]; then
+      die "refusing to delete without --yes in a non-interactive shell" 1
+    fi
+    echo "About to delete #$id  $title"
+    [ "$docs" != "0" ] && echo "  $docs document row(s) forgotten (the files stay on disk)"
+    printf "Delete? [y/N] "
+    read -r ans || ans=""
+    case "$ans" in y|Y|yes|YES) ;; *) echo "aborted."; exit 1 ;; esac
+  fi
+
+  # Only index rows go. The markdown on disk is the source of truth, and
+  # deleting a ticket is not a reason to destroy the writing about it.
+  db_write "DELETE FROM documents WHERE ticket_id = $id;
+            DELETE FROM tickets WHERE id = $id;"
+  echo "deleted: #$id  $title"
+}
+
 # /ship calls this once the PR exists. in_review rather than shipped: the merge
 # has not happened yet, and /clean is what confirms it.
 cmd_pr() {
@@ -582,6 +675,9 @@ case "$CMD" in
   list|ls)      cmd_list "$@" ;;
   show)         cmd_show "$@" ;;
   start)        cmd_start "$@" ;;
+  edit)         cmd_edit "$@" ;;
+  cancel)       cmd_cancel "$@" ;;
+  rm)           cmd_rm "$@" ;;
   pr)           cmd_pr "$@" ;;
   status)       cmd_status "$@" ;;
   done)         cmd_done "$@" ;;

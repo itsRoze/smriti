@@ -16,11 +16,48 @@ export function boardPage(): string {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>smriti — factory</title>
 <style>
+  /* Two grounds, one hand. Light is marker on warm sketch stock; dark is chalk
+     on slate. Every rule below reads tokens only, so the whole board flips
+     without a second stylesheet. Follows the OS by default; the t key
+     overrides and the choice sticks. */
   :root{
     --paper:#F7F4E9; --paper-2:#FDFBF3; --grid:#D9DCC8;
     --ink:#1E4032; --ink-2:#3D5F4A; --ink-3:#7A9182; --ink-4:#AFC0B2;
-    --hi:#F2E85C; --hi-2:#FFF7A8; --orange:#E2703A;
+    --hi:#F2E85C; --hi-rgb:242,232,92; --orange:#E2703A;
     --pine-a:#2E5C43; --pine-b:#3F7355; --pine-c:#58906B;
+    --tree:#2E5C43; --live-bg:#FFF4EC; --attach-bg:#F2F7EE;
+    --sh:30,64,50; --veil:rgba(30,64,50,.18); --dust:.06;
+    --hi-wash:.55; --hi-text:var(--ink-2);
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --paper:#1B2422; --paper-2:#232E2B; --grid:#26332F;
+      --ink:#E7EDE8; --ink-2:#BCCBC4; --ink-3:#7E9189; --ink-4:#4E5D57;
+      --hi:#EBCB8B; --hi-rgb:235,203,139; --orange:#D08770;
+      --pine-a:#A3BE8C; --pine-b:#8FBCBB; --pine-c:#88C0D0;
+      --tree:#7E9C86; --live-bg:#2E2A27; --attach-bg:#22302E;
+      --sh:0,0,0; --veil:rgba(0,0,0,.55); --dust:.10;
+      --hi-wash:.20; --hi-text:var(--hi);
+    }
+  }
+  /* The toggle must win over the media query in BOTH directions. */
+  :root[data-theme="dark"]{
+    --paper:#1B2422; --paper-2:#232E2B; --grid:#26332F;
+    --ink:#E7EDE8; --ink-2:#BCCBC4; --ink-3:#7E9189; --ink-4:#4E5D57;
+    --hi:#EBCB8B; --hi-rgb:235,203,139; --orange:#D08770;
+    --pine-a:#A3BE8C; --pine-b:#8FBCBB; --pine-c:#88C0D0;
+    --tree:#7E9C86; --live-bg:#2E2A27; --attach-bg:#22302E;
+    --sh:0,0,0; --veil:rgba(0,0,0,.55); --dust:.10;
+    --hi-wash:.20; --hi-text:var(--hi);
+  }
+  :root[data-theme="light"]{
+    --paper:#F7F4E9; --paper-2:#FDFBF3; --grid:#D9DCC8;
+    --ink:#1E4032; --ink-2:#3D5F4A; --ink-3:#7A9182; --ink-4:#AFC0B2;
+    --hi:#F2E85C; --hi-rgb:242,232,92; --orange:#E2703A;
+    --pine-a:#2E5C43; --pine-b:#3F7355; --pine-c:#58906B;
+    --tree:#2E5C43; --live-bg:#FFF4EC; --attach-bg:#F2F7EE;
+    --sh:30,64,50; --veil:rgba(30,64,50,.18); --dust:.06;
+    --hi-wash:.55; --hi-text:var(--ink-2);
   }
   *{box-sizing:border-box}
   html,body{height:100%}
@@ -28,6 +65,7 @@ export function boardPage(): string {
     margin:0;background:var(--paper);color:var(--ink);
     font-family:"Chalkboard SE","Chalkboard","Marker Felt","Bradley Hand",cursive;
     font-size:16px;line-height:1.55;overflow-x:hidden;-webkit-font-smoothing:antialiased;
+    transition:background-color .25s ease,color .25s ease;
   }
   body::before{
     content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
@@ -36,7 +74,7 @@ export function boardPage(): string {
     background-size:26px 26px;opacity:.55;
   }
   body::after{
-    content:"";position:fixed;inset:0;pointer-events:none;z-index:1;opacity:.06;
+    content:"";position:fixed;inset:0;pointer-events:none;z-index:1;opacity:var(--dust);
     background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='150' height='150'><filter id='p'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4'/></filter><rect width='150' height='150' filter='url(%23p)'/></svg>");
   }
   .mono{font-family:ui-monospace,"SF Mono",Menlo,monospace}
@@ -45,7 +83,7 @@ export function boardPage(): string {
   .box{
     border:2.5px solid var(--ink);background:var(--paper-2);
     border-radius:16px 22px 14px 20px/20px 14px 22px 16px;
-    box-shadow:2px 3px 0 rgba(30,64,50,.13);
+    box-shadow:2px 3px 0 rgba(var(--sh),.3);
   }
   .b2{border-radius:22px 14px 20px 16px/14px 20px 16px 22px}
   .b3{border-radius:14px 20px 22px 15px/22px 16px 14px 20px}
@@ -56,7 +94,7 @@ export function boardPage(): string {
     display:inline-block;padding:9px 20px 11px;font-size:27px;color:var(--ink);
     border:2.5px solid var(--ink);background:var(--paper-2);
     border-radius:18px 24px 16px 22px/22px 16px 24px 18px;
-    transform:rotate(-1.1deg);box-shadow:3px 4px 0 rgba(30,64,50,.14);
+    transform:rotate(-1.1deg);box-shadow:3px 4px 0 rgba(var(--sh),.34);
   }
   .mark span{color:var(--pine-c)}
   .eye{font-family:ui-monospace,Menlo,monospace;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-3)}
@@ -66,7 +104,7 @@ export function boardPage(): string {
     display:inline-block;font-family:ui-monospace,Menlo,monospace;font-size:11px;
     letter-spacing:.22em;text-transform:uppercase;color:var(--ink-2);
     margin:0 0 14px;padding:3px 8px;transform:rotate(-.7deg);
-    background:linear-gradient(180deg,transparent 52%,var(--hi) 52%,var(--hi) 92%,transparent 92%);
+    background:linear-gradient(180deg,transparent 52%,rgba(var(--hi-rgb),var(--hi-wash)) 52%,rgba(var(--hi-rgb),var(--hi-wash)) 92%,transparent 92%);color:var(--hi-text);
     background-size:0% 100%;background-repeat:no-repeat;
     animation:swipe .6s ease-out .15s forwards;
   }
@@ -75,10 +113,10 @@ export function boardPage(): string {
   .wait{padding:20px 24px 22px;margin-bottom:34px;transform:rotate(.35deg)}
   .wait .item{display:block;color:inherit;padding:11px 6px;cursor:pointer;border-radius:10px}
   .wait .item+.item{border-top:2px dashed var(--ink-4);margin-top:4px;padding-top:15px}
-  .wait .item.sel{background:rgba(242,232,92,.22)}
+  .wait .item.sel{background:rgba(var(--hi-rgb),.14);box-shadow:inset 3px 0 0 var(--hi)}
   .wait .h{
     font-size:29px;line-height:1.22;color:var(--ink);text-wrap:balance;display:inline;
-    background:linear-gradient(180deg,transparent 62%,var(--hi-2) 62%,var(--hi-2) 95%,transparent 95%);
+    background:linear-gradient(180deg,transparent 64%,rgba(var(--hi-rgb),var(--hi-wash)) 64%,rgba(var(--hi-rgb),var(--hi-wash)) 96%,transparent 96%);
     box-decoration-break:clone;-webkit-box-decoration-break:clone;padding:0 2px;
   }
   .wait .sub{margin-top:9px;font-family:ui-monospace,Menlo,monospace;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-3)}
@@ -108,8 +146,8 @@ export function boardPage(): string {
     animation:drop .4s cubic-bezier(.2,.9,.3,1.25) backwards;
   }
   @keyframes drop{from{opacity:0;transform:translateY(10px) rotate(-.6deg)}}
-  .card:hover{transform:translate(-1px,-2px) rotate(-.4deg);box-shadow:4px 6px 0 rgba(30,64,50,.16)}
-  .card.sel{outline:3px solid var(--hi);outline-offset:3px}
+  .card:hover{transform:translate(-1px,-2px) rotate(-.4deg);box-shadow:4px 6px 0 rgba(var(--sh),.4)}
+  .card.sel{outline:2.5px solid var(--hi);outline-offset:3px;box-shadow:0 0 22px -6px rgba(var(--hi-rgb),.55)}
   .card .t{font-size:19px;line-height:1.34;margin-bottom:10px;text-wrap:balance}
   .card .foot{display:flex;align-items:center;gap:9px;margin-top:auto}
   .card .id{font-family:ui-monospace,Menlo,monospace;font-size:10.5px;color:var(--ink-3)}
@@ -118,7 +156,7 @@ export function boardPage(): string {
     padding:3px 9px 4px;border:2px solid var(--ink-3);color:var(--ink-2);
     border-radius:9px 12px 8px 11px/11px 8px 12px 9px;
   }
-  .card.live{background:#FFF4EC}
+  .card.live{background:var(--live-bg)}
   .card.live .st{border-color:var(--orange);color:var(--orange)}
   .card.live::after{
     content:"";position:absolute;top:-7px;right:-7px;width:15px;height:15px;border-radius:50%;
@@ -139,19 +177,19 @@ export function boardPage(): string {
   .keys{
     position:fixed;left:0;right:0;bottom:0;z-index:8;padding:14px 26px;
     display:flex;justify-content:center;gap:20px;flex-wrap:wrap;
-    background:linear-gradient(180deg,rgba(247,244,233,0),rgba(247,244,233,.97) 44%);
+    background:linear-gradient(180deg,transparent,var(--paper) 44%);
     font-family:ui-monospace,Menlo,monospace;font-size:10px;letter-spacing:.12em;
     text-transform:uppercase;color:var(--ink-3)}
   .k{
     display:inline-block;min-width:22px;text-align:center;padding:3px 7px 4px;margin-right:7px;
     border:2px solid var(--ink-2);color:var(--ink);background:var(--paper-2);
     border-radius:8px 11px 7px 10px/10px 7px 11px 8px;
-    transition:transform .08s ease,box-shadow .08s ease;box-shadow:0 2px 0 rgba(30,64,50,.25);
+    transition:transform .08s ease,box-shadow .08s ease;box-shadow:0 2px 0 rgba(var(--sh),.45);
   }
-  .k.hit{transform:translateY(2px);box-shadow:0 0 0 rgba(30,64,50,.25)}
+  .k.hit{transform:translateY(2px);box-shadow:0 0 0 rgba(var(--sh),.45)}
 
   /* overlays */
-  .veil{position:fixed;inset:0;z-index:20;background:rgba(30,64,50,.18);display:none;align-items:flex-start;justify-content:center;padding:9vh 20px 20px}
+  .veil{position:fixed;inset:0;z-index:20;background:var(--veil);display:none;align-items:flex-start;justify-content:center;padding:9vh 20px 20px}
   .veil.on{display:flex}
   .panel{width:min(760px,94vw);max-height:80vh;overflow:auto;padding:0;animation:pop .22s cubic-bezier(.2,.9,.3,1.3)}
   @keyframes pop{from{opacity:0;transform:scale(.96) translateY(8px)}}
@@ -160,24 +198,35 @@ export function boardPage(): string {
     flex:1;border:0;outline:0;background:transparent;font:inherit;color:var(--ink);
   }
   .pal .o{display:flex;align-items:center;gap:12px;padding:11px 20px;font-size:17px;color:var(--ink-2);cursor:pointer}
-  .pal .o.on{background:var(--hi-2);color:var(--ink)}
+  .pal .o.on{background:rgba(var(--hi-rgb),.18);color:var(--ink);box-shadow:inset 3px 0 0 var(--hi)}
   .pal .o .r{margin-left:auto;font-family:ui-monospace,Menlo,monospace;font-size:10px;letter-spacing:.12em;color:var(--ink-3)}
 
   .detail{padding:24px 26px 26px}
   .detail h2{font-size:26px;font-weight:400;margin:0 0 8px;text-wrap:balance}
   .detail .m{font-family:ui-monospace,Menlo,monospace;font-size:10.5px;letter-spacing:.15em;text-transform:uppercase;color:var(--ink-3);margin-bottom:18px}
   .detail .m b{color:var(--orange);font-weight:400}
-  .detail .body{font-size:17px;color:var(--ink-2);margin-bottom:18px}
+  .detail .body{font-size:17px;color:var(--ink-2);margin-bottom:18px;cursor:text;
+    border-radius:10px;padding:6px 8px;margin-left:-8px;transition:background .12s ease}
+  .detail .body:hover{background:rgba(var(--hi-rgb),.10)}
+  .detail .body .ghost{color:var(--ink-4);font-style:italic}
+  .descedit{
+    display:none;width:100%;min-height:96px;font:inherit;font-size:17px;color:var(--ink);
+    background:var(--paper);border:2.5px dashed var(--ink-4);border-radius:12px;
+    padding:12px 14px;margin-bottom:18px;resize:vertical;outline:none;
+  }
+  .descedit.on{display:block}
+  .descedit:focus{border-color:var(--hi)}
+  .btn.danger{border-color:var(--orange);color:var(--orange)}
   .detail .acts{display:flex;gap:10px;margin-bottom:20px;flex-wrap:wrap}
   .btn{
     font:inherit;font-size:16px;cursor:pointer;color:var(--ink);
     padding:7px 16px 8px;border:2.5px solid var(--ink);background:var(--paper-2);
     border-radius:12px 16px 11px 15px/15px 11px 16px 12px;
-    box-shadow:2px 3px 0 rgba(30,64,50,.15);transition:transform .1s ease,box-shadow .1s ease;
+    box-shadow:2px 3px 0 rgba(var(--sh),.32);transition:transform .1s ease,box-shadow .1s ease;
   }
-  .btn:hover{transform:translate(-1px,-1px);box-shadow:3px 4px 0 rgba(30,64,50,.18)}
-  .btn:active{transform:translate(1px,2px);box-shadow:0 0 0 rgba(30,64,50,.15)}
-  .btn.go{background:var(--hi-2)}
+  .btn:hover{transform:translate(-1px,-1px);box-shadow:3px 4px 0 rgba(var(--sh),.4)}
+  .btn:active{transform:translate(1px,2px);box-shadow:0 0 0 rgba(var(--sh),.32)}
+  .btn.go{background:rgba(var(--hi-rgb),.2);border-color:var(--hi)}
   .trail{display:grid;gap:7px;margin-bottom:14px}
   .trail .doc{display:flex;gap:12px;align-items:baseline;font-family:ui-monospace,Menlo,monospace;font-size:11px;color:var(--ink-2);cursor:pointer}
   .trail .doc:hover{color:var(--ink)}
@@ -189,7 +238,7 @@ export function boardPage(): string {
   .docview.on{display:block}
   .docview h1,.docview h2,.docview h3{font-size:19px;margin:14px 0 8px;color:var(--ink)}
   .docview h1:first-child,.docview h2:first-child{margin-top:0}
-  .docview pre{background:rgba(30,64,50,.07);padding:10px 12px;border-radius:8px;overflow-x:auto;font-size:12.5px}
+  .docview pre{background:rgba(var(--sh),.09);padding:10px 12px;border-radius:8px;overflow-x:auto;font-size:12.5px}
   .docview code{font-family:ui-monospace,Menlo,monospace;font-size:.85em}
   .docview table{border-collapse:collapse;margin:10px 0;font-size:14px}
   .docview th,.docview td{border:1.5px solid var(--ink-4);padding:5px 9px;text-align:left}
@@ -198,11 +247,11 @@ export function boardPage(): string {
   .docview a{color:var(--pine-b)}
 
   .attach{
-    border:2.5px solid var(--pine-b);border-radius:12px;background:#F2F7EE;
+    border:2.5px solid var(--pine-b);border-radius:12px;background:var(--attach-bg);
     padding:12px 16px;margin-top:14px;display:none;
   }
   .attach.on{display:block}
-  .attach .how{font-family:ui-monospace,Menlo,monospace;font-size:12px;color:var(--ink);background:rgba(30,64,50,.07);padding:8px 10px;border-radius:8px;margin-top:8px;user-select:all;word-break:break-all}
+  .attach .how{font-family:ui-monospace,Menlo,monospace;font-size:12px;color:var(--ink);background:rgba(var(--sh),.09);padding:8px 10px;border-radius:8px;margin-top:8px;user-select:all;word-break:break-all}
   .attach .note{font-size:15px;color:var(--ink-2)}
 
   .toast{
@@ -232,7 +281,7 @@ export function boardPage(): string {
   </div>
   <div id="waitwrap"></div>
   <svg class="trees" viewBox="0 0 1080 96" preserveAspectRatio="none" aria-hidden="true">
-    <g stroke="#2E5C43" stroke-width="2.5" fill="none" stroke-linejoin="round" stroke-linecap="round">
+    <g stroke="var(--tree)" stroke-width="2.5" fill="none" stroke-linejoin="round" stroke-linecap="round">
       <path d="M20,92 L20,74 M8,74 L20,52 L32,74 Z M4,60 L20,32 L36,60 Z M8,44 L20,20 L32,44 Z"/>
       <path d="M150,92 L150,72 M136,72 L150,46 L164,72 Z M132,56 L150,26 L168,56 Z M136,40 L150,14 L164,40 Z"/>
       <path d="M300,92 L300,74 M287,74 L300,50 L313,74 Z M283,58 L300,28 L317,58 Z"/>
@@ -254,6 +303,7 @@ export function boardPage(): string {
   <span><span class="k" data-k="c">C</span>capture</span>
   <span><span class="k" data-k="d">D</span>done</span>
   <span><span class="k" data-k="k">⌘K</span>anything</span>
+  <span><span class="k" data-k="t">T</span>theme</span>
   <span><span class="k" data-k="?">?</span>keys</span>
 </div>
 
@@ -270,7 +320,7 @@ export function boardPage(): string {
     <div><b>↑↓ / jk</b> — move</div><div><b>⏎</b> — open ticket</div>
     <div><b>s</b> — start work</div><div><b>c</b> — capture a ticket</div>
     <div><b>d</b> — mark done</div><div><b>⌘K / /</b> — palette</div>
-    <div><b>esc</b> — close</div><div><b>?</b> — this</div>
+    <div><b>esc</b> — close</div><div><b>t</b> — light / dark</div><div><b>?</b> — this</div>
   </div>
 </div></div>
 
@@ -287,7 +337,18 @@ export function boardPage(): string {
   let flat = [];           // [{id, kind}] in DOM order
   let detailId = null;
 
-  const STATUS = { idea:'idea', ready:'ready', in_progress:'building', in_review:'in review', shipped:'shipped' };
+  // Theme: follow the OS until told otherwise, then remember.
+  const savedTheme = localStorage.getItem('smriti-theme');
+  if (savedTheme) document.documentElement.dataset.theme = savedTheme;
+  function toggleTheme(){
+    const dark = getComputedStyle(document.documentElement).getPropertyValue('--sh').trim() === '0,0,0';
+    const next = dark ? 'light' : 'dark';
+    document.documentElement.dataset.theme = next;
+    localStorage.setItem('smriti-theme', next);
+    tapKey('t'); toast(next === 'dark' ? 'chalk on slate' : 'marker on paper', 1400);
+  }
+
+  const STATUS = { idea:'idea', ready:'ready', in_progress:'building', in_review:'in review', shipped:'shipped', cancelled:'cancelled' };
   const CLS = { idea:'idea b3', ready:'rdy b2', in_progress:'live', in_review:'rev b4', shipped:'done b3' };
   const ORDER = ['in_review','in_progress','ready','idea','shipped'];
   const HUES = ['#2E5C43','#3F7355','#E2703A','#58906B','#8A6FB5','#4C7FA8'];
@@ -441,10 +502,15 @@ export function boardPage(): string {
     let h = '<h2>' + esc(t.title) + '</h2>' +
       '<div class="m">#' + t.id + ' · ' + esc(t.project_slug) + ' · <b>' + esc(STATUS[t.status] || t.status) + '</b>' +
       (t.branch ? ' · ' + esc(t.branch) : '') + (docs.length ? ' · ' + docs.length + ' document' + (docs.length > 1 ? 's' : '') : '') + '</div>';
-    if (t.body) h += '<div class="body">' + esc(t.body) + '</div>';
+    h += '<div class="body" id="desc" data-act="editdesc" title="click to edit">' +
+      (t.body ? esc(t.body) : '<span class="ghost">add a description…</span>') + '</div>';
+    h += '<textarea class="descedit" id="descedit" placeholder="what this actually is, and why">' + esc(t.body || '') + '</textarea>';
     h += '<div class="acts">';
-    if (t.status !== 'shipped') h += '<button class="btn go" data-act="start">start ⏎</button>';
-    if (t.status !== 'shipped') h += '<button class="btn" data-act="done">mark done</button>';
+    if (t.status !== 'shipped' && t.status !== 'cancelled') h += '<button class="btn go" data-act="start">start ⏎</button>';
+    if (t.status !== 'shipped' && t.status !== 'cancelled') h += '<button class="btn" data-act="done">mark done</button>';
+    if (t.status !== 'cancelled') h += '<button class="btn" data-act="cancel">cancel</button>';
+    else h += '<button class="btn" data-act="revive">bring it back</button>';
+    h += '<button class="btn danger" data-act="delete">delete</button>';
     if (t.pr_url) h += '<a class="btn" href="' + esc(t.pr_url) + '" target="_blank" rel="noopener">open PR ↗</a>';
     h += '</div>';
     if (docs.length){
@@ -456,9 +522,48 @@ export function boardPage(): string {
     $('#detbody').innerHTML = h;
     $('#detv').classList.add('on');
     if (startRes) showAttach(startRes);
-    $('#detbody').querySelectorAll('[data-act]').forEach((b) => b.addEventListener('click', () => {
-      if (b.dataset.act === 'start') startTicket(t);
-      if (b.dataset.act === 'done'){ markDone(t); closeAll(); }
+    const saveDesc = async () => {
+      const ta = $('#descedit');
+      const next = ta.value.trim();
+      ta.classList.remove('on'); $('#desc').style.display = '';
+      if (next === (t.body || '').trim()) return;
+      try {
+        await api('/api/tickets/' + t.id, { method: 'PATCH', body: JSON.stringify({ body: next }) });
+        toast('description saved'); await refresh(); openDetail(t.id);
+      } catch (e) { toast('could not save: ' + esc(e.message)); }
+    };
+    $('#detbody').querySelectorAll('[data-act]').forEach((b) => b.addEventListener('click', async () => {
+      const act = b.dataset.act;
+      if (act === 'start') startTicket(t);
+      if (act === 'done'){ markDone(t); closeAll(); }
+      if (act === 'editdesc'){
+        const ta = $('#descedit');
+        $('#desc').style.display = 'none'; ta.classList.add('on'); ta.focus();
+        ta.onblur = saveDesc;
+        ta.onkeydown = (ev) => {
+          if (ev.key === 'Escape'){ ev.stopPropagation(); ta.onblur = null; ta.classList.remove('on'); $('#desc').style.display = ''; }
+          if (ev.key === 'Enter' && (ev.metaKey || ev.ctrlKey)) ta.blur();
+        };
+      }
+      if (act === 'cancel'){
+        try { await api('/api/tickets/' + t.id + '/cancel', { method: 'POST', body: '{}' });
+              toast('#' + t.id + ' cancelled — still there under all'); closeAll(); refresh(); }
+        catch (e) { toast('could not cancel: ' + esc(e.message)); }
+      }
+      if (act === 'revive'){
+        try { await api('/api/tickets/' + t.id + '/revive', { method: 'POST', body: '{}' });
+              toast('#' + t.id + ' is back'); } catch (e) { toast('could not revive: ' + esc(e.message)); }
+        closeAll(); refresh();
+      }
+      if (act === 'delete'){
+        if (b.dataset.armed !== '1'){
+          b.dataset.armed = '1'; b.textContent = 'really delete?';
+          setTimeout(() => { b.dataset.armed = '0'; b.textContent = 'delete'; }, 4000);
+          return;
+        }
+        try { await api('/api/tickets/' + t.id, { method: 'DELETE' }); toast('#' + t.id + ' deleted'); closeAll(); refresh(); }
+        catch (e) { toast('could not delete: ' + esc(e.message)); }
+      }
     }));
     $('#detbody').querySelectorAll('[data-doc]').forEach((el) => el.addEventListener('click', async () => {
       const dv = $('#docview');
@@ -538,6 +643,7 @@ export function boardPage(): string {
       case 'd': markDone(t); break;
       case 'c': case '/': e.preventDefault(); tapKey('c'); palOpen(); break;
       case '?': tapKey('?'); $('#helpv').classList.add('on'); break;
+      case 't': toggleTheme(); break;
       case 'r': refresh(); toast('refreshed'); break;
     }
   });

@@ -244,6 +244,45 @@ async function cmdServer(): Promise<never> {
         return json({ path: dir, ...launch });
       }
 
+      const edit = url.pathname.match(/^\/api\/tickets\/(\d+)$/);
+      if (edit && req.method === 'PATCH') {
+        touch();
+        const b = (await req.json().catch(() => ({}))) as { title?: string; body?: string };
+        const args = ['edit', edit[1]];
+        if (typeof b.title === 'string') args.push('--title', b.title);
+        if (typeof b.body === 'string') args.push('--body', b.body);
+        if (args.length === 2) return json({ error: 'nothing to change' }, 400);
+        const r = sh(TICKET, args);
+        if (!r.ok) return json({ error: r.errOut || 'could not edit' }, 500);
+        broadcast();
+        return json({ ok: true });
+      }
+      if (edit && req.method === 'DELETE') {
+        touch();
+        const r = sh(TICKET, ['rm', edit[1], '--yes']);
+        if (!r.ok) return json({ error: r.errOut || 'could not delete' }, 500);
+        broadcast();
+        return json({ ok: true });
+      }
+
+      const revive = url.pathname.match(/^\/api\/tickets\/(\d+)\/revive$/);
+      if (revive && req.method === 'POST') {
+        touch();
+        const r = sh(TICKET, ['status', revive[1], 'ready']);
+        if (!r.ok) return json({ error: r.errOut || 'could not revive' }, 500);
+        broadcast();
+        return json({ ok: true });
+      }
+
+      const cancel = url.pathname.match(/^\/api\/tickets\/(\d+)\/cancel$/);
+      if (cancel && req.method === 'POST') {
+        touch();
+        const r = sh(TICKET, ['cancel', cancel[1]]);
+        if (!r.ok) return json({ error: r.errOut || 'could not cancel' }, 500);
+        broadcast();
+        return json({ ok: true });
+      }
+
       const done = url.pathname.match(/^\/api\/tickets\/(\d+)\/done$/);
       if (done && req.method === 'POST') {
         touch();

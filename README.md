@@ -169,10 +169,17 @@ project, every ticket, what is running, and what is waiting on you:
 smriti
 ```
 
-The look is a planning sketchbook: warm grid paper, pine-marker ink,
-hand-drawn boxes, a highlighter swipe on whatever needs a decision. Everything
-is keyboard-first — `↑↓` move, `⏎` open, `s` start, `c` capture, `⌘K` for
-anything — and every action lands in under a keystroke-and-a-half.
+The look is a planning sketchbook in two grounds: **light** is marker on warm
+grid paper, **dark** is chalk on slate (a dark evergreen read through Nord).
+It follows your OS by default; `t` overrides and the choice sticks.
+Everything is keyboard-first — `↑↓` move, `⏎` open, `s` start, `c` capture,
+`d` done, `⌘K` for anything — and every action lands in under a
+keystroke-and-a-half.
+
+A ticket opens with its description inline — click to edit, `⌘⏎` to save.
+Work you have decided against gets **cancelled** (reversible, keeps its paper
+trail); work that should never have existed gets **deleted** (the ticket and
+its index rows go, the markdown on disk never does).
 
 Starting a ticket cuts its worktree and opens a Claude Code session via
 **herdr** (preferred, if installed) or **tmux**, then shows the exact attach

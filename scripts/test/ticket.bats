@@ -405,3 +405,93 @@ second"
   [ "$status" -eq 0 ]
   [ ! -f "$SMRITI_HOME/factory.db" ]
 }
+
+# ─── edit / cancel / delete ─────────────────────────────────────────────────
+
+@test "edit: sets a description and can clear it" {
+  "$CLI" add "a thing" >/dev/null
+  run "$CLI" edit 1 --body "the longer story"
+  [ "$status" -eq 0 ]
+  run "$CLI" show 1
+  [[ "$output" == *"the longer story"* ]]
+
+  # An explicitly empty --body clears rather than storing "".
+  "$CLI" edit 1 --body ""
+  run "$CLI" show 1 --json
+  [ "$(echo "$output" | jq -r '.ticket.body')" = "null" ]
+}
+
+@test "edit: retitles, and still refuses a multi-line title" {
+  "$CLI" add "old" >/dev/null
+  "$CLI" edit 1 --title "new"
+  run "$CLI" show 1
+  [[ "$output" == *"new"* ]]
+
+  run "$CLI" edit 1 --title "one
+two"
+  [ "$status" -eq 2 ]
+}
+
+@test "edit: with no fields is a usage error, not a silent no-op" {
+  "$CLI" add "x" >/dev/null
+  run "$CLI" edit 1
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"nothing to change"* ]]
+}
+
+@test "cancel: hides it from the working view but keeps it under --all" {
+  # Cancelling is 'I am not doing this', not 'this never existed' — the row and
+  # its paper trail survive.
+  "$CLI" add "not doing this" >/dev/null
+  "$CLI" doc 1 --type plan --path /tmp/keep-me.md >/dev/null
+  run "$CLI" cancel 1
+  [ "$status" -eq 0 ]
+
+  run "$CLI" list
+  ! [[ "$output" == *"not doing this"* ]]
+  run "$CLI" list --all
+  [[ "$output" == *"cancelled"* ]]
+
+  run "$CLI" show 1 --json
+  [ "$(echo "$output" | jq -r '.documents | length')" = "1" ]
+}
+
+@test "cancel: is reversible" {
+  "$CLI" add "x" >/dev/null
+  "$CLI" cancel 1
+  "$CLI" status 1 ready
+  run "$CLI" list
+  [[ "$output" == *"x"* ]]
+}
+
+@test "rm: deletes the ticket and its index rows, leaving the files alone" {
+  "$CLI" add "gone" >/dev/null
+  local doc="$WORK/a-plan.md"
+  echo "content" > "$doc"
+  "$CLI" doc 1 --type plan --path "$doc" >/dev/null
+
+  run "$CLI" rm 1 --yes
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"deleted: #1"* ]]
+
+  run sqlite3 "$SMRITI_HOME/factory.db" "SELECT count(*) FROM tickets;"
+  [ "$output" = "0" ]
+  run sqlite3 "$SMRITI_HOME/factory.db" "SELECT count(*) FROM documents;"
+  [ "$output" = "0" ]
+  # The writing is the source of truth — deleting a ticket never destroys it.
+  [ -f "$doc" ]
+}
+
+@test "rm: refuses without --yes in a non-interactive shell" {
+  "$CLI" add "safe" >/dev/null
+  run bash -c "'$CLI' rm 1 </dev/null"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"refusing to delete"* ]]
+  run sqlite3 "$SMRITI_HOME/factory.db" "SELECT count(*) FROM tickets;"
+  [ "$output" = "1" ]
+}
+
+@test "rm: unknown ticket exits 4" {
+  run "$CLI" rm 999 --yes
+  [ "$status" -eq 4 ]
+}
