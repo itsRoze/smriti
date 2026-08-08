@@ -99,6 +99,10 @@ const STATUS_ORDER = ['in_review', 'in_progress', 'ready', 'idea', 'shipped'];
 type Row =
   | { kind: 'project'; label: string }
   | { kind: 'ticket'; ticket: Ticket; run?: Run }
+  // A run with no ticket behind it — /debug on a hand-cut branch, say. Without
+  // its own row such a run is invisible here, so a gate it parks at never
+  // reaches "waiting on you", which is the whole point of the board.
+  | { kind: 'run'; run: Run }
   | { kind: 'blank' };
 
 function buildRows(tickets: Ticket[], runs: Run[], filter: string): Row[] {
@@ -114,13 +118,19 @@ function buildRows(tickets: Ticket[], runs: Run[], filter: string): Row[] {
   });
 
   const runFor = new Map<number, Run>();
-  for (const r of runs) if (r.ticket_id != null) runFor.set(r.ticket_id, r);
+  const loose: Run[] = [];
+  for (const r of runs) {
+    if (r.ticket_id != null) runFor.set(r.ticket_id, r);
+    else loose.push(r);
+  }
 
   const byProject = new Map<string, Ticket[]>();
   for (const t of visible) {
     if (!byProject.has(t.project_slug)) byProject.set(t.project_slug, []);
     byProject.get(t.project_slug)!.push(t);
   }
+  // A project with only ticketless runs still needs a heading to hang them on.
+  for (const r of loose) if (!byProject.has(r.project_slug)) byProject.set(r.project_slug, []);
 
   const rows: Row[] = [];
   for (const project of [...byProject.keys()].sort()) {
@@ -131,9 +141,23 @@ function buildRows(tickets: Ticket[], runs: Run[], filter: string): Row[] {
       return a.id - b.id;
     });
     rows.push({ kind: 'project', label: project });
+    // Ticketless runs sit above the tickets — an awaiting one needs attention
+    // more than a backlog entry does.
+    for (const r of loose.filter((x) => x.project_slug === project)) {
+      if (!q || r.skill.toLowerCase().includes(q) || (r.branch ?? '').toLowerCase().includes(q)) {
+        rows.push({ kind: 'run', run: r });
+      }
+    }
     for (const t of items) rows.push({ kind: 'ticket', ticket: t, run: runFor.get(t.id) });
     rows.push({ kind: 'blank' });
   }
+  // A project heading with nothing under it is noise.
+  for (let i = rows.length - 1; i > 0; i--) {
+    if (rows[i - 1].kind === 'project' && (rows[i].kind === 'blank' || i === rows.length - 1 && rows[i].kind === 'project')) {
+      rows.splice(i - 1, rows[i].kind === 'blank' ? 2 : 1);
+    }
+  }
+  if (rows.length && rows[rows.length - 1].kind === 'project') rows.pop();
   if (rows.length && rows[rows.length - 1].kind === 'blank') rows.pop();
   return rows;
 }
@@ -177,6 +201,15 @@ function ticketLine(t: Ticket, run: Run | undefined, width: number): string {
   return ` ${marker} ${id}${status}${pad(title, room)}${tail}`;
 }
 
+function runLine(r: Run, width: number): string {
+  const awaiting = r.status === 'awaiting';
+  const marker = awaiting ? '●' : '▸';
+  const label = `${r.skill} on ${r.branch ?? '—'}`;
+  const tail = awaiting ? `  ← waiting on you (${r.last_phase ?? 'gate'})` : `  running`;
+  const room = Math.max(10, width - 4 - 5 - 10 - tail.length);
+  return ` ${marker} ${pad('—', 5)}${pad('run', 10)}${pad(label, room)}${tail}`;
+}
+
 function renderScreen(rows: Row[], cursor: number, filter: string, note: string): string {
   const width = Math.max(60, process.stdout.columns || 80);
   const out: string[] = [];
@@ -194,6 +227,8 @@ function renderScreen(rows: Row[], cursor: number, filter: string, note: string)
       out.push(`${DIM}${row.label}${RESET}`);
     } else if (row.kind === 'blank') {
       out.push('');
+    } else if (row.kind === 'run') {
+      out.push(`${DIM}${runLine(row.run, width)}${RESET}`);
     } else {
       const line = ticketLine(row.ticket, row.run, width);
       out.push(i === cursor ? `${REV}${pad(line, width)}${RESET}` : line);
@@ -219,6 +254,7 @@ function plainListing(): number {
   for (const row of rows) {
     if (row.kind === 'project') process.stdout.write(`${row.label}\n`);
     else if (row.kind === 'blank') process.stdout.write('\n');
+    else if (row.kind === 'run') process.stdout.write(`${runLine(row.run, width)}\n`);
     else process.stdout.write(`${ticketLine(row.ticket, row.run, width)}\n`);
   }
   return 0;

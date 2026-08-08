@@ -216,3 +216,21 @@ start_run() {
   run "$CLI" show deadbeef
   [ "$status" -eq 4 ]
 }
+
+@test "reads and failed emits never bring the store into being" {
+  # Skills call `emit` with `|| true` on every step, so a store materialising
+  # as a side effect of a failed call would be invisible.
+  rm -f "$SMRITI_HOME/factory.db"
+
+  run "$CLI" emit ground ok
+  [ "$status" -eq 4 ]
+  [ ! -f "$SMRITI_HOME/factory.db" ]
+
+  run "$CLI" list --active
+  [ "$status" -eq 0 ]
+  [ ! -f "$SMRITI_HOME/factory.db" ]
+
+  run "$CLI" end
+  [ "$status" -eq 0 ]
+  [ ! -f "$SMRITI_HOME/factory.db" ]
+}

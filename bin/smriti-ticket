@@ -127,6 +127,13 @@ cmd_add() {
 
   case "$priority" in ''|*[!0-9-]*) die "--priority must be a number" ;; esac
   [ -n "$title" ] || die "title must not be empty"
+  # A title is one line. Multi-line titles broke the tab-delimited reads that
+  # `list` and `start` rely on — put the detail in --body instead.
+  # $'\n' and not "$(printf '\n')": command substitution strips trailing
+  # newlines, so that form is an empty pattern that matches every title.
+  case "$title" in
+    *$'\n'*) die "title must be a single line — put detail in --body" ;;
+  esac
 
   local slug ts
   slug=$(resolve_project "$project")
@@ -155,6 +162,12 @@ cmd_list() {
       *) die "unknown flag: $1" ;;
     esac
   done
+
+  if ! factory_db_exists; then
+    [ "$json" -eq 1 ] && { echo '[]'; return 0; }
+    echo "no tickets yet — add one with: smriti ticket add \"<what you want>\""
+    return 0
+  fi
 
   local where="WHERE 1=1"
   if [ -n "$project" ]; then

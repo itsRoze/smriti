@@ -145,3 +145,28 @@ teardown() {
   run bun "$CLI" wat
   [ "$status" -eq 1 ]
 }
+
+@test "a run with no ticket still reaches the board when it parks at a gate" {
+  # /debug on a hand-cut branch has no ticket. Keying the board purely off
+  # tickets made such a run invisible, so the gate it was waiting at never
+  # showed under "waiting on you" — the one thing the board exists to surface.
+  local uid
+  uid=$("$TRACE" start debug | cut -d= -f2-)
+  "$TRACE" emit approve awaiting --run "$uid"
+
+  run bun "$CLI" --list
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"waiting on you"* ]]
+  [[ "$output" == *"debug"* ]]
+}
+
+@test "the board renders tickets and ticketless runs together" {
+  "$TICKET" add "Export to CSV" >/dev/null
+  local uid
+  uid=$("$TRACE" start debug | cut -d= -f2-)
+  "$TRACE" emit approve awaiting --run "$uid"
+
+  run bun "$CLI" --list
+  [[ "$output" == *"Export to CSV"* ]]
+  [[ "$output" == *"debug on"* ]]
+}

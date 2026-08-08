@@ -384,3 +384,24 @@ line two"
   local wt; wt=$("$CLI" start 1)
   [ -d "$wt" ]
 }
+
+@test "add: a multi-line title is refused, ordinary titles still accepted" {
+  # Titles feed tab-delimited reads in `list` and `start`; a newline corrupted
+  # both. The second half is the regression guard for the guard itself — the
+  # first version used "$(printf '\n')", which command substitution strips to
+  # an empty pattern that matched every title.
+  run "$CLI" add "first
+second"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"single line"* ]]
+
+  run "$CLI" add "Export to CSV"
+  [ "$status" -eq 0 ]
+}
+
+@test "list: reading before the store exists creates no database" {
+  rm -f "$SMRITI_HOME/factory.db"
+  run "$CLI" list
+  [ "$status" -eq 0 ]
+  [ ! -f "$SMRITI_HOME/factory.db" ]
+}

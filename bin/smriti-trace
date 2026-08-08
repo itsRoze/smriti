@@ -134,6 +134,7 @@ cmd_emit() {
     *) die "invalid status '$status' (expected: $VALID_EVENT_STATUSES)" ;;
   esac
 
+  factory_db_exists || die "no active run — call 'smriti trace start <skill>' first" 4
   [ -n "$uid" ] || uid=$(implicit_run)
   [ -n "$uid" ] || die "no active run — call 'smriti trace start <skill>' first" 4
   run_exists "$uid" || die "no run '$uid'" 4
@@ -166,6 +167,7 @@ cmd_end() {
     *) die "invalid --status '$status' (expected: $VALID_RUN_STATUSES)" ;;
   esac
 
+  factory_db_exists || return 0
   [ -n "$uid" ] || uid=$(implicit_run)
   [ -n "$uid" ] || return 0    # nothing open; ending twice is not an error
   run_exists "$uid" || die "no run '$uid'" 4
@@ -185,6 +187,11 @@ cmd_list() {
       *) die "unknown flag: $1" ;;
     esac
   done
+
+  if ! factory_db_exists; then
+    [ "$json" -eq 1 ] && { echo '[]'; return 0; }
+    echo "no runs recorded yet"; return 0
+  fi
 
   local where="WHERE 1=1"
   [ "$active" -eq 1 ] && where="$where AND status IN ('running','awaiting')"
