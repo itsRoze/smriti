@@ -164,16 +164,38 @@ disk stays the source of truth — this only indexes where it lives:
 smriti ticket doc "${TICKET:--}" --type plan --path "$PLAN_FILE" 2>/dev/null || true
 ```
 
-The plan is concrete and strictly scoped to this request:
+The plan is what the **user** approves, and the user does not read or write the
+code. Write for someone deciding whether this is the right thing to build, not
+for someone about to type it. Concrete and strictly scoped to this request:
 
 - **Header** — `**Slug:**`, `**Branch:**`, `**Date:**`, `**Ticket:**` (`$TICKET`, or `—`).
 - **Problem** — the actual problem, restated.
 - **Approach** — the recommended direction, named, with *why*. If there's a real
   fork, present 2–3 options with trade-offs and mark your recommendation.
-- **Files** — each path with Create / Modify / Test and *why* it changes.
-- **Edge cases** — what to watch for.
-- **Test plan** — how "done" is verified (the checks Step 8 will run).
+- **Shape** — the durable artifacts this creates or changes, shown rather than
+  described: table columns and what a row means; folder and file layout; routes,
+  commands, or config keys added; the states a thing can be in. This is the part
+  worth being concrete about, because it is what the user lives with afterwards
+  and the expensive thing to get wrong.
+- **What changes for you** — the functional impact in behavioural terms: what
+  can be done that couldn't be, what looks or behaves differently, what stops
+  working, what needs migrating or re-running. If nothing user-visible changes,
+  say so plainly.
+- **Cost** — performance and operational impact, when there is any real one:
+  what gets slower or heavier, what grows without bound, what now runs on every
+  request or every poll. Omit the section rather than padding it.
 - **Risks / open questions** — only real ones.
+- **Test plan** — how "done" is verified, as the guarantees being established
+  (not a list of test file names).
+
+**Keep out of the plan:** file inventories and Create/Modify/Test tables, code
+and function signatures, and step-by-step edit sequences. Name the *component*
+that changes ("the board's session matching", "the plan renderer") when it aids
+understanding, never the path list. You will have explored the code in Step 1 and
+can work from that at implementation time — the plan does not need to carry it,
+and a plan that reads like a diff hides the decisions the user is there to make.
+The exception is when the file or folder layout **is** the deliverable, which is
+what **Shape** is for.
 
 **Sizable UI change →** build **mockups** so the user *sees* the change at Gate 2
 rather than reading prose. Use the `frontend-design` skill and what Step 1 learned

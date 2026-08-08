@@ -240,7 +240,8 @@ export function boardPage(): string {
   .docview h1:first-child,.docview h2:first-child{margin-top:0}
   .docview pre{background:rgba(var(--sh),.09);padding:10px 12px;border-radius:8px;overflow-x:auto;font-size:12.5px}
   .docview code{font-family:ui-monospace,Menlo,monospace;font-size:.85em}
-  .docview table{border-collapse:collapse;margin:10px 0;font-size:14px}
+  .docview .tablewrap{overflow-x:auto;margin:10px 0}
+  .docview table{border-collapse:collapse;margin:0;font-size:14px}
   .docview th,.docview td{border:1.5px solid var(--ink-4);padding:5px 9px;text-align:left}
   .docview blockquote{border-left:3px solid var(--ink-4);margin:10px 0;padding:2px 14px;color:var(--ink-3)}
   .docview ul,.docview ol{padding-left:22px}
