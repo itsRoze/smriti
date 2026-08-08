@@ -166,6 +166,18 @@ if [ -f "$COMPLETIONS_SRC" ]; then
   ln -sfn "$COMPLETIONS_SRC" "$COMPLETIONS_DIR/_smriti"
   echo "✓ zsh completions → $COMPLETIONS_DIR/_smriti"
 
+  # Invalidate zsh's completion cache. compinit's staleness check is a daily
+  # timestamp plus a file-count heuristic — it does NOT notice that an existing
+  # completion file changed. So without this, a smriti update installs new
+  # subcommands that never appear in tab completion until the user happens to
+  # delete the dump themselves, which nobody thinks to do.
+  _dumps=$(ls -d "$HOME"/.zcompdump* 2>/dev/null | wc -l | tr -d ' ')
+  if [ "${_dumps:-0}" -gt 0 ]; then
+    rm -f "$HOME"/.zcompdump*
+    echo "✓ cleared zsh completion cache ($_dumps file(s)) — new commands appear in the next shell"
+  fi
+  unset _dumps
+
   # Check if the completions dir is in fpath
   if [[ ":${FPATH}:" != *":$COMPLETIONS_DIR:"* ]]; then
     echo ""

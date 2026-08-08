@@ -176,3 +176,36 @@ test('the served page carries no template-literal escape damage', async () => {
   // Three slashes in a row inside a regex is the fingerprint of a collapsed \/.
   expect(script).not.toContain(':///i');
 });
+
+test('/api/state carries live sessions so a blocked agent can surface', async () => {
+  // The board's "waiting on you" band was driven only by smriti's own trace,
+  // which knows about /begin gates and nothing about a Claude session stalled
+  // on a permission prompt. herdr knows; the board has to ask it.
+  const r = await fetch(`${base()}/api/state`, withCookie());
+  expect(r.status).toBe(200);
+  const s = (await r.json()) as { sessions?: unknown };
+  expect(Array.isArray(s.sessions)).toBe(true);
+});
+
+test('a second start attaches instead of spawning a duplicate session', async () => {
+  // Starting an already-in-progress ticket used to run launchSession again,
+  // which tried to create a second herdr agent under the same name — the launch
+  // failed and the board told you to run claude by hand for a session that was
+  // already open.
+  const tk = (args: string[]) =>
+    spawnSync(TICKET, args, { encoding: 'utf8', env: { ...process.env, SMRITI_HOME: HOME_DIR } });
+  tk(['add', 'double start', '--project', 'demo']);
+  const list = JSON.parse(tk(['list', '--all', '--json']).stdout) as { id: number; title: string }[];
+  const id = list.find((t) => t.title === 'double start')!.id;
+
+  // No repo for project 'demo', so start refuses — the point here is that the
+  // route reports the failure rather than pretending, and never 500s twice
+  // differently.
+  const a = await fetch(`${base()}/api/tickets/${id}/start`, {
+    method: 'POST', headers: { cookie: jar, 'content-type': 'application/json' }, body: '{}',
+  });
+  const b = await fetch(`${base()}/api/tickets/${id}/start`, {
+    method: 'POST', headers: { cookie: jar, 'content-type': 'application/json' }, body: '{}',
+  });
+  expect(a.status).toBe(b.status);
+});

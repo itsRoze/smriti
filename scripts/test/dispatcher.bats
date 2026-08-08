@@ -106,3 +106,14 @@ teardown() {
   [ "$status" -eq 0 ]
   [ -n "$output" ]
 }
+
+@test "board_permissions is a recognised config key" {
+  # Bypass mode is a genuine loosening, so it is opt-in via config rather than
+  # a silent default — which means config has to accept the key without warning.
+  run "$SMRITI" config set board_permissions bypass
+  [ "$status" -eq 0 ]
+  ! [[ "$output" == *"unknown key"* ]]
+  run "$SMRITI" config get board_permissions
+  [ "$output" = "bypass" ]
+  "$SMRITI" config unset board_permissions
+}
