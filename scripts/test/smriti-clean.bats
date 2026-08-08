@@ -581,3 +581,134 @@ seed_project_dir() {
   echo "$output" | grep -q "purged 1 artifact(s) for 'feat/x'"
   [ ! -f "$PROJ/feat--x-plan-2026-01-01T00-00-00Z.md" ]
 }
+
+# ─── worktree awareness ────────────────────────────────────────────────
+#
+# A ticket-per-worktree workflow makes linked worktrees the normal case. Before
+# these, `git checkout <default>` inside a linked worktree failed outright
+# ("already used by worktree at ...") and, under `set -e`, crashed the script
+# instead of refusing cleanly.
+
+# Merged branch that lives in its own linked worktree, with an upstream so the
+# no-upstream soft refusal doesn't mask what we're testing.
+make_merged_branch_in_worktree() {
+  local name="$1"
+  git init -q --bare "$WORK/remote.git"
+  git remote add origin "$WORK/remote.git"
+  git push -q -u origin main
+
+  git worktree add -q "$WORK/wt-$name" -b "$name"
+  git -C "$WORK/wt-$name" config user.email "test@smriti.local"
+  git -C "$WORK/wt-$name" config user.name "smriti-test"
+  echo "change-$name" > "$WORK/wt-$name/f-$name"
+  git -C "$WORK/wt-$name" add "f-$name"
+  git -C "$WORK/wt-$name" commit -q -m "$name: work"
+  git -C "$WORK/wt-$name" push -q -u origin "$name"
+  git merge --no-ff --no-edit -q "$name"
+}
+
+@test "worktree: deletes a branch held by a linked worktree, removing the worktree" {
+  init_repo
+  make_merged_branch_in_worktree "feat-wt"
+
+  run "$CLI" --branch feat-wt
+  [ "$status" -eq 0 ]
+  ! git show-ref --verify --quiet refs/heads/feat-wt
+  [ ! -d "$WORK/wt-feat-wt" ]
+  [[ "$output" == *"removed worktree"* ]]
+}
+
+@test "worktree: works when run from inside the worktree being deleted" {
+  # The hard case: cwd disappears mid-run. Everything after the removal
+  # resolves the project slug by running git in cwd, which silently returns
+  # nothing from a deleted directory — so the script must relocate itself.
+  init_repo
+  make_merged_branch_in_worktree "feat-wt"
+
+  cd "$WORK/wt-feat-wt"
+  run "$CLI" --branch feat-wt
+  [ "$status" -eq 0 ]
+  ! git -C "$REPO" show-ref --verify --quiet refs/heads/feat-wt
+  [ ! -d "$WORK/wt-feat-wt" ]
+}
+
+@test "worktree: a worktree with uncommitted work is refused, not force-removed" {
+  init_repo
+  make_merged_branch_in_worktree "feat-wt"
+  echo "work in progress" > "$WORK/wt-feat-wt/scratch"
+
+  run "$CLI" --branch feat-wt
+  [ "$status" -ne 0 ]
+  # Both the branch and the uncommitted work survive.
+  git show-ref --verify --quiet refs/heads/feat-wt
+  [ -f "$WORK/wt-feat-wt/scratch" ]
+}
+
+@test "worktree: --force removes a dirty worktree" {
+  init_repo
+  make_merged_branch_in_worktree "feat-wt"
+  echo "work in progress" > "$WORK/wt-feat-wt/scratch"
+
+  run "$CLI" --branch feat-wt --force
+  [ "$status" -eq 0 ]
+  ! git show-ref --verify --quiet refs/heads/feat-wt
+  [ ! -d "$WORK/wt-feat-wt" ]
+}
+
+@test "worktree: --all releases each candidate's own worktree" {
+  # Not just the one we happen to be standing in — any candidate may be in a
+  # worktree of its own.
+  init_repo
+  make_merged_branch_in_worktree "feat-one"
+  git worktree add -q "$WORK/wt-feat-two" -b "feat-two"
+  git -C "$WORK/wt-feat-two" config user.email "test@smriti.local"
+  git -C "$WORK/wt-feat-two" config user.name "smriti-test"
+  echo two > "$WORK/wt-feat-two/f-two"
+  git -C "$WORK/wt-feat-two" add "f-two"
+  git -C "$WORK/wt-feat-two" commit -q -m "two: work"
+  git -C "$WORK/wt-feat-two" push -q -u origin feat-two
+  git merge --no-ff --no-edit -q feat-two
+
+  run "$CLI" --all
+  [ "$status" -eq 0 ]
+  ! git show-ref --verify --quiet refs/heads/feat-one
+  ! git show-ref --verify --quiet refs/heads/feat-two
+  [ ! -d "$WORK/wt-feat-one" ]
+  [ ! -d "$WORK/wt-feat-two" ]
+}
+
+@test "worktree: a dirty PRIMARY worktree refuses cleanly, even from a clean linked one" {
+  # The guard has to check the worktree the mutations actually run in. Checking
+  # the caller's instead let a clean linked worktree pass while the primary was
+  # dirty, and `git -C <primary> checkout` then aborted under set -e with an
+  # undocumented exit 1 — or worse, succeeded and carried the uncommitted work
+  # onto the default branch.
+  init_repo
+  make_merged_branch_in_worktree "feat-wt"
+
+  # Primary sits on a feature branch with uncommitted work.
+  git checkout -q -b dirty-work
+  echo "uncommitted" > f
+
+  cd "$WORK/wt-feat-wt"
+  run "$CLI" --branch feat-wt
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"dirty"* ]]
+
+  # Nothing was touched.
+  git -C "$REPO" show-ref --verify --quiet refs/heads/feat-wt
+  [ "$(cat "$REPO/f")" = "uncommitted" ]
+}
+
+@test "worktree: --plan reports the dirty primary rather than claiming it can clean" {
+  init_repo
+  make_merged_branch_in_worktree "feat-wt"
+  git checkout -q -b dirty-work
+  echo "uncommitted" > f
+
+  cd "$WORK/wt-feat-wt"
+  run "$CLI" --plan
+  [ "$status" -eq 0 ]
+  [ "$(echo "$output" | jq -r .action)" = "refuse" ]
+  echo "$output" | jq -r .refusal_reason | grep -q "dirty"
+}

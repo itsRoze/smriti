@@ -46,7 +46,7 @@ No metaprogramming, dynamic dispatch by string, runtime monkey-patching, or auto
 
 For any given job in this codebase, there is one obvious way to do it. Different ways for the same job invite the model to find three examples and blend them, producing a fourth pattern that exists nowhere else.
 
-- **Comply:** all CLI helpers in `bin/` are bash scripts using the same option-parsing shape. All resolvers in `lib/resolvers/` are flat markdown files. All skill templates use a single placeholder syntax — the one the build-time resolver expands — never two competing syntaxes.
+- **Comply:** CLI helpers in `bin/` are bash by default, with one stated exception — bun/TypeScript when the job needs a runtime bash cannot supply (a browser for `smriti-browse`, an HTTP server for `smriti-html` and `smriti-board`) — and all of them share the same option-parsing shape. All resolvers in `lib/resolvers/` are flat markdown files. All skill templates use a single placeholder syntax — the one the build-time resolver expands — never two competing syntaxes.
 - **Violate:** half the CLI helpers are bash, half are TypeScript, with no clear rule when to use which. Two ways to read project config (`cat` vs a `bin/` helper) coexisting.
 - **Apply when reviewing:** if the diff introduces a second pattern for a job that already has a pattern, that's a Tier 1 violation. Either migrate the old pattern, or the diff must justify why this is genuinely a different job.
 

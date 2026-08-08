@@ -16,3 +16,4 @@ dist/
 # Machine-local Claude Code settings (per-developer permissions, env, hooks).
 # Never commit — it's specific to one machine and may hold local paths.
 .claude/settings.local.json
+.mockups/

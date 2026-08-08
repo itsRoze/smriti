@@ -1,0 +1,284 @@
+#!/usr/bin/env bash
+# smriti trace — the run trace: what a skill did, phase by phase.
+# State: $SMRITI_HOME/factory.db   (schema: lib/factory-schema.sql)
+#
+# Subcommands:
+#   smriti trace start <skill> [--ticket N]   begin a run; prints RUN_UID=…
+#   smriti trace emit <phase> <status> [--run UID] [--note TEXT]
+#   smriti trace end [--run UID] [--status done|failed]
+#   smriti trace list [--active] [--json]
+#   smriti trace show <run-uid> [--json]
+#   smriti trace tail [--run UID] [--after ID] [--json]
+#
+# Exit codes:
+#   0  ok
+#   2  usage error
+#   3  sqlite3 or schema missing
+#   4  no such run
+#
+# `events.id` is the cursor. Readers poll `WHERE id > <last>`, and that one
+# query serves both a live tail and full history — there is no second replay
+# path to keep in sync.
+#
+# Every write here is best-effort by contract: skills call this for
+# observability, so a trace failure must never be able to fail the work being
+# traced. Callers append `|| true`.
+
+set -e
+
+SMRITI_TOOL=smriti-trace
+
+# Follow the full symlink chain, not just one hop: a multi-hop install would
+# otherwise resolve SMRITI_LIB to the wrong directory and make every call here
+# hard-exit with "schema not found". Same loop as bin/smriti.
+_self="$0"
+while [ -L "$_self" ]; do
+  _target=$(readlink "$_self")
+  case "$_target" in
+    /*) _self="$_target" ;;
+    *)  _self="$(cd "$(dirname "$_self")" && pwd -P)/$_target" ;;
+  esac
+done
+SMRITI_BIN="$(cd "$(dirname "$_self")" && pwd -P)"
+SMRITI_LIB="$(cd "$SMRITI_BIN/../lib" && pwd -P)"
+unset _self
+
+# shellcheck source=../lib/factory-db.sh
+. "$SMRITI_LIB/factory-db.sh"
+
+VALID_RUN_STATUSES="running awaiting done failed"
+VALID_EVENT_STATUSES="start ok fail awaiting"
+
+usage() {
+  cat <<'USAGE' >&2
+usage:
+  smriti trace start <skill> [--ticket N]
+  smriti trace emit <phase> <start|ok|fail|awaiting> [--run UID] [--note TEXT]
+  smriti trace end [--run UID] [--status done|failed]
+  smriti trace list [--active] [--json]
+  smriti trace show <run-uid> [--json]
+  smriti trace tail [--run UID] [--after ID] [--json]
+USAGE
+  exit 2
+}
+
+# die, require_num, current_slug and current_branch come from factory-db.sh.
+
+# The run a bare `emit`/`end` applies to: the newest still-running run on this
+# branch. Skills are a sequential flow, so "the run I am inside" is
+# unambiguous without threading a uid through every step of a markdown prompt.
+implicit_run() {
+  local slug branch
+  slug=$(current_slug); branch=$(current_branch)
+  [ -n "$slug" ] || return 0
+  db "SELECT run_uid FROM runs
+      WHERE project_slug = $(sql_quote "$slug")
+        AND branch IS $(sql_quote_or_null "$branch")
+        AND status IN ('running','awaiting')
+      ORDER BY id DESC LIMIT 1;"
+}
+
+run_exists() { [ "$(db "SELECT count(*) FROM runs WHERE run_uid = $(sql_quote "$1");")" = "1" ]; }
+
+# ─── start ──────────────────────────────────────────────────────────────────
+
+cmd_start() {
+  [ $# -ge 1 ] || usage
+  local skill="$1"; shift
+  local ticket=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --ticket) [ $# -ge 2 ] || die "--ticket requires a value"; ticket="$2"; shift 2 ;;
+      *) die "unknown flag: $1" ;;
+    esac
+  done
+  [ "$ticket" = "-" ] && ticket=""
+  if [ -n "$ticket" ]; then
+    require_num "$ticket" "--ticket"
+    # Foreign keys are enforced, so an unknown id would surface as a raw
+    # SQLITE_CONSTRAINT exit rather than something a reader can act on.
+    [ "$(db "SELECT count(*) FROM tickets WHERE id = $ticket;")" = "1" ] \
+      || die "no ticket #$ticket" 4
+  fi
+
+  local slug branch uid
+  slug=$(current_slug); [ -n "$slug" ] || slug="unknown"
+  branch=$(current_branch)
+  # 8 hex chars: short enough to paste, wide enough that two concurrent runs
+  # will not collide.
+  uid=$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')
+
+  db_write "INSERT INTO runs (run_uid, ticket_id, project_slug, skill, branch, status, started_at)
+            VALUES ($(sql_quote "$uid"), $(sql_quote_or_null "$ticket"), $(sql_quote "$slug"),
+                    $(sql_quote "$skill"), $(sql_quote_or_null "$branch"), 'running',
+                    $(sql_quote "$(now_utc)"));"
+  printf 'RUN_UID=%s\n' "$uid"
+}
+
+# ─── emit ───────────────────────────────────────────────────────────────────
+
+cmd_emit() {
+  [ $# -ge 2 ] || usage
+  local phase="$1" status="$2"; shift 2
+  local uid="" note=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --run)  [ $# -ge 2 ] || die "--run requires a value";  uid="$2";  shift 2 ;;
+      --note) [ $# -ge 2 ] || die "--note requires a value"; note="$2"; shift 2 ;;
+      *) die "unknown flag: $1" ;;
+    esac
+  done
+
+  case " $VALID_EVENT_STATUSES " in
+    *" $status "*) ;;
+    *) die "invalid status '$status' (expected: $VALID_EVENT_STATUSES)" ;;
+  esac
+
+  factory_db_exists || die "no active run — call 'smriti trace start <skill>' first" 4
+  [ -n "$uid" ] || uid=$(implicit_run)
+  [ -n "$uid" ] || die "no active run — call 'smriti trace start <skill>' first" 4
+  run_exists "$uid" || die "no run '$uid'" 4
+
+  # A run that reaches a gate is 'awaiting' so the factory can list it under
+  # "waiting on you"; any later event puts it back to running.
+  local run_status="running"
+  [ "$status" = "awaiting" ] && run_status="awaiting"
+
+  db_write "INSERT INTO events (run_uid, phase, status, note, at)
+            VALUES ($(sql_quote "$uid"), $(sql_quote "$phase"), $(sql_quote "$status"),
+                    $(sql_quote_or_null "$note"), $(sql_quote "$(now_utc)"));
+            UPDATE runs SET status = $(sql_quote "$run_status")
+              WHERE run_uid = $(sql_quote "$uid") AND status IN ('running','awaiting');"
+}
+
+# ─── end ────────────────────────────────────────────────────────────────────
+
+cmd_end() {
+  local uid="" status="done"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --run)    [ $# -ge 2 ] || die "--run requires a value";    uid="$2";    shift 2 ;;
+      --status) [ $# -ge 2 ] || die "--status requires a value"; status="$2"; shift 2 ;;
+      *) die "unknown flag: $1" ;;
+    esac
+  done
+  case " $VALID_RUN_STATUSES " in
+    *" $status "*) ;;
+    *) die "invalid --status '$status' (expected: $VALID_RUN_STATUSES)" ;;
+  esac
+
+  factory_db_exists || return 0
+  [ -n "$uid" ] || uid=$(implicit_run)
+  [ -n "$uid" ] || return 0    # nothing open; ending twice is not an error
+  run_exists "$uid" || die "no run '$uid'" 4
+
+  db_write "UPDATE runs SET status = $(sql_quote "$status"), ended_at = $(sql_quote "$(now_utc)")
+            WHERE run_uid = $(sql_quote "$uid");"
+}
+
+# ─── list / show / tail ─────────────────────────────────────────────────────
+
+cmd_list() {
+  local active=0 json=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --active) active=1; shift ;;
+      --json)   json=1;   shift ;;
+      *) die "unknown flag: $1" ;;
+    esac
+  done
+
+  if ! factory_db_exists; then
+    [ "$json" -eq 1 ] && { echo '[]'; return 0; }
+    echo "no runs recorded yet"; return 0
+  fi
+
+  local where="WHERE 1=1"
+  [ "$active" -eq 1 ] && where="$where AND status IN ('running','awaiting')"
+
+  if [ "$json" -eq 1 ]; then
+    db_json "SELECT run_uid, ticket_id, project_slug, skill, branch, status, started_at, ended_at,
+                    (SELECT phase FROM events e WHERE e.run_uid = runs.run_uid
+                     ORDER BY e.id DESC LIMIT 1) AS last_phase
+             FROM runs $where ORDER BY id DESC LIMIT 100;"
+    return 0
+  fi
+
+  local rows
+  rows=$(db "SELECT run_uid || char(9) || status || char(9) || skill || char(9) ||
+                    project_slug || char(9) || coalesce(branch,'—')
+             FROM runs $where ORDER BY id DESC LIMIT 100;")
+  if [ -z "$rows" ]; then echo "no runs recorded yet"; return 0; fi
+  printf '%s\n' "$rows" | awk -F'\t' '{ printf "%-10s %-10s %-8s %-20s %s\n", $1, $2, $3, $4, $5 }'
+}
+
+cmd_show() {
+  local uid="" json=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json) json=1; shift ;;
+      -*) die "unknown flag: $1" ;;
+      *) uid="$1"; shift ;;
+    esac
+  done
+  [ -n "$uid" ] || usage
+  run_exists "$uid" || die "no run '$uid'" 4
+
+  if [ "$json" -eq 1 ]; then
+    local r e
+    r=$(db_json_one "SELECT * FROM runs WHERE run_uid = $(sql_quote "$uid");")
+    e=$(db_json "SELECT id, phase, status, note, at FROM events
+                 WHERE run_uid = $(sql_quote "$uid") ORDER BY id;")
+    printf '{"run":%s,"events":%s}\n' "$r" "$e"
+    return 0
+  fi
+
+  db "SELECT run_uid || '  ' || skill || '  (' || status || ')' || char(10) ||
+             'project: ' || project_slug || char(10) ||
+             'branch:  ' || coalesce(branch,'—') || char(10) ||
+             'ticket:  ' || coalesce('#' || ticket_id, '—') || char(10) ||
+             'started: ' || started_at
+      FROM runs WHERE run_uid = $(sql_quote "$uid");"
+  echo
+  db "SELECT '  ' || at || '  ' || phase || '  ' || status || coalesce('  — ' || note, '')
+      FROM events WHERE run_uid = $(sql_quote "$uid") ORDER BY id;"
+}
+
+# The cursor query. --after makes it a live tail; without it, full history.
+cmd_tail() {
+  local uid="" after=0 json=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --run)   [ $# -ge 2 ] || die "--run requires a value";   uid="$2";   shift 2 ;;
+      --after) [ $# -ge 2 ] || die "--after requires a value"; after="$2"; shift 2 ;;
+      --json)  json=1; shift ;;
+      *) die "unknown flag: $1" ;;
+    esac
+  done
+  require_num "$after" "--after"
+
+  local where="WHERE id > $after"
+  [ -n "$uid" ] && where="$where AND run_uid = $(sql_quote "$uid")"
+
+  if [ "$json" -eq 1 ]; then
+    db_json "SELECT id, run_uid, phase, status, note, at FROM events $where ORDER BY id LIMIT 500;"
+  else
+    db "SELECT id || '  ' || run_uid || '  ' || phase || '  ' || status
+        FROM events $where ORDER BY id LIMIT 500;"
+  fi
+}
+
+# ─── dispatch ───────────────────────────────────────────────────────────────
+
+CMD="${1:-}"
+shift || true
+case "$CMD" in
+  start)        cmd_start "$@" ;;
+  emit)         cmd_emit "$@" ;;
+  end)          cmd_end "$@" ;;
+  list)         cmd_list "$@" ;;
+  show)         cmd_show "$@" ;;
+  tail)         cmd_tail "$@" ;;
+  ""|-h|--help) usage ;;
+  *) echo "$SMRITI_TOOL: unknown command '$CMD'" >&2; usage ;;
+esac

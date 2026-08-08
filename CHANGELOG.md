@@ -1,5 +1,30 @@
 # Changelog
 
+## 1.2.0 — 2026-08-08
+
+The work layer. smriti had no concept of *work*: the flow started at a free-text `/begin` prompt, with no backlog, no ticket, and no view across projects. Ideas lived in a separate tracker, disconnected from the system that does the work.
+
+### Added
+- **`smriti` on its own opens the board** — a locally served page showing every project, every ticket, what is running, and what is waiting on you, drawn as a planning sketchbook (grid paper, pine-marker ink, hand-drawn boxes, highlighter for what needs a decision). Keyboard-first throughout; starting a ticket cuts its worktree and opens a Claude Code session via herdr or tmux, then shows the exact attach command. Every route of the local server is authenticated (bootstrap-secret → HttpOnly cookie, Host and Origin checks); piped or redirected, bare `smriti` stays the plain dispatcher. An earlier iteration of this entry described a raw-mode TUI — it was built, then replaced by the board in the same release; `smriti factory --list` survives as the scriptable read.
+- **`smriti ticket`** — the work layer, stored in `~/.smriti/factory.db`. Add, list, show, start, status, done, plus a document index. `--json` on the read verbs, so the board is a client of the same contract you use by hand.
+- **`smriti trace`** — runs and phase events, so a run is watchable while it happens and reviewable afterwards. `events.id` is the cursor: one query serves both a live tail and full history.
+- **Documents are indexed against their ticket.** Plans, debug docs and audits register where they live as they're written; the markdown on disk stays the source of truth and the filename contract is untouched.
+- **Worktree per ticket.** `smriti ticket start` cuts one, so several tickets can be in flight without colliding.
+- **`smriti ticket edit|cancel|rm`** — a ticket's description is editable (inline on the board, `⌘⏎` to save); `cancel` parks work reversibly and keeps its paper trail; `rm` deletes the ticket and its index rows but never the markdown on disk.
+- **Light and dark.** The board ships both grounds — marker on paper, chalk on slate — following the OS by default, with `t` to override.
+- **A project-scoped `/code-review`.** Claude Code's built-in is compiled in as manual-invocation-only, so `/begin`'s review step could never reach it and silently did nothing. The replacement is model-invocable and reads `principles.md`, so findings cite the tier they violate.
+
+### Changed
+- **The skills stamp the ticket.** `/begin`, `/debug`, `/ship` and `/clean` pick it up from the branch via the preamble's `$TICKET`. `/ship` moves it to in review and records the PR; `/clean` marks it shipped once the merge is confirmed. A ticket is never required — every skill works unchanged on a hand-cut branch.
+- **Linear is no longer the system of record.** `/debug` still reads a Linear issue when you paste one, but the local store is what smriti tracks against.
+
+### Fixed
+- **`/clean` no longer breaks on worktrees.** It ran `git checkout <default>` in three places, which fails inside a linked worktree when the default branch is checked out elsewhere — and under `set -e` that crashed rather than refused. Branch-lifecycle commands now run against the primary worktree, a branch held by a linked worktree gets that worktree removed first, and running `/clean` from inside the worktree it is deleting works.
+- **A new worktree no longer looks like a new project.** `IS_FIRST_TIME` was keyed on the path hash, so every freshly-cut worktree fired the `/bootstrap` nudge. It is now keyed on repo identity.
+- **`/ship` no longer builds an empty PR title.** It called `smriti pr-title-rewrite "" "$RAW_TITLE"`; the empty version argument is a usage error, so the title came back empty every time. The call is removed — `/ship` hasn't version-prefixed titles since 1.0.
+- **Stale zsh completions** for `approvals` and `version-bump`, both removed in 1.0, are gone.
+- `VERSION` and `package.json` had drifted apart (1.1.1 vs 1.0.0); both are now 1.2.0.
+
 ## 1.1.1 — 2026-07-18
 
 ### Changed

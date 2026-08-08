@@ -80,6 +80,27 @@ else
   else
     SLUG="path-$PATH_HASH"
   fi
+
+  # A cache miss means smriti has not seen this *path* — not necessarily this
+  # codebase. Git worktrees have their own paths, so without this every
+  # freshly-cut worktree would claim to be a brand-new project and trigger the
+  # /bootstrap nudge. Repo identity is the right signal: if another cached path
+  # already resolves to the same slug, we know this codebase.
+  #
+  # Deliberately NOT keyed off `projects/<slug>/` existing — that directory is
+  # created as a side effect of writing any plan or debug doc, so a repo that
+  # was never bootstrapped would look known.
+  if [ "$SLUG" != "path-$PATH_HASH" ]; then
+    for _other in "$SLUG_CACHE_DIR"/*; do
+      [ -f "$_other" ] || continue
+      if [ "$(grep -E '^SLUG=' "$_other" 2>/dev/null | tail -1 | cut -d= -f2-)" = "$SLUG" ]; then
+        IS_FIRST_TIME=no
+        break
+      fi
+    done
+    unset _other
+  fi
+
   write_cache
 fi
 

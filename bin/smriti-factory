@@ -1,0 +1,241 @@
+#!/usr/bin/env bun
+// smriti factory — the scriptable terminal read of the factory's state.
+//
+// Usage:
+//   smriti factory --list     plain listing of tickets and runs (the default)
+//
+// Exit codes: 0=ok  1=usage  2=runtime
+//
+// The interactive front door is `smriti board` — a locally served page. It
+// replaced the raw-mode TUI that used to live here. The objection that killed
+// the first web proposal ("a browser cannot hand you an interactive terminal")
+// is answered by the board's SERVER: it shells out to herdr or tmux to create
+// the session, then shows the exact attach command. The session is a terminal;
+// the button never needed to be.
+//
+// What remains here is the piped/scripted surface: `smriti factory --list`
+// prints the same model the board renders, reading it the same way — through
+// `smriti ticket --json` and `smriti trace --json`, never SQL.
+
+import { spawnSync } from 'node:child_process';
+import { dirname, join } from 'node:path';
+import { realpathSync } from 'node:fs';
+
+const TOOL_VERSION = '0.1.0';
+
+const SELF = realpathSync(process.argv[1]);
+const SMRITI_BIN = dirname(SELF);
+const TICKET = join(SMRITI_BIN, 'smriti-ticket');
+const TRACE = join(SMRITI_BIN, 'smriti-trace');
+
+function err(msg: string): never {
+  process.stderr.write(`smriti-factory: ${msg}\n`);
+  process.exit(1);
+}
+
+function usage(): never {
+  process.stderr.write(
+    `smriti factory v${TOOL_VERSION}
+
+` +
+      `Usage:
+  smriti factory [--list]   plain listing of tickets and active runs
+
+` +
+      `The interactive board is \`smriti board\` (or just \`smriti\`).
+` +
+      `Exit codes: 0=ok 1=usage 2=runtime
+`,
+  );
+  process.exit(1);
+}
+
+// ─── data ───────────────────────────────────────────────────────────────────
+
+type Ticket = {
+  id: number;
+  project_slug: string;
+  title: string;
+  status: string;
+  priority: number;
+  branch: string | null;
+  worktree_path: string | null;
+  pr_url: string | null;
+};
+
+type Run = {
+  run_uid: string;
+  ticket_id: number | null;
+  project_slug: string;
+  skill: string;
+  branch: string | null;
+  status: string;
+  last_phase: string | null;
+};
+
+function readJson<T>(bin: string, args: string[]): T[] {
+  const r = spawnSync(bin, args, { encoding: 'utf8' });
+  if (r.status !== 0) return [];
+  try {
+    return JSON.parse(r.stdout || '[]') as T[];
+  } catch {
+    return [];
+  }
+}
+
+function loadTickets(): Ticket[] {
+  return readJson<Ticket>(TICKET, ['list', '--all', '--json']);
+}
+
+function loadRuns(): Run[] {
+  return readJson<Run>(TRACE, ['list', '--active', '--json']);
+}
+
+// ─── model ──────────────────────────────────────────────────────────────────
+
+// Work order, not alphabetical: what needs a decision sits above what is
+// merely open, which sits above what is only an idea.
+const STATUS_ORDER = ['in_review', 'in_progress', 'ready', 'idea', 'shipped', 'cancelled'];
+
+type Row =
+  | { kind: 'project'; label: string }
+  | { kind: 'ticket'; ticket: Ticket; run?: Run }
+  // A run with no ticket behind it — /debug on a hand-cut branch, say. Without
+  // its own row such a run is invisible here, so a gate it parks at never
+  // reaches "waiting on you", which is the whole point of the board.
+  | { kind: 'run'; run: Run }
+  | { kind: 'blank' };
+
+function buildRows(tickets: Ticket[], runs: Run[], filter: string): Row[] {
+  const q = filter.trim().toLowerCase();
+  const visible = tickets.filter((t) => {
+    if (t.status === 'shipped' || t.status === 'cancelled') return false;
+    if (!q) return true;
+    return (
+      t.title.toLowerCase().includes(q) ||
+      t.project_slug.toLowerCase().includes(q) ||
+      String(t.id) === q
+    );
+  });
+
+  const runFor = new Map<number, Run>();
+  const loose: Run[] = [];
+  for (const r of runs) {
+    if (r.ticket_id != null) runFor.set(r.ticket_id, r);
+    else loose.push(r);
+  }
+
+  const byProject = new Map<string, Ticket[]>();
+  for (const t of visible) {
+    if (!byProject.has(t.project_slug)) byProject.set(t.project_slug, []);
+    byProject.get(t.project_slug)!.push(t);
+  }
+  // A project with only ticketless runs still needs a heading to hang them on.
+  for (const r of loose) if (!byProject.has(r.project_slug)) byProject.set(r.project_slug, []);
+
+  const rows: Row[] = [];
+  for (const project of [...byProject.keys()].sort()) {
+    const items = byProject.get(project)!.sort((a, b) => {
+      const s = STATUS_ORDER.indexOf(a.status) - STATUS_ORDER.indexOf(b.status);
+      if (s !== 0) return s;
+      if (a.priority !== b.priority) return b.priority - a.priority;
+      return a.id - b.id;
+    });
+    rows.push({ kind: 'project', label: project });
+    // Ticketless runs sit above the tickets — an awaiting one needs attention
+    // more than a backlog entry does.
+    for (const r of loose.filter((x) => x.project_slug === project)) {
+      if (!q || r.skill.toLowerCase().includes(q) || (r.branch ?? '').toLowerCase().includes(q)) {
+        rows.push({ kind: 'run', run: r });
+      }
+    }
+    for (const t of items) rows.push({ kind: 'ticket', ticket: t, run: runFor.get(t.id) });
+    rows.push({ kind: 'blank' });
+  }
+  // A project heading with nothing under it is noise.
+  for (let i = rows.length - 1; i > 0; i--) {
+    if (rows[i - 1].kind === 'project' && (rows[i].kind === 'blank' || i === rows.length - 1 && rows[i].kind === 'project')) {
+      rows.splice(i - 1, rows[i].kind === 'blank' ? 2 : 1);
+    }
+  }
+  if (rows.length && rows[rows.length - 1].kind === 'project') rows.pop();
+  if (rows.length && rows[rows.length - 1].kind === 'blank') rows.pop();
+  return rows;
+}
+
+
+// ─── rendering ──────────────────────────────────────────────────────────────
+
+
+const STATUS_LABEL: Record<string, string> = {
+  idea: 'idea',
+  ready: 'ready',
+  in_progress: 'building',
+  in_review: 'in review',
+  shipped: 'shipped',
+  cancelled: 'cancelled',
+};
+
+function pad(s: string, n: number): string {
+  return s.length >= n ? s.slice(0, n) : s + ' '.repeat(n - s.length);
+}
+
+function ticketLine(t: Ticket, run: Run | undefined, width: number): string {
+  const awaiting = run?.status === 'awaiting';
+  const marker = awaiting ? '●' : run ? '▸' : ' ';
+  const id = pad(`#${t.id}`, 5);
+  const status = pad(STATUS_LABEL[t.status] ?? t.status, 10);
+  let tail = '';
+  if (awaiting) tail = `  ← waiting on you (${run!.last_phase ?? 'gate'})`;
+  else if (run) tail = `  running ${run.skill}`;
+  const title = t.title.replace(/\s+/g, ' ');
+  const room = Math.max(10, width - 4 - 5 - 10 - tail.length);
+  return ` ${marker} ${id}${status}${pad(title, room)}${tail}`;
+}
+
+function runLine(r: Run, width: number): string {
+  const awaiting = r.status === 'awaiting';
+  const marker = awaiting ? '●' : '▸';
+  const label = `${r.skill} on ${r.branch ?? '—'}`;
+  const tail = awaiting ? `  ← waiting on you (${r.last_phase ?? 'gate'})` : `  running`;
+  const room = Math.max(10, width - 4 - 5 - 10 - tail.length);
+  return ` ${marker} ${pad('—', 5)}${pad('run', 10)}${pad(label, room)}${tail}`;
+}
+
+
+function plainListing(): number {
+  const tickets = loadTickets();
+  const runs = loadRuns();
+  const rows = buildRows(tickets, runs, '');
+  if (!rows.length) {
+    process.stdout.write('no open tickets — add one with: smriti ticket add "<what you want>"\n');
+    return 0;
+  }
+  const width = Math.max(60, process.stdout.columns || 80);
+  for (const row of rows) {
+    if (row.kind === 'project') process.stdout.write(`${row.label}\n`);
+    else if (row.kind === 'blank') process.stdout.write('\n');
+    else if (row.kind === 'run') process.stdout.write(`${runLine(row.run, width)}\n`);
+    else process.stdout.write(`${ticketLine(row.ticket, row.run, width)}\n`);
+  }
+  return 0;
+}
+
+// ─── main ───────────────────────────────────────────────────────────────
+
+async function main(): Promise<number> {
+  for (const a of process.argv.slice(2)) {
+    if (a === '--list') continue; // the only mode; kept for compatibility
+    else if (a === '-h' || a === '--help') usage();
+    else if (a.startsWith('--')) err(`unknown flag: ${a}`);
+    else err(`unexpected argument: ${a}`);
+  }
+  return plainListing();
+}
+
+main()
+  .then((code) => process.exit(code))
+  .catch((e) => {
+    process.stderr.write(`smriti-factory: ${String(e?.message ?? e)}\n`);
+    process.exit(2);
+  });

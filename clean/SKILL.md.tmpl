@@ -70,10 +70,11 @@ You're on a feature branch that's been merged. Issue a decision-brief AskUserQue
 D1 — Delete merged branch and switch to <default>?
 
 ELI10: <current branch> was merged (PR #<merged_pr or "detected via git">).
-       Clean-up moves you to <default>, pulls latest, deletes the local
-       branch, prunes stale remote refs, and clears this branch's
-       out-of-repo smriti scratch (plan/design/debug docs + audits) since
-       that work has shipped.
+       Clean-up moves you to <default>, pulls latest, removes this
+       branch's worktree if it has one, deletes the local branch, prunes
+       stale remote refs, marks its ticket shipped, and clears this
+       branch's out-of-repo smriti scratch (plan/design/debug docs +
+       audits) since that work has shipped.
 
 Stakes if we pick wrong: deleting before the squash actually lands on
        <default> throws away the only local copy of your changes — though
@@ -114,9 +115,11 @@ You're on the default branch with one or more merged candidates. Decision-brief 
 ```
 D1 — Delete <N> merged branches?
 
-ELI10: <N> local branches were merged into <default>. Cleanup deletes
-       each, prunes stale remote refs, and clears each branch's out-of-repo
-       smriti scratch (plan/design/debug docs + audits).
+ELI10: <N> local branches were merged into <default>. Cleanup removes
+       each branch's worktree if it has one, deletes the branch, prunes
+       stale remote refs, marks its ticket shipped, and clears each
+       branch's out-of-repo smriti scratch (plan/design/debug docs +
+       audits).
 
 Candidates:
   • <branch-1>  (PR #<n> | merged via git-fallback)

@@ -127,15 +127,26 @@ check_has_any_commit() {
   fi
 }
 
+# Checked in the PRIMARY worktree, because that is where the branch-lifecycle
+# commands actually run. Guarding the caller's worktree instead let a clean
+# linked worktree pass while the primary was dirty, and the subsequent
+# `git -C "$PRIMARY_WT" checkout` then either aborted under set -e with an
+# undocumented exit 1, or silently carried uncommitted work onto the default
+# branch — the exact outcome this guard exists to prevent.
+#
+# Nothing is lost by not checking the caller's own worktree: `git worktree
+# remove` refuses a dirty one, which covers that case at the right level.
 check_not_detached_head() {
-  if [ "$(git symbolic-ref --short -q HEAD 2>/dev/null)" = "" ]; then
+  resolve_primary_worktree
+  if [ "$(git -C "$PRIMARY_WT" symbolic-ref --short -q HEAD 2>/dev/null)" = "" ]; then
     echo "detached HEAD"
     return 6
   fi
 }
 
 check_dirty_tree() {
-  if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
+  resolve_primary_worktree
+  if [ -n "$(git -C "$PRIMARY_WT" status --porcelain 2>/dev/null)" ]; then
     echo "working tree is dirty — commit or stash, then re-run"
     return 2
   fi
@@ -298,13 +309,79 @@ EOF
   printf '%s' "$out"
 }
 
+# ─── worktree awareness ─────────────────────────────────────────────────
+#
+# Branch lifecycle commands must run against the PRIMARY worktree, not wherever
+# the caller happens to be standing. `git checkout <default>` fails outright
+# inside a linked worktree when the default branch is checked out elsewhere
+# ("already used by worktree at ..."), and under `set -e` that is an uncaught
+# crash rather than a clean refusal. Since a ticket-per-worktree workflow makes
+# linked worktrees the normal case, every git call below is anchored to the
+# primary via `git -C "$PRIMARY_WT"`.
+
+PRIMARY_WT=""
+
+resolve_primary_worktree() {
+  [ -n "$PRIMARY_WT" ] && return 0
+  # `git worktree list --porcelain` always lists the primary first.
+  PRIMARY_WT=$(git worktree list --porcelain 2>/dev/null | awk '/^worktree /{print substr($0,10); exit}')
+  [ -n "$PRIMARY_WT" ] || PRIMARY_WT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+}
+
+# The worktree currently holding <branch>, or "" if none does.
+worktree_for_branch() {
+  git worktree list --porcelain 2>/dev/null | awk -v want="refs/heads/$1" '
+    /^worktree /{wt=substr($0,10)}
+    /^branch /{if ($2 == want) {print wt; exit}}'
+}
+
+# Free a branch held by a *linked* worktree so it can be deleted. Returns 1 if
+# git refused (e.g. the worktree has uncommitted work) so the caller can treat
+# it as a refusal rather than a crash. A branch held by the primary worktree is
+# not handled here — the caller checks out the default branch there instead.
+release_branch_worktree() {
+  local branch="$1" wt out
+  wt=$(worktree_for_branch "$branch")
+  [ -n "$wt" ] || return 0
+  [ "$wt" = "$PRIMARY_WT" ] && return 0
+
+  if [ "$FORCE" = "1" ]; then
+    out=$(git -C "$PRIMARY_WT" worktree remove --force "$wt" 2>&1) || {
+      echo "smriti-clean: could not remove worktree '$wt': $out" >&2
+      return 1
+    }
+  else
+    out=$(git -C "$PRIMARY_WT" worktree remove "$wt" 2>&1) || {
+      echo "smriti-clean: could not remove worktree '$wt': $out" >&2
+      echo "  (uncommitted work there? commit it, or pass --force)" >&2
+      return 1
+    }
+  fi
+  git -C "$PRIMARY_WT" worktree prune 2>/dev/null || true
+  echo "smriti-clean: removed worktree '$wt'"
+
+  # If we were standing in what we just deleted, move to the primary before
+  # continuing. Everything after this point resolves the project slug by
+  # running git in the cwd, and from a deleted directory that silently returns
+  # nothing — which would skip the ticket update and the artifact purge without
+  # any error to show for it.
+  case "$PWD/" in
+    "$wt"/*)
+      cd "$PRIMARY_WT" || return 1
+      echo "smriti-clean: your shell is in the removed worktree — cd elsewhere (e.g. $PRIMARY_WT)" >&2
+      ;;
+  esac
+  return 0
+}
+
 # ─── execution helpers ──────────────────────────────────────────────────
 
 # Tidy the default branch: checkout, pull, prune. Used after deletions complete.
 sync_default_branch() {
-  git checkout -q "$DEFAULT_BRANCH"
-  git pull --quiet --ff-only 2>/dev/null || git pull --quiet || true
-  git fetch --prune --quiet 2>/dev/null || true
+  resolve_primary_worktree
+  git -C "$PRIMARY_WT" checkout -q "$DEFAULT_BRANCH"
+  git -C "$PRIMARY_WT" pull --quiet --ff-only 2>/dev/null || git -C "$PRIMARY_WT" pull --quiet || true
+  git -C "$PRIMARY_WT" fetch --prune --quiet 2>/dev/null || true
 }
 
 # Delete one local branch. Honors --force (uses -D, which also bypasses git's
@@ -316,10 +393,11 @@ sync_default_branch() {
 # unreachable because our enumeration filters such names, but cheap defense.
 delete_branch() {
   local branch="$1"
+  resolve_primary_worktree
   if [ "$FORCE" = "1" ]; then
-    git branch -D -- "$branch" 2>&1
+    git -C "$PRIMARY_WT" branch -D -- "$branch" 2>&1
   else
-    git branch -d -- "$branch" 2>&1
+    git -C "$PRIMARY_WT" branch -d -- "$branch" 2>&1
   fi
 }
 
@@ -367,6 +445,39 @@ purge_branch_artifacts() {
 
   if [ "$removed" -gt 0 ]; then
     echo "smriti-clean: purged $removed artifact(s) for '$branch'"
+    # Drop the index rows for the files we just deleted, so the factory never
+    # points at a document that is no longer on disk.
+    local tk; tk="$(cd "$(dirname "$0")" && pwd -P)/smriti-ticket"
+    [ -x "$tk" ] && "$tk" doc-forget --branch "$branch" >/dev/null 2>&1 || true
+  fi
+  return 0
+}
+
+# Close out the ticket whose branch just got deleted. A merged-and-deleted
+# branch is the first point where "shipped" is true rather than intended —
+# /ship only gets it as far as in_review.
+#
+# Best-effort in the same sense as purge_branch_artifacts: always returns 0, so
+# a missing helper or an unrelated ticket-store problem can never fail a clean.
+mark_ticket_shipped() {
+  local branch="$1" tk out id
+  [ -n "$branch" ] || return 0
+  tk="$(cd "$(dirname "$0")" && pwd -P)/smriti-ticket"
+  [ -x "$tk" ] || return 0
+
+  out=$("$tk" current --branch "$branch" 2>/dev/null) || return 0
+  id=$(printf '%s' "$out" | grep -E '^TICKET=' | cut -d= -f2-)
+  [ -n "$id" ] || return 0
+
+  # Never overwrite a deliberate cancellation. Cancel means "I decided against
+  # this"; marking it shipped would destroy the reversibility that verb
+  # promises, and hide the "bring it back" affordance on the board.
+  local st
+  st=$(printf '%s' "$out" | grep -E '^TICKET_STATUS=' | cut -d= -f2-)
+  [ "$st" = "cancelled" ] && return 0
+
+  if "$tk" done "$id" >/dev/null 2>&1; then
+    echo "smriti-clean: ticket #$id → shipped"
   fi
   return 0
 }
@@ -509,14 +620,18 @@ mode_branch() {
     exit 5
   fi
 
-  # If we're standing on the target branch, switch to default first.
-  local current_branch
-  current_branch=$(git symbolic-ref --short -q HEAD 2>/dev/null || echo "")
-  if [ "$current_branch" = "$TARGET_BRANCH" ]; then
-    git checkout -q "$DEFAULT_BRANCH"
+  resolve_primary_worktree
+
+  # Free the branch from whatever holds it: a linked worktree gets removed, the
+  # primary just switches to the default branch.
+  if ! release_branch_worktree "$TARGET_BRANCH"; then
+    exit 5
+  fi
+  if [ "$(git -C "$PRIMARY_WT" symbolic-ref --short -q HEAD 2>/dev/null || echo "")" = "$TARGET_BRANCH" ]; then
+    git -C "$PRIMARY_WT" checkout -q "$DEFAULT_BRANCH"
   fi
 
-  git pull --quiet --ff-only 2>/dev/null || git pull --quiet || true
+  git -C "$PRIMARY_WT" pull --quiet --ff-only 2>/dev/null || git -C "$PRIMARY_WT" pull --quiet || true
   # A delete failure here means our safety checks all passed but git refused
   # anyway — almost certainly a state-changed condition (upstream was modified
   # between --plan and execute, or the branch was just rewritten elsewhere).
@@ -526,9 +641,10 @@ mode_branch() {
     echo "smriti-clean: git refused to delete '$TARGET_BRANCH': $delete_output" >&2
     exit 8
   fi
-  git fetch --prune --quiet 2>/dev/null || true
+  git -C "$PRIMARY_WT" fetch --prune --quiet 2>/dev/null || true
 
   echo "smriti-clean: deleted '$TARGET_BRANCH' (detection: $DETECTION)"
+  mark_ticket_shipped "$TARGET_BRANCH"
   purge_branch_artifacts "$(project_artifacts_dir)" "$TARGET_BRANCH"
 }
 
@@ -558,18 +674,24 @@ mode_all() {
     exit 0
   fi
 
-  # If we're on a candidate, switch to default first so we can delete it.
-  local current_branch
-  current_branch=$(git symbolic-ref --short -q HEAD 2>/dev/null || echo "")
-  local current_is_candidate
-  current_is_candidate=$(printf '%s' "$candidates_json" \
-                         | jq --arg b "$current_branch" '[.[] | select(.branch == $b)] | length')
-  if [ "$current_is_candidate" != "0" ]; then
-    git checkout -q "$DEFAULT_BRANCH"
-  fi
-  git pull --quiet --ff-only 2>/dev/null || git pull --quiet || true
+  resolve_primary_worktree
 
-  # Resolve the artifact dir once; each deleted branch's scratch is purged below.
+  # If the primary worktree is sitting on a candidate, move it off so that one
+  # can be deleted. Candidates held by *linked* worktrees are released inside
+  # the loop below — any of them may be in a worktree, not just the current one.
+  local primary_branch
+  primary_branch=$(git -C "$PRIMARY_WT" symbolic-ref --short -q HEAD 2>/dev/null || echo "")
+  local primary_is_candidate
+  primary_is_candidate=$(printf '%s' "$candidates_json" \
+                         | jq --arg b "$primary_branch" '[.[] | select(.branch == $b)] | length')
+  if [ "$primary_is_candidate" != "0" ]; then
+    git -C "$PRIMARY_WT" checkout -q "$DEFAULT_BRANCH"
+  fi
+  git -C "$PRIMARY_WT" pull --quiet --ff-only 2>/dev/null || git -C "$PRIMARY_WT" pull --quiet || true
+
+  # Resolved after the primary worktree is established, matching mode_branch —
+  # project_artifacts_dir shells out to smriti-slug, which is cwd-sensitive, so
+  # resolving it at a different point gave a different answer.
   local artifacts_dir
   artifacts_dir=$(project_artifacts_dir)
 
@@ -593,10 +715,19 @@ mode_all() {
     # whole batch under set -e. delete_branch returns nonzero on git refusal
     # (e.g., upstream changed between --plan and now); `if` captures the rc
     # without tripping errexit.
+    # A candidate may live in its own worktree; free it first. A refusal here
+    # is skip-with-note, matching how a git delete refusal is handled.
+    if ! release_branch_worktree "$b"; then
+      echo "smriti-clean: skipped '$b' — its worktree could not be removed"
+      skipped=$((skipped + 1))
+      continue
+    fi
+
     local delete_output
     if delete_output=$(delete_branch "$b"); then
       echo "smriti-clean: deleted '$b'"
       deleted=$((deleted + 1))
+      mark_ticket_shipped "$b"
       purge_branch_artifacts "$artifacts_dir" "$b"
     else
       echo "smriti-clean: skipped '$b' — git refused: $delete_output"
@@ -606,7 +737,7 @@ mode_all() {
 $rows
 EOF
 
-  git fetch --prune --quiet 2>/dev/null || true
+  git -C "$PRIMARY_WT" fetch --prune --quiet 2>/dev/null || true
   echo "smriti-clean: $deleted deleted, $skipped skipped (detection: $DETECTION)"
 }
 
