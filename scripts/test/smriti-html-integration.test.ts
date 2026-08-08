@@ -5,7 +5,7 @@
 
 import { test, expect, beforeEach, afterEach } from 'bun:test';
 import { spawn } from 'node:child_process';
-import { mkdtempSync, writeFileSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -253,3 +253,46 @@ test('D2: server self-terminates after the idle window', async () => {
   const stopped = await sh(['stop', '--session', session_id]);
   expect(stopped.stdout).toContain('already stopped');
 }, 10000);
+
+// Card bodies render through lib/md.ts, not a local markdown-lite. The plan is
+// the thing the user actually reads at Gate 2, and a keymap table used to reach
+// them as rows of literal `|` with the |---| separator on the page — code spans
+// rendered, so it looked like a formatting choice rather than a bug.
+test('card body renders block markdown, not literal source', async () => {
+  const body = [
+    '| key | board | project page |',
+    '|---|---|---|',
+    '| `s` / `d` | start / done | scoped to this project |',
+    '',
+    '## A heading',
+    '',
+    '- a list item with `*.md` in it',
+    '',
+    '```bash',
+    'echo fenced',
+    '```',
+  ].join('\n');
+  const spec = join(HOME_DIR, 'md-spec.json');
+  writeFileSync(spec, JSON.stringify({
+    ...JSON.parse(specJson('rev-1')),
+    sections: [{ id: 's1', title: 'Keymap', cards: [{ id: 'c1', title: 'keys', body_md: body }] }],
+  }));
+  const out = join(HOME_DIR, 'md-out.html');
+  const r = await sh(['render', spec, '--out', out, '--no-open']);
+  expect(r.code).toBe(0);
+  const html = readFileSync(out, 'utf8');
+
+  expect(html).toContain('<table>');
+  expect(html).toContain('<th>key</th>');
+  expect(html).toContain('<h2>A heading</h2>');
+  expect(html).toContain('<li>');
+  expect(html).toContain('<pre>');
+  // The actual regression: no row survives as pipe-delimited source text.
+  expect(html).not.toContain('| key | board |');
+  expect(html).not.toContain('|---|---|');
+  // Wide tables scroll inside themselves rather than scrolling the page.
+  expect(html).toContain('tablewrap');
+  // Code spans are lifted before the emphasis pass, so asterisks inside them
+  // survive instead of turning into <em>.
+  expect(html).toContain('<code>*.md</code>');
+}, 15000);

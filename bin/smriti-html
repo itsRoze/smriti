@@ -34,6 +34,7 @@ import { join, dirname } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { renderMarkdown } from '../lib/md.ts';
 
 const TOOL_VERSION = '0.2.0';
 const SCHEMA_VERSION = 1;
@@ -232,16 +233,14 @@ function escapeHtml(s: string): string {
     .replace(/'/g, '&#39;');
 }
 
-// Markdown-lite: enough to make decision-brief body_md readable without pulling
-// in a markdown dependency.
-function mdLite(s: string): string {
-  let h = escapeHtml(s);
-  h = h.replace(/`([^`]+)`/g, '<code>$1</code>');
-  h = h.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-  h = h.replace(/\*([^*\n]+)\*/g, '<em>$1</em>');
-  h = h.replace(/\n/g, '<br>\n');
-  return h;
-}
+// Card bodies render through lib/md.ts, the same renderer the board uses.
+//
+// This used to be a local `mdLite` that handled only code spans, bold, italic,
+// and newline→<br>. Plan cards are full of tables, headings and lists, and all
+// of it came out as literal source: a keymap table rendered as rows of `|` with
+// the pipes and the |---| separator visible on the page. Two renderers meant
+// the plan looked different depending on which surface you read it on, so there
+// is one now.
 
 // Editorial paper grain — a tiny inline SVG noise tile,
 // laid over the page at low opacity. Inline so the page stays self-contained.
@@ -273,7 +272,7 @@ function renderHtml(spec: Spec): string {
           <span class="badge badge-${status}">${status}</span>
           <h3>${escapeHtml(card.title)}</h3>
         </header>
-        <div class="body">${mdLite(card.body_md)}</div>
+        <div class="body">${renderMarkdown(card.body_md)}</div>
         <div class="controls">
           <div class="decision">${radio('accept', 'Accept')} ${radio('reject', 'Reject')} ${radio('edit', 'Edit')}</div>
           <textarea class="cardtext" placeholder="${ph}"></textarea>
@@ -331,6 +330,29 @@ ${cards}
   .body strong{color:var(--ink);font-weight:600}
   .body em{font-style:italic}
   .body code{font:13px "JetBrains Mono",monospace;background:rgba(203,75,46,.07);color:#a23a22;padding:.12em .42em;border-radius:4px;border:1px solid rgba(203,75,46,.13)}
+  /* Block content. Card bodies now render real markdown, so these have actual
+     work to do — before, everything arrived as inline spans and <br>. */
+  .body p{margin:.55em 0}
+  .body p:first-child{margin-top:0}
+  .body h1,.body h2,.body h3,.body h4{font-family:Fraunces,Georgia,serif;color:var(--ink);
+    font-weight:600;line-height:1.25;margin:1.1em 0 .4em}
+  .body h1{font-size:19px}.body h2{font-size:17px}.body h3{font-size:15px}.body h4{font-size:14px}
+  .body ul,.body ol{margin:.5em 0 .7em;padding-left:1.35em}
+  .body li{margin:.22em 0}
+  .body blockquote{margin:.6em 0;padding:.1em 0 .1em .9em;border-left:2px solid var(--hair);color:var(--muted)}
+  .body hr{border:0;border-top:1px solid var(--hair-soft);margin:1em 0}
+  .body pre{background:var(--paper-2);border:1px solid var(--hair-soft);border-radius:6px;
+    padding:.7em .85em;margin:.6em 0;overflow-x:auto}
+  .body pre code{background:none;border:0;padding:0;color:var(--soft);font-size:12.5px}
+  /* Tables were the visible failure: a keymap came out as rows of literal pipes.
+     Wrapped in its own scroll box so a wide table never scrolls the page. */
+  .body .tablewrap{overflow-x:auto;margin:.65em 0}
+  .body table{border-collapse:collapse;width:100%;font-size:13.5px}
+  .body th,.body td{text-align:left;padding:.4em .65em;border-bottom:1px solid var(--hair-soft);
+    vertical-align:top}
+  .body th{font-weight:600;color:var(--ink);border-bottom:1px solid var(--hair);
+    white-space:nowrap;font-size:12.5px;letter-spacing:.01em}
+  .body tbody tr:last-child td{border-bottom:0}
   .controls{display:flex;flex-direction:column;gap:9px}
   .decision{display:flex;gap:8px;flex-wrap:wrap}
   .decision label{font:600 12px/1 "JetBrains Mono",monospace;letter-spacing:.04em;text-transform:uppercase;
