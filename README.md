@@ -134,7 +134,7 @@ Claude: /ship → PR opened.
 
 ```
 ~/.claude/skills/smriti/                   ← code (this repo)
-├── bin/                                     # smriti (umbrella dispatcher) + smriti-{factory,ticket,trace,slug,config,project,codex-probe,update-check,pr-title-rewrite,browse,clean,default-branch,principles-install,html,latest-doc}
+├── bin/                                     # smriti (dispatcher) + smriti-{board,ticket,trace,factory,project,clean,config,browse,principles-install,html,slug,latest-doc,default-branch,codex-probe,update-check}
 ├── lib/                                     # factory-schema.sql + factory-db.sh (the work layer's storage)
 ├── lib/resolvers/                           # {{PLACEHOLDER}} content (preamble, principles, design rules, etc.)
 ├── scripts/                                 # gen-skill-docs.ts, skill-check.ts, run-tests.sh + test/*.bats + test/*.test.ts

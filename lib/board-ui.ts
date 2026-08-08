@@ -537,7 +537,8 @@ export function boardPage(): string {
     // esc() escapes HTML; it does not validate a scheme. Without the same
     // allowlist md.ts applies to document links, a stored javascript: url runs
     // against this page's own authenticated API when clicked.
-    if (t.pr_url && /^https?:\/\//i.test(t.pr_url))
+    const httpUrl = (u) => { const v = String(u || '').toLowerCase(); return v.startsWith('http://') || v.startsWith('https://'); };
+    if (t.pr_url && httpUrl(t.pr_url))
       h += '<a class="btn" href="' + esc(t.pr_url) + '" target="_blank" rel="noopener">open PR ↗</a>';
     h += '</div>';
     if (docs.length){

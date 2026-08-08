@@ -154,3 +154,25 @@ test('a read failure is a 503, not an empty board', async () => {
     writeFileSync(db, saved);
   }
 });
+
+test('the served page script actually parses', async () => {
+  // The page is built as a template literal, so an escape that is legal in TS
+  // can still emit broken JS: /^https?:\/\//i was served as /^https?:///i and
+  // the resulting SyntaxError killed the ENTIRE client script — no render, no
+  // keys, a board that looked simply empty. Nothing caught it because every
+  // other test exercises the server and never the page.
+  const page = await (await fetch(`${base()}/`, withCookie())).text();
+  const blocks = [...page.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
+  expect(blocks.length).toBeGreaterThan(0);
+  for (const js of blocks) {
+    // new Function parses without executing — a SyntaxError here is the bug.
+    expect(() => new Function(js)).not.toThrow();
+  }
+});
+
+test('the served page carries no template-literal escape damage', async () => {
+  const page = await (await fetch(`${base()}/`, withCookie())).text();
+  const script = page.split('<script>').pop() ?? '';
+  // Three slashes in a row inside a regex is the fingerprint of a collapsed \/.
+  expect(script).not.toContain(':///i');
+});
