@@ -102,17 +102,33 @@ function launchSession(dir: string, ticketId: number): Launch {
 
   if (Bun.which('herdr')) {
     try {
-      // Open the (already cut) worktree as a workspace, then start claude in
-      // its root pane. Shapes per herdr docs v0.8; guarded because pre-1.0.
-      const ws = sh('herdr', ['worktree', 'open', '--path', dir, '--json'], 20000);
+      // Verified against herdr 0.8.0, which differs from the docs in three ways
+      // that each silently sent us to the tmux fallback:
+      //   - there is no --json flag; output is JSON already (--json is an error)
+      //   - `worktree open` needs --cwd to name the SOURCE repo when no
+      //     workspace is active, not just --path
+      //   - the pane id is result.root_pane.pane_id, an object not a string
+      const repoRoot = sh('git', ['-C', dir, 'worktree', 'list', '--porcelain'], 5000)
+        .out.split('\n').find((l) => l.startsWith('worktree '))?.slice(9) ?? dir;
+
+      const ws = sh('herdr', ['worktree', 'open', '--cwd', repoRoot, '--path', dir], 20000);
+      let pane = '';
       if (ws.ok) {
-        let pane = '';
-        try { pane = JSON.parse(ws.out)?.result?.root_pane ?? JSON.parse(ws.out)?.root_pane ?? ''; } catch {}
-        const startArgs = ['agent', 'start', name, '--kind', 'claude'];
-        if (pane) startArgs.push('--pane', pane);
-        startArgs.push('--', 'claude', prompt);
-        const st = sh('herdr', startArgs, 45000);
-        if (st.ok) return { method: 'herdr', attach: `herdr agent attach ${name}` };
+        try { pane = JSON.parse(ws.out)?.result?.root_pane?.pane_id ?? ''; } catch {}
+      }
+
+      if (pane) {
+        // A freshly-opened pane is not yet at a shell prompt, and `agent start`
+        // rejects it as agent_pane_busy. Retry briefly rather than falling
+        // through — in testing this succeeded on the second attempt.
+        for (let i = 0; i < 8; i++) {
+          const st = sh('herdr', ['agent', 'start', name, '--kind', 'claude', '--pane', pane, '--', 'claude', prompt], 45000);
+          if (st.ok && !/"error"/.test(st.out)) {
+            return { method: 'herdr', attach: `herdr agent attach ${name}` };
+          }
+          if (!/agent_pane_busy/.test(st.out + st.errOut)) break; // a real failure
+          Bun.sleepSync(1000);
+        }
       }
     } catch {}
   }
