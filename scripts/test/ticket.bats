@@ -230,6 +230,9 @@ line two"
 @test "doc: '-' registers a document with no ticket attached" {
   run "$CLI" doc - --type debug --path /tmp/orphan-debug.md
   [ "$status" -eq 0 ]
+  # Exit 0 alone would also pass against a cmd_doc that silently did nothing.
+  run sqlite3 "$SMRITI_HOME/factory.db" "SELECT count(*) FROM documents WHERE ticket_id IS NULL;"
+  [ "$output" = "1" ]
 }
 
 @test "doc: rejects an unknown type" {
@@ -255,7 +258,9 @@ line two"
 @test "current: emits an empty TICKET when the branch has no ticket" {
   run "$CLI" current
   [ "$status" -eq 0 ]
-  [[ "$output" == *"TICKET="* ]]
+  # Exact match: *"TICKET="* also matches TICKET=1, so the loose form passed
+  # even when a ticket was wrongly returned for a branch that has none.
+  [ "$output" = "TICKET=" ]
 }
 
 @test "current: emits sourceable KEY=value for the branch's ticket" {
@@ -363,7 +368,7 @@ line two"
   rm -f "$SMRITI_HOME/factory.db"
   run "$CLI" current --project demo --branch main
   [ "$status" -eq 0 ]
-  [[ "$output" == *"TICKET="* ]]
+  [ "$output" = "TICKET=" ]
   [ ! -f "$SMRITI_HOME/factory.db" ]
 }
 
@@ -494,4 +499,27 @@ two"
 @test "rm: unknown ticket exits 4" {
   run "$CLI" rm 999 --yes
   [ "$status" -eq 4 ]
+}
+
+@test "cancelled work sorts to the bottom, not the top" {
+  # Omitting cancelled from the status order made indexOf return -1, which
+  # sorted abandoned work ABOVE everything — the opposite of "park it away".
+  "$CLI" add "an idea" >/dev/null
+  "$CLI" add "abandoned" >/dev/null
+  "$CLI" cancel 2 >/dev/null
+
+  run "$CLI" list
+  [[ "$output" == *"an idea"* ]]
+  ! [[ "$output" == *"abandoned"* ]]
+}
+
+@test "priority: one validator, and it rejects SQL-shaped input" {
+  # add used a looser check than edit: '0--' passed, interpolated raw, and
+  # produced a sqlite syntax error with the query dumped to stderr.
+  run "$CLI" add "x" --priority "0--"
+  [ "$status" -eq 2 ]
+  run "$CLI" add "x" --priority "1-1"
+  [ "$status" -eq 2 ]
+  run "$CLI" add "x" --priority 3
+  [ "$status" -eq 0 ]
 }

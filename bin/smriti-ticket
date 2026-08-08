@@ -133,7 +133,7 @@ cmd_add() {
     esac
   done
 
-  case "$priority" in ''|*[!0-9-]*) die "--priority must be a number" ;; esac
+  require_num "$priority" "--priority"
   [ -n "$title" ] || die "title must not be empty"
   # A title is one line. Multi-line titles broke the tab-delimited reads that
   # `list` and `start` rely on — put the detail in --body instead.

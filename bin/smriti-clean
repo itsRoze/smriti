@@ -469,6 +469,13 @@ mark_ticket_shipped() {
   id=$(printf '%s' "$out" | grep -E '^TICKET=' | cut -d= -f2-)
   [ -n "$id" ] || return 0
 
+  # Never overwrite a deliberate cancellation. Cancel means "I decided against
+  # this"; marking it shipped would destroy the reversibility that verb
+  # promises, and hide the "bring it back" affordance on the board.
+  local st
+  st=$(printf '%s' "$out" | grep -E '^TICKET_STATUS=' | cut -d= -f2-)
+  [ "$st" = "cancelled" ] && return 0
+
   if "$tk" done "$id" >/dev/null 2>&1; then
     echo "smriti-clean: ticket #$id → shipped"
   fi

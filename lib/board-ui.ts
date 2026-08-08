@@ -349,8 +349,11 @@ export function boardPage(): string {
   }
 
   const STATUS = { idea:'idea', ready:'ready', in_progress:'building', in_review:'in review', shipped:'shipped', cancelled:'cancelled' };
-  const CLS = { idea:'idea b3', ready:'rdy b2', in_progress:'live', in_review:'rev b4', shipped:'done b3' };
-  const ORDER = ['in_review','in_progress','ready','idea','shipped'];
+  const CLS = { idea:'idea b3', ready:'rdy b2', in_progress:'live', in_review:'rev b4', shipped:'done b3', cancelled:'done b2' };
+  // cancelled sits with shipped at the bottom. Omitting it made indexOf return
+  // -1, which sorted abandoned work ABOVE everything — the opposite of what
+  // "park it out of the way" promises.
+  const ORDER = ['in_review','in_progress','ready','idea','shipped','cancelled'];
   const HUES = ['#2E5C43','#3F7355','#E2703A','#58906B','#8A6FB5','#4C7FA8'];
 
   function runFor(t){ return S.runs.find((r) => r.ticket_id === t.id); }
@@ -366,7 +369,7 @@ export function boardPage(): string {
   }
 
   function render(){
-    const open = S.tickets.filter((t) => t.status !== 'shipped');
+    const open = S.tickets.filter((t) => t.status !== 'shipped' && t.status !== 'cancelled');
     const waiting = S.runs.filter((r) => r.status === 'awaiting');
     const running = S.runs.filter((r) => r.status === 'running');
     const day = new Date().toLocaleDateString(undefined,{weekday:'long'});
@@ -467,7 +470,16 @@ export function boardPage(): string {
     if (!r.ok) throw new Error((await r.text().catch(() => '')) || ('HTTP ' + r.status));
     return r.json();
   }
-  async function refresh(){ try { S = await api('/api/state'); render(); } catch (e) { toast('lost the server — rerun <b>smriti</b>'); } }
+  async function refresh(){
+    try { S = await api('/api/state'); render(); }
+    catch (e) {
+      // 503 is the store failing to read; anything else is the server gone.
+      const msg = /could not read/.test(String(e.message))
+        ? 'could not read the ticket store — is sqlite3 there?'
+        : 'lost the server — rerun <b>smriti</b> in a terminal';
+      toast(msg, 6000);
+    }
+  }
 
   async function startTicket(t){
     if (!t) return;
@@ -491,6 +503,17 @@ export function boardPage(): string {
     toast('added <b>#' + res.id + '</b> — press s to start it');
     refresh();
   }
+  // Every other action reports its own failure; capture used to be the one
+  // exception, so a rejected title closed the palette and showed nothing.
+  // Defaults the project to whatever is selected, because the server's cwd is
+  // whichever directory the board happened to be started from.
+  async function capture(title){
+    const row = flat[sel];
+    const t = row ? S.tickets.find((x) => x.id === row.id) : null;
+    const project = t ? t.project_slug : (S.tickets[0] ? S.tickets[0].project_slug : undefined);
+    try { await addTicket(title, project); }
+    catch (e) { toast('could not add: ' + esc(e.message)); }
+  }
 
   // ── detail overlay ───────────────────────────────────────────────────
   async function openDetail(id, startRes){
@@ -511,7 +534,11 @@ export function boardPage(): string {
     if (t.status !== 'cancelled') h += '<button class="btn" data-act="cancel">cancel</button>';
     else h += '<button class="btn" data-act="revive">bring it back</button>';
     h += '<button class="btn danger" data-act="delete">delete</button>';
-    if (t.pr_url) h += '<a class="btn" href="' + esc(t.pr_url) + '" target="_blank" rel="noopener">open PR ↗</a>';
+    // esc() escapes HTML; it does not validate a scheme. Without the same
+    // allowlist md.ts applies to document links, a stored javascript: url runs
+    // against this page's own authenticated API when clicked.
+    if (t.pr_url && /^https?:\/\//i.test(t.pr_url))
+      h += '<a class="btn" href="' + esc(t.pr_url) + '" target="_blank" rel="noopener">open PR ↗</a>';
     h += '</div>';
     if (docs.length){
       h += '<div class="trail">' + docs.map((d) =>
@@ -595,7 +622,7 @@ export function boardPage(): string {
   function palRender(q){
     const ql = q.trim().toLowerCase();
     palItems = [];
-    if (q.trim()) palItems.push({ label: 'New ticket — “' + q.trim() + '”', r: '⏎', act: () => addTicket(q.trim()) });
+    if (q.trim()) palItems.push({ label: 'New ticket — “' + q.trim() + '”', r: '⏎', act: () => capture(q.trim()) });
     for (const t of S.tickets){
       if (!ql || t.title.toLowerCase().includes(ql) || String(t.id) === ql){
         palItems.push({ label: '#' + t.id + ' ' + t.title, r: STATUS[t.status] || t.status, act: () => openDetail(t.id) });
@@ -654,7 +681,14 @@ export function boardPage(): string {
   try {
     const es = new EventSource('/api/events');
     es.addEventListener('changed', () => refresh());
+    // Without this the tab goes stale in silence: on a 403 (server restarted,
+    // its in-memory cookies gone) EventSource gives up permanently per spec,
+    // and nothing ever re-drives refresh().
+    es.onerror = () => toast('lost the server — rerun <b>smriti</b> in a terminal', 6000);
   } catch {}
+  // Coming back to the tab is the moment stale data is most obvious, and the
+  // cheapest moment to notice the server died while the laptop slept.
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
   // Visibility-aware heartbeat: keeps the server alive only while the tab is
   // actually being looked at, so a backgrounded tab lets it idle out.
   setInterval(() => { if (!document.hidden) fetch('/api/ping').catch(() => {}); }, 5 * 60 * 1000);

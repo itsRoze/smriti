@@ -5,7 +5,7 @@
 
 import { test, expect, beforeAll, afterAll } from 'bun:test';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -134,4 +134,23 @@ test('running the CLI again reuses the live server', () => {
   const r = cli(['--url']);
   expect(r.status).toBe(0);
   expect(r.stdout).toContain(`127.0.0.1:${port}`);
+});
+
+// NOTE: the concurrent-start fix (atomic pidfile claim) is verified by shell,
+// not here — bun's spawnSync serializes, so an in-process "concurrent" test
+// would assert nothing. Keeping a test that cannot fail would be worse than
+// having none.
+test('a read failure is a 503, not an empty board', async () => {
+  // Collapsing "could not read" into "there is nothing" rendered a broken
+  // store as an inviting blank page.
+  const db = join(HOME_DIR, 'factory.db');
+  const saved = readFileSync(db);
+  writeFileSync(db, 'not a database');
+  try {
+    const r = await fetch(`${base()}/api/state`, withCookie());
+    expect(r.status).toBe(503);
+    expect(((await r.json()) as { error: string }).error).toContain('could not read');
+  } finally {
+    writeFileSync(db, saved);
+  }
 });

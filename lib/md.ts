@@ -8,8 +8,14 @@
 // Deliberately not CommonMark. No raw HTML passthrough, no images, no nested
 // lists deeper than one level. Links allow http/https/# only.
 
+// Placeholder for lifted code spans. U+0000 cannot appear in the output of
+// escapeHtml (it is stripped there), so it can never be forged by a document.
+const SPAN_MARK = '\u0000';
+const SPAN_RE = /\u0000(\d+)\u0000/g;
+
 export function escapeHtml(s: string): string {
   return s
+    .replace(/\u0000/g, '')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
@@ -19,7 +25,18 @@ export function escapeHtml(s: string): string {
 
 function inline(s: string): string {
   let h = escapeHtml(s);
-  h = h.replace(/`([^`]+)`/g, '<code>$1</code>');
+
+  // Code spans are lifted out BEFORE the emphasis and link passes and put back
+  // after. Running those passes over code contents mangles exactly what plan
+  // documents are full of: `*.md` became <code><em>.md</code> ... </em>,
+  // `fn(*args, **kwargs)` fell apart, and a URL in backticks turned into a
+  // live link inside <code>.
+  const spans: string[] = [];
+  h = h.replace(/`([^`]+)`/g, (_m, code) => {
+    spans.push(code);
+    return SPAN_MARK + (spans.length - 1) + SPAN_MARK;
+  });
+
   h = h.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
   h = h.replace(/\*([^*\n]+)\*/g, '<em>$1</em>');
   // Links: the href was escaped above, so quotes can't break out of the
@@ -27,6 +44,8 @@ function inline(s: string): string {
   h = h.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_m, text, href) =>
     /^(https?:\/\/|#)/i.test(href) ? `<a href="${href}" target="_blank" rel="noopener">${text}</a>` : text,
   );
+
+  h = h.replace(SPAN_RE, (_m, i) => '<code>' + spans[Number(i)] + '</code>');
   return h;
 }
 

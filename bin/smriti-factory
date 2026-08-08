@@ -95,7 +95,7 @@ function loadRuns(): Run[] {
 
 // Work order, not alphabetical: what needs a decision sits above what is
 // merely open, which sits above what is only an idea.
-const STATUS_ORDER = ['in_review', 'in_progress', 'ready', 'idea', 'shipped'];
+const STATUS_ORDER = ['in_review', 'in_progress', 'ready', 'idea', 'shipped', 'cancelled'];
 
 type Row =
   | { kind: 'project'; label: string }
@@ -109,7 +109,7 @@ type Row =
 function buildRows(tickets: Ticket[], runs: Run[], filter: string): Row[] {
   const q = filter.trim().toLowerCase();
   const visible = tickets.filter((t) => {
-    if (t.status === 'shipped') return false;
+    if (t.status === 'shipped' || t.status === 'cancelled') return false;
     if (!q) return true;
     return (
       t.title.toLowerCase().includes(q) ||
@@ -173,6 +173,7 @@ const STATUS_LABEL: Record<string, string> = {
   in_progress: 'building',
   in_review: 'in review',
   shipped: 'shipped',
+  cancelled: 'cancelled',
 };
 
 function pad(s: string, n: number): string {
