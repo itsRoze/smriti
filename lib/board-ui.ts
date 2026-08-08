@@ -360,7 +360,12 @@ export function boardPage(): string {
   // The live agent for a ticket, if herdr has one. 'blocked' means the session
   // is sitting at a prompt waiting for you — a permission request, a question,
   // a gate. Nothing else in smriti can see that.
-  function sessionFor(t){ return (S.sessions || []).find((x) => x.name === 't' + t.id); }
+  // Matched on the worktree path, not the name: herdr forgets the name it was
+  // given, and a name-only match made live sessions disappear from the board.
+  function sessionFor(t){
+    return (S.sessions || []).find((x) =>
+      (t.worktree_path && x.cwd === t.worktree_path) || (x.name && x.name === 't' + t.id));
+  }
   function docsFor(t){ return S.documents.filter((d) => d.ticket_id === t.id); }
 
   function toast(msg, ms=2600){
@@ -648,7 +653,11 @@ export function boardPage(): string {
       : st === 'done' ? 'that session finished — attach to see it, or restart:'
       : 'session is already open — jump to it with:';
     const notes = {
-      herdr: res.existing ? existingNote : 'session started under herdr — jump to it with:',
+      herdr: res.existing ? existingNote
+        // The prompt is typed into the session once claude has finished booting,
+        // so it is genuinely still in flight when this renders.
+        : res.prompting ? 'session started — /begin is being typed into it now:'
+        : 'session started under herdr — jump to it with:',
       manual: 'worktree is ready — run this in a terminal:',
     };
     a.innerHTML = '<div class="note">' + esc(notes[res.method] || 'ready:') + '</div>' +
