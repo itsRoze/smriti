@@ -119,14 +119,16 @@ export function boardPage(): string {
     background:linear-gradient(180deg,transparent 64%,rgba(var(--hi-rgb),var(--hi-wash)) 64%,rgba(var(--hi-rgb),var(--hi-wash)) 96%,transparent 96%);
     box-decoration-break:clone;-webkit-box-decoration-break:clone;padding:0 2px;
   }
-  .wait .sub{margin-top:9px;font-family:ui-monospace,Menlo,monospace;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-3)}
-  .wait .sub b{color:var(--orange);font-weight:400}
+  .wait .sub2{margin-top:9px;font-family:ui-monospace,Menlo,monospace;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-3)}
+  .wait .sub2 b{color:var(--orange);font-weight:400}
   .wait .empty{font-size:19px;color:var(--ink-3);padding:6px}
 
   .trees{display:block;width:100%;height:auto;margin:6px 0 -2px;opacity:.95}
+  .trees.off{display:none}
 
   .plot{margin-top:34px}
-  .phead{display:flex;align-items:center;gap:12px;margin-bottom:12px}
+  .phead{display:flex;align-items:center;gap:12px;margin-bottom:12px;cursor:pointer}
+  .phead:focus-visible{outline:2.5px solid var(--hi);outline-offset:4px;border-radius:8px}
   .sig{
     width:34px;height:34px;flex:none;display:grid;place-items:center;
     font-family:ui-monospace,Menlo,monospace;font-size:10px;font-weight:700;
@@ -135,9 +137,95 @@ export function boardPage(): string {
     transition:transform .15s ease;
   }
   .phead:hover .sig{transform:rotate(2deg) scale(1.06)}
+  .sig.ghost{border-style:dashed;border-color:var(--ink-4);color:var(--ink-4)}
   .pname{font-size:21px}
   .pline{flex:1;border-bottom:2.5px dotted var(--ink-4);margin-top:6px}
   .pn{font-family:ui-monospace,Menlo,monospace;font-size:11px;color:var(--ink-3)}
+  .goto{font-family:ui-monospace,Menlo,monospace;font-size:10px;letter-spacing:.14em;
+    text-transform:uppercase;color:var(--ink-4);opacity:0;transition:opacity .12s ease}
+  .phead:hover .goto,.phead:focus-visible .goto{opacity:1;color:var(--orange)}
+
+  /* project sub-heading inside an app */
+  .sub{
+    display:flex;align-items:baseline;gap:10px;margin:14px 0 9px 22px;cursor:pointer;
+    font-size:17px;color:var(--ink-2);
+  }
+  .sub:hover{color:var(--ink)}
+  .sub:focus-visible{outline:2.5px solid var(--hi);outline-offset:3px;border-radius:8px}
+  .sub .arrow{color:var(--pine-c);font-size:13px}
+  .sub .n{font-family:ui-monospace,Menlo,monospace;font-size:10px;color:var(--ink-4);margin-left:auto}
+  .sub.loose{color:var(--ink-3);font-style:italic}
+  .cards.nested{margin-left:22px}
+
+  /* ── the app / project page ─────────────────────────────────────────── */
+  .back{
+    display:inline-flex;align-items:center;gap:8px;margin-bottom:18px;cursor:pointer;
+    font-family:ui-monospace,Menlo,monospace;font-size:11px;letter-spacing:.18em;
+    text-transform:uppercase;color:var(--ink-3);background:none;border:0;padding:4px 2px;
+  }
+  .back:hover{color:var(--ink)}
+  .back .arr{font-size:17px;letter-spacing:0}
+  .slab{padding:22px 26px 24px;display:flex;gap:20px;align-items:flex-start;transform:rotate(-.3deg)}
+  .bigsig{
+    width:66px;height:66px;flex:none;display:grid;place-items:center;
+    font-family:ui-monospace,Menlo,monospace;font-size:19px;font-weight:700;
+    border:2.5px solid var(--pine-a);color:var(--pine-a);background:var(--paper-2);
+    border-radius:18px 22px 15px 20px/20px 15px 22px 18px;transform:rotate(-2.5deg);
+  }
+  .slab .who{flex:1;min-width:0}
+  .slab h1{font-size:32px;font-weight:400;margin:0 0 4px;line-height:1.15;text-wrap:balance}
+  .slab .path{font-family:ui-monospace,Menlo,monospace;font-size:11px;color:var(--ink-3);word-break:break-all}
+  .slab .path b{color:var(--pine-b);font-weight:400;cursor:pointer}
+  .tally{display:flex;gap:20px;flex-wrap:wrap;margin-top:12px}
+  .tally div{font-family:ui-monospace,Menlo,monospace;font-size:10.5px;letter-spacing:.14em;
+    text-transform:uppercase;color:var(--ink-3)}
+  .tally b{font-family:"Chalkboard SE",cursive;font-size:21px;letter-spacing:0;color:var(--ink);
+    display:block;margin-bottom:-2px}
+  .tally .warm b{color:var(--orange)}
+
+  .tabs{display:flex;gap:8px;align-items:flex-end;margin-bottom:-2.5px;position:relative;z-index:2}
+  .tab{
+    font:inherit;font-size:15px;cursor:pointer;color:var(--ink-3);padding:7px 18px 9px;
+    border:2.5px solid var(--ink-4);border-bottom:none;background:transparent;
+    border-radius:13px 15px 0 0/13px 15px 0 0;
+  }
+  .tab.on{color:var(--ink);border-color:var(--ink);background:var(--paper-2)}
+  .tab .absent{color:var(--ink-4);font-size:12px}
+  .reload{margin-left:auto;align-self:center;font-size:16px;color:var(--ink-3);cursor:pointer;
+    background:none;border:0;padding:4px 8px}
+  .reload:hover{color:var(--ink)}
+  .docpane{
+    border:2.5px solid var(--ink);background:var(--paper-2);border-radius:0 14px 16px 14px;
+    padding:18px 22px;box-shadow:2px 3px 0 rgba(var(--sh),.3);
+    max-height:420px;overflow:auto;font-size:15px;line-height:1.62;color:var(--ink-2);
+  }
+  .docpane h1,.docpane h2,.docpane h3{font-size:18px;margin:14px 0 7px;color:var(--ink)}
+  .docpane h1:first-child,.docpane h2:first-child{margin-top:0}
+  .docpane pre{background:rgba(var(--sh),.09);padding:10px 12px;border-radius:8px;overflow-x:auto;font-size:12.5px}
+  .docpane code{font-family:ui-monospace,Menlo,monospace;font-size:.85em}
+  .docpane table{border-collapse:collapse;margin:10px 0;font-size:14px}
+  .docpane th,.docpane td{border:1.5px solid var(--ink-4);padding:5px 9px;text-align:left}
+  .docpane blockquote{border-left:3px solid var(--ink-4);margin:10px 0;padding:2px 14px;color:var(--ink-3)}
+  .docpane ul,.docpane ol{padding-left:22px}
+  .docpane a{color:var(--pine-b)}
+  .nothing{padding:34px 24px;text-align:center;color:var(--ink-3);font-size:18px}
+  .nothing .cmd{display:inline-block;margin-top:10px;font-family:ui-monospace,Menlo,monospace;
+    font-size:12.5px;color:var(--ink);background:rgba(var(--sh),.09);padding:7px 11px;border-radius:8px}
+
+  .plist{display:grid;gap:10px}
+  .prow{display:flex;align-items:center;gap:14px;padding:13px 17px;cursor:pointer;
+    transition:transform .12s ease,box-shadow .12s ease}
+  .prow:hover{transform:translate(-1px,-1px);box-shadow:3px 4px 0 rgba(var(--sh),.4)}
+  .prow .nm{font-size:18px}
+  .prow .meta{margin-left:auto;font-family:ui-monospace,Menlo,monospace;font-size:10.5px;
+    letter-spacing:.13em;text-transform:uppercase;color:var(--ink-3)}
+  .prow .dot{width:9px;height:9px;border-radius:50%;background:var(--pine-c);flex:none}
+  .prow .dot.hot{background:var(--orange)}
+  .histline{
+    margin-top:14px;font-family:ui-monospace,Menlo,monospace;font-size:11px;letter-spacing:.14em;
+    text-transform:uppercase;color:var(--ink-4);border-top:2px dashed var(--ink-4);padding-top:12px;
+  }
+  .histline b{color:var(--ink-3);font-weight:400}
 
   .cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(310px,1fr));gap:14px}
   .card{
@@ -207,6 +295,18 @@ export function boardPage(): string {
   .detail h2{font-size:26px;font-weight:400;margin:0 0 8px;text-wrap:balance}
   .detail .m{font-family:ui-monospace,Menlo,monospace;font-size:10.5px;letter-spacing:.15em;text-transform:uppercase;color:var(--ink-3);margin-bottom:18px}
   .detail .m b{color:var(--orange);font-weight:400}
+  .detail .m .jump{color:var(--pine-b);cursor:pointer;border-bottom:1.5px dotted var(--pine-b)}
+  .detail .m .jump:hover{color:var(--ink)}
+  .refile{display:flex;align-items:center;gap:10px;margin-bottom:18px;
+    font-family:ui-monospace,Menlo,monospace;font-size:10.5px;letter-spacing:.15em;
+    text-transform:uppercase;color:var(--ink-3)}
+  .refile select{
+    font:inherit;font-family:"Chalkboard SE",cursive;font-size:15px;text-transform:none;
+    letter-spacing:0;color:var(--ink);background:var(--paper-2);cursor:pointer;
+    border:2.5px solid var(--ink-4);border-radius:11px 14px 10px 13px/13px 10px 14px 11px;
+    padding:5px 10px 6px;
+  }
+  .refile select:hover{border-color:var(--ink)}
   .detail .body{font-size:17px;color:var(--ink-2);margin-bottom:18px;cursor:text;
     border-radius:10px;padding:6px 8px;margin-left:-8px;transition:background .12s ease}
   .detail .body:hover{background:rgba(var(--hi-rgb),.10)}
@@ -355,9 +455,10 @@ export function boardPage(): string {
   <span><span class="k" data-k="Enter">⏎</span>open</span>
   <span><span class="k" data-k="s">S</span>start</span>
   <span><span class="k" data-k="c">C</span>capture</span>
+  <span><span class="k" data-k="p">P</span>project</span>
   <span><span class="k" data-k="d">D</span>done</span>
   <span><span class="k" data-k="k">⌘K</span>anything</span>
-  <span><span class="k" data-k="p">P</span>pace</span>
+  <span><span class="k" data-k="m">M</span>pace</span>
   <span><span class="k" data-k="t">T</span>theme</span>
   <span><span class="k" data-k="?">?</span>keys</span>
 </div>
@@ -375,9 +476,10 @@ export function boardPage(): string {
   <div class="detail"><h2>keys</h2></div>
   <div class="helpgrid">
     <div><b>↑↓ / jk</b> — move</div><div><b>⏎</b> — open ticket</div>
-    <div><b>s</b> — start work</div><div><b>c</b> — capture a ticket</div>
-    <div><b>d</b> — mark done</div><div><b>⌘K / /</b> — palette</div>
-    <div><b>p</b> — pace (medians)</div><div><b>esc</b> — close</div>
+    <div><b>s</b> — start work</div><div><b>c</b> — capture (into what you're on)</div>
+    <div><b>d</b> — mark done</div><div><b>⌘K / /</b> — palette, apps & projects too</div>
+    <div><b>p</b> — open its project / app</div><div><b>m</b> — pace (medians)</div>
+    <div><b>esc</b> — close, then back up a level</div>
     <div><b>t</b> — light / dark</div><div><b>?</b> — this</div>
   </div>
 </div></div>
@@ -390,10 +492,19 @@ export function boardPage(): string {
   const $ = (s) => document.querySelector(s);
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
-  let S = { tickets: [], runs: [], documents: [], sessions: [] };
+  let S = { tickets: [], runs: [], documents: [], repositories: [], projects: [], sessions: [] };
   let sel = -1;            // index into flat selectable list
   let flat = [];           // [{id, kind}] in DOM order
   let detailId = null;
+  // The current view, derived from location.hash by route(). Selection is
+  // OWNED by the view: flat/sel are rebuilt from whatever the current view
+  // drew, so s/d/⏎ can never act on a row belonging to a page you left.
+  let view = { kind: 'board' };
+  let lastViewKey = '';
+  // Which doc tab an app page is showing, remembered across live re-renders so
+  // an SSE refresh does not snap you back to PROJECT.md mid-read.
+  let docTab = 'PROJECT';
+  const docCache = new Map();   // slug|NAME -> html
 
   // Theme: follow the OS until told otherwise, then remember.
   const savedTheme = localStorage.getItem('smriti-theme');
@@ -458,6 +569,38 @@ export function boardPage(): string {
   }
   function docsFor(t){ return S.documents.filter((d) => d.ticket_id === t.id); }
 
+  // ── the model ────────────────────────────────────────────────────────
+  // A ticket belongs to an app, or to nothing. NO_APP is the bucket for the
+  // second case — a label, never a slug, so it cannot collide with a real app.
+  const NO_APP = '(ideas)';
+  const appOf = (t) => t.repo_slug || NO_APP;
+  const projectById = (id) => (S.projects || []).find((p) => Number(p.id) === Number(id));
+  const repoBySlug = (s) => (S.repositories || []).find((r) => r.slug === s);
+  const projectsIn = (slug) => (S.projects || []).filter((p) => (p.repo_slug || NO_APP) === slug);
+  const ticketsIn = (slug) => S.tickets.filter((t) => appOf(t) === slug);
+  const ticketsOf = (pid) => S.tickets.filter((t) => Number(t.project_id) === Number(pid));
+  const isOpen = (t) => t.status !== 'shipped' && t.status !== 'cancelled';
+  const appLabel = (slug) => (slug === NO_APP ? 'ideas' : slug.replace(/^itsroze-/, ''));
+
+  // Stable per-app colour, by position in the sorted app list — so an app keeps
+  // its colour on the board and on its own page.
+  function hueFor(slug){
+    const apps = [...new Set(S.tickets.map(appOf).concat((S.projects||[]).map((p) => p.repo_slug || NO_APP)))]
+      .filter((a) => a !== NO_APP).sort();
+    const i = apps.indexOf(slug);
+    return i < 0 ? 'var(--ink-3)' : HUES[i % HUES.length];
+  }
+  function sigFor(slug){
+    return slug === NO_APP ? '◌◌' : appLabel(slug).slice(0, 2).toUpperCase();
+  }
+
+  const byStatus = (a, b) => {
+    const s = ORDER.indexOf(a.status) - ORDER.indexOf(b.status);
+    if (s) return s;
+    if (a.priority !== b.priority) return b.priority - a.priority;
+    return a.id - b.id;
+  };
+
   function toast(msg, ms=2600){
     const el = $('#toast'); el.innerHTML = msg; el.classList.add('on');
     clearTimeout(el._t); el._t = setTimeout(() => el.classList.remove('on'), ms);
@@ -467,8 +610,63 @@ export function boardPage(): string {
     if (el){ el.classList.add('hit'); setTimeout(() => el.classList.remove('hit'), 130); }
   }
 
-  function render(){
-    const open = S.tickets.filter((t) => t.status !== 'shipped' && t.status !== 'cancelled');
+  // One ticket card. Shared by the board and both pages so a card can never
+  // look like two different things depending on where you found it.
+  let cardIdx = 0;
+  function cardHtml(t){
+    const run = runFor(t);
+    const stateCls = run && run.status === 'running' ? 'live' : (CLS[t.status] || '');
+    const sess = sessionFor(t);
+    const st = sess && sess.status === 'blocked' ? 'asking you'
+      : sess && sess.status === 'working' ? 'working'
+      : run && run.status === 'running' ? esc((run.last_phase || 'working') + ' · running')
+      : esc(STATUS[t.status] || t.status);
+    // Running work shows elapsed, ticking; everything else shows when it last
+    // moved. A card that says nothing about time is the thing this whole
+    // ticket is about.
+    const ago = run && !run.ended_at
+      ? '<span class="ago" data-live="run" data-since="' + esc(run.started_at) + '">⏱ ' +
+        fmtDur(runSecs(run)) + '</span>'
+      : (() => {
+          const at = (run && run.ended_at) || t.updated_at;
+          const rel = at ? fmtAgo(at) : '';
+          return rel ? '<span class="ago" data-live="ago" data-since="' + esc(at) + '">' + rel + '</span>' : '';
+        })();
+    return '<div class="box card ' + stateCls + '" data-tid="' + t.id + '" style="animation-delay:' + (cardIdx++ * 45) + 'ms">' +
+      (t.status === 'shipped' ? '<span class="tick">✓</span>' : '') +
+      '<div class="t">' + esc(t.title) + '</div>' +
+      '<div class="foot"><span class="id">#' + t.id + '</span><span class="st">' + st + '</span>' + ago + '</div></div>';
+  }
+
+  function tallyHtml(list){
+    const open = list.filter(isOpen).length;
+    const building = list.filter((t) => t.status === 'in_progress').length;
+    return '<div><b>' + list.length + '</b> tickets</div>' +
+      '<div><b>' + open + '</b> open</div>' +
+      (building ? '<div class="warm"><b>' + building + '</b> building</div>' : '');
+  }
+
+  function trailHtml(docs){
+    if (!docs.length) return '';
+    return '<div class="lab">paper trail</div><div class="trail">' + docs.map((d) =>
+      '<div class="doc" data-doc="' + d.id + '"><span class="tag">' + esc(d.type) + '</span>' +
+      '<span>' + esc(d.path.split('/').pop()) + '</span></div>'
+    ).join('') + '</div><div class="docview" id="pagedoc"></div>';
+  }
+
+  function historyHtml(list){
+    const shipped = list.filter((t) => t.status === 'shipped').length;
+    const cancelled = list.filter((t) => t.status === 'cancelled').length;
+    if (!shipped && !cancelled) return '';
+    return '<div class="histline">' +
+      (shipped ? 'shipped <b>' + shipped + '</b>' : '') +
+      (shipped && cancelled ? ' · ' : '') +
+      (cancelled ? 'cancelled <b>' + cancelled + '</b>' : '') + '</div>';
+  }
+
+  // ── the board ────────────────────────────────────────────────────────
+  function renderBoard(){
+    const open = S.tickets.filter(isOpen);
     const waiting = S.runs.filter((r) => r.status === 'awaiting');
     // A session stalled at a prompt belongs in "waiting on you" just as much as
     // a /begin gate does — it is the same fact, reported by herdr instead.
@@ -484,7 +682,7 @@ export function boardPage(): string {
     for (const t of blocked){
       w += '<div class="item" data-tid="' + t.id + '">' +
         '<div><span class="h">' + esc(t.title) + '</span></div>' +
-        '<div class="sub">' + esc(t.project_slug) + ' · #' + t.id +
+        '<div class="sub2">' + esc(appLabel(appOf(t))) + ' · #' + t.id +
         ' · <b>session is asking for something</b></div></div>';
     }
     if (!waiting.length && !blocked.length){
@@ -502,78 +700,337 @@ export function boardPage(): string {
           : '';
         w += '<div class="item" data-tid="' + (t ? t.id : '') + '">' +
           '<div><span class="h">' + esc(title) + '</span></div>' +
-          '<div class="sub">' + esc(r.project_slug) + (t ? ' · #' + t.id : '') +
+          '<div class="sub2">' + esc(appLabel(r.repo_slug || NO_APP)) + (t ? ' · #' + t.id : '') +
           ' · <b>' + esc(r.last_phase || 'gate') + ' — needs a decision</b>' + held + '</div></div>';
       }
     }
     w += '</div>';
     $('#waitwrap').innerHTML = w;
 
-    // projects
-    const byProj = new Map();
-    for (const t of S.tickets){
-      if (!byProj.has(t.project_slug)) byProj.set(t.project_slug, []);
-      byProj.get(t.project_slug).push(t);
-    }
     flat = [];
     for (const t of blocked) flat.push({ id: t.id, kind: 'wait' });
     for (const r of waiting) if (r.ticket_id) flat.push({ id: r.ticket_id, kind: 'wait' });
 
     let html = '';
-    if (!S.tickets.length){
+    if (!S.tickets.length && !(S.projects || []).length){
       html = '<div class="void"><div class="big">a blank page</div>' +
-        'press <b>c</b> to capture your first ticket — or <span class="mono">smriti ticket add "…"</span> from any repo</div>';
+        'press <b>c</b> to capture your first ticket — or <span class="mono">smriti ticket add "…"</span> from anywhere</div>';
     }
-    let projIdx = 0, cardIdx = 0;
-    for (const proj of [...byProj.keys()].sort()){
-      const items = byProj.get(proj)
+
+    // Every app that has anything to show, ideas last: they are the least
+    // actionable thing on the page.
+    const apps = [...new Set(
+      S.tickets.map(appOf).concat((S.projects || []).map((p) => p.repo_slug || NO_APP)),
+    )].sort((a, b) => (a === NO_APP ? 1 : b === NO_APP ? -1 : a.localeCompare(b)));
+
+    cardIdx = 0;
+    for (const app of apps){
+      const items = ticketsIn(app)
         .filter((t) => t.status !== 'shipped' || recentlyShipped(t))
-        .sort((a,b) => {
-          const s = ORDER.indexOf(a.status) - ORDER.indexOf(b.status);
-          if (s) return s;
-          if (a.priority !== b.priority) return b.priority - a.priority;
-          return a.id - b.id;
-        });
-      if (!items.length) continue;
-      const hue = HUES[projIdx++ % HUES.length];
-      const sigText = proj.replace(/^itsroze-/,'').slice(0,2).toUpperCase();
-      html += '<div class="plot"><div class="phead">' +
-        '<span class="sig" style="color:' + hue + ';border-color:' + hue + '">' + esc(sigText) + '</span>' +
-        '<span class="pname">' + esc(proj.replace(/^itsroze-/,'')) + '</span>' +
-        '<span class="pline"></span><span class="pn">' + items.length + '</span></div><div class="cards">';
+        .filter((t) => t.status !== 'cancelled')
+        .sort(byStatus);
+      const projs = projectsIn(app).filter((p) => p.status === 'active');
+      if (!items.length && !projs.length) continue;
+
+      const hue = hueFor(app);
+      html += '<div class="plot"><div class="phead" role="button" tabindex="0" data-app="' + esc(app) + '">' +
+        '<span class="sig' + (app === NO_APP ? ' ghost' : '') + '"' +
+          (app === NO_APP ? '' : ' style="color:' + hue + ';border-color:' + hue + '"') + '>' +
+          esc(sigFor(app)) + '</span>' +
+        '<span class="pname">' + esc(appLabel(app)) + '</span>' +
+        '<span class="pline"></span>' +
+        '<span class="goto">' + (app === NO_APP ? 'no app yet' : 'app page →') + '</span>' +
+        '<span class="pn">' + items.length + '</span></div>';
+
+      // Grouped by project, in the order their most urgent ticket appears.
+      const groups = new Map();
+      const loose = [];
       for (const t of items){
-        const run = runFor(t);
-        const stateCls = run && run.status === 'running' ? 'live' : (CLS[t.status] || '');
-        const sess = sessionFor(t);
-        const st = sess && sess.status === 'blocked' ? 'asking you'
-          : sess && sess.status === 'working' ? 'working'
-          : run && run.status === 'running' ? esc((run.last_phase || 'working') + ' · running')
-          : esc(STATUS[t.status] || t.status);
-        // Running work shows elapsed, ticking; everything else shows when it
-        // last moved. A card that says nothing about time is the thing this
-        // whole ticket is about.
-        const ago = run && !run.ended_at
-          ? '<span class="ago" data-live="run" data-since="' + esc(run.started_at) + '">⏱ ' +
-            fmtDur(runSecs(run)) + '</span>'
-          : (() => {
-              const at = (run && run.ended_at) || t.updated_at;
-              const rel = at ? fmtAgo(at) : '';
-              return rel ? '<span class="ago" data-live="ago" data-since="' + esc(at) + '">' + rel + '</span>' : '';
-            })();
-        html += '<div class="box card ' + stateCls + '" data-tid="' + t.id + '" style="animation-delay:' + (cardIdx++ * 45) + 'ms">' +
-          (t.status === 'shipped' ? '<span class="tick">✓</span>' : '') +
-          '<div class="t">' + esc(t.title) + '</div>' +
-          '<div class="foot"><span class="id">#' + t.id + '</span><span class="st">' + st + '</span>' + ago + '</div></div>';
-        flat.push({ id: t.id, kind: 'card' });
+        if (t.project_id == null) loose.push(t);
+        else {
+          if (!groups.has(t.project_id)) groups.set(t.project_id, []);
+          groups.get(t.project_id).push(t);
+        }
       }
-      html += '</div></div>';
+      // An active project with no open tickets still deserves a line — it is
+      // where you would go to add one.
+      for (const p of projs) if (!groups.has(p.id)) groups.set(p.id, []);
+
+      for (const [pid, group] of groups){
+        const p = projectById(pid);
+        html += '<div class="sub" role="button" tabindex="0" data-proj="' + pid + '">' +
+          '<span class="arrow">▸</span> ' + esc(p ? p.name : 'project ' + pid) +
+          '<span class="n">' + group.length + '</span></div>';
+        if (group.length){
+          html += '<div class="cards nested">';
+          for (const t of group){ html += cardHtml(t); flat.push({ id: t.id, kind: 'card' }); }
+          html += '</div>';
+        }
+      }
+      if (loose.length){
+        // A "loose" heading over the only group is noise.
+        if (groups.size) html += '<div class="sub loose"><span class="arrow">▸</span> loose in this app' +
+          '<span class="n">' + loose.length + '</span></div>';
+        html += '<div class="cards' + (groups.size ? ' nested' : '') + '">';
+        for (const t of loose){ html += cardHtml(t); flat.push({ id: t.id, kind: 'card' }); }
+        html += '</div>';
+      }
+      html += '</div>';
     }
     $('#plots').innerHTML = html;
-    if (sel >= flat.length) sel = flat.length - 1;
-    paintSel();
+    wire();
+  }
 
-    document.querySelectorAll('[data-tid]').forEach((el) => {
+  // ── the app page ─────────────────────────────────────────────────────
+  function renderApp(slug){
+    const repo = repoBySlug(slug) || { slug, name: appLabel(slug), counts: {} };
+    const items = ticketsIn(slug);
+    const projs = projectsIn(slug).filter((p) => p.status === 'active');
+    const docs = S.documents.filter((d) => d.repo_slug === slug);
+    const hue = hueFor(slug);
+
+    $('#eye').innerHTML = 'app · <b>' + esc(slug) + '</b>';
+    $('#waitwrap').innerHTML = '';
+
+    let h = '<button class="back" data-back><span class="arr">←</span> back to the board</button>';
+    h += '<div class="box slab">' +
+      '<div class="bigsig" style="color:' + hue + ';border-color:' + hue + '">' + esc(sigFor(slug)) + '</div>' +
+      '<div class="who"><h1>' + esc(repo.name && repo.name !== slug ? repo.name : appLabel(slug)) + '</h1>' +
+      '<div class="path">' + esc(slug) + (repo.repo_path ? ' · ' + esc(repo.repo_path) : ' · <i>no repo on this machine</i>') + '</div>' +
+      '<div class="tally">' + tallyHtml(items) +
+        (projs.length ? '<div><b>' + projs.length + '</b> projects</div>' : '') +
+        (docs.length ? '<div><b>' + docs.length + '</b> documents</div>' : '') +
+      '</div></div></div>';
+
+    h += '<div class="lab">what this app is</div>' +
+      '<div class="body" id="pagedesc" data-edit="repo" title="click to edit">' +
+      (repo.description ? esc(repo.description) : '<span class="ghost">what this app is, and why…</span>') + '</div>' +
+      '<textarea class="descedit" id="pagedescedit" placeholder="what this app is, and why">' + esc(repo.description || '') + '</textarea>';
+
+    // The two repo-level documents. Rendered from disk, so all three states are
+    // real: present, absent, and no repo to look in at all.
+    h += '<div class="lab">the documents</div><div class="tabs">' +
+      ['PROJECT','DESIGN'].map((k) => {
+        const has = k === 'PROJECT' ? repo.project_md : repo.design_md;
+        return '<button class="tab' + (docTab === k ? ' on' : '') + '" data-tab="' + k + '">' + k + '.md' +
+          (repo.repo_path && !has ? ' <span class="absent">— none</span>' : '') + '</button>';
+      }).join('') +
+      '<button class="reload" data-reload title="re-read from disk">↻</button></div>' +
+      '<div class="docpane" id="docpane"></div>';
+
+    if (projs.length){
+      h += '<div class="lab">projects</div><div class="plist">' + projs.map((p) => {
+        const pt = ticketsOf(p.id);
+        const hot = pt.some((t) => t.status === 'in_progress');
+        return '<div class="box prow" data-proj="' + p.id + '">' +
+          '<span class="dot' + (hot ? ' hot' : '') + '"></span>' +
+          '<span class="nm">' + esc(p.name) + '</span>' +
+          '<span class="meta">' + pt.length + ' tickets' + (hot ? ' · building' : '') + '</span></div>';
+      }).join('') + '</div>';
+    }
+
+    const loose = items.filter((t) => t.project_id == null && isOpen(t)).sort(byStatus);
+    cardIdx = 0; flat = [];
+    if (loose.length){
+      h += '<div class="lab">' + (projs.length ? 'loose tickets' : 'tickets') + '</div><div class="cards">';
+      for (const t of loose){ h += cardHtml(t); flat.push({ id: t.id, kind: 'card' }); }
+      h += '</div>';
+    }
+    h += historyHtml(items);
+    h += trailHtml(docs);
+
+    $('#plots').innerHTML = h;
+    wire();
+    loadDoc(slug);
+  }
+
+  // ── the project page ─────────────────────────────────────────────────
+  // Deliberately lighter than the app page: no doc tabs, because PROJECT.md and
+  // DESIGN.md describe the codebase, not one body of work inside it.
+  function renderProject(pid){
+    const p = projectById(pid);
+    if (!p){ location.hash = ''; return; }
+    const items = ticketsOf(p.id);
+    const docs = S.documents.filter((d) => Number(d.project_id) === Number(p.id));
+    const app = p.repo_slug || NO_APP;
+
+    $('#eye').innerHTML = 'project · <b>' + esc(p.name) + '</b>';
+    $('#waitwrap').innerHTML = '';
+
+    let h = '<button class="back" data-back>' +
+      '<span class="arr">←</span> ' + (p.repo_slug ? esc(appLabel(app)) : 'the board') + '</button>';
+    h += '<div class="box slab">' +
+      '<div class="bigsig" style="color:' + hueFor(app) + ';border-color:' + hueFor(app) + '">' +
+        esc(p.name.slice(0,2).toUpperCase()) + '</div>' +
+      '<div class="who"><h1>' + esc(p.name) + '</h1>' +
+      '<div class="path">' + (p.repo_slug
+        ? 'in <b data-app="' + esc(p.repo_slug) + '">' + esc(appLabel(app)) + '</b>'
+        : '<i>no app yet — an idea</i>') + '</div>' +
+      '<div class="tally">' + tallyHtml(items) +
+        (docs.length ? '<div><b>' + docs.length + '</b> documents</div>' : '') +
+      '</div></div></div>';
+
+    h += '<div class="lab">what this project is</div>' +
+      '<div class="body" id="pagedesc" data-edit="project" data-pid="' + p.id + '" title="click to edit">' +
+      (p.description ? esc(p.description) : '<span class="ghost">what this project is, and why…</span>') + '</div>' +
+      '<textarea class="descedit" id="pagedescedit" placeholder="what this project is, and why">' + esc(p.description || '') + '</textarea>';
+
+    const open = items.filter(isOpen).sort(byStatus);
+    cardIdx = 0; flat = [];
+    h += '<div class="lab">tickets</div>';
+    if (open.length){
+      h += '<div class="cards">';
+      for (const t of open){ h += cardHtml(t); flat.push({ id: t.id, kind: 'card' }); }
+      h += '</div>';
+    } else {
+      h += '<div class="box docpane"><div class="nothing">nothing open here yet' +
+        '<div class="cmd">press c to capture one into this project</div></div></div>';
+    }
+    h += historyHtml(items);
+    h += trailHtml(docs);
+
+    $('#plots').innerHTML = h;
+    wire();
+  }
+
+  // ── doc tabs ─────────────────────────────────────────────────────────
+  async function loadDoc(slug, force){
+    const pane = $('#docpane'); if (!pane) return;
+    const repo = repoBySlug(slug) || {};
+    if (!repo.repo_path){
+      pane.innerHTML = '<div class="nothing">this app has no repo on this machine' +
+        '<div class="cmd">smriti repo current — from inside it, once</div></div>';
+      return;
+    }
+    const has = docTab === 'PROJECT' ? repo.project_md : repo.design_md;
+    if (!has){
+      pane.innerHTML = '<div class="nothing">no ' + docTab + '.md yet' +
+        '<div class="cmd">' + (docTab === 'PROJECT' ? '/bootstrap' : '/design-consultation') + '</div></div>';
+      return;
+    }
+    const key = slug + '|' + docTab;
+    if (!force && docCache.has(key)){
+      // Only touch the DOM when the content actually differs: re-assigning the
+      // same html resets the scroll position, which on a long PROJECT.md means
+      // a live update yanks you back to the top mid-read.
+      const html = docCache.get(key);
+      if (pane.innerHTML !== html) pane.innerHTML = html;
+      return;
+    }
+    pane.innerHTML = '<div class="nothing">reading…</div>';
+    try {
+      const res = await api('/api/repos/' + encodeURIComponent(slug) + '/doc/' + docTab);
+      docCache.set(key, res.html);
+      pane.innerHTML = res.html;
+    } catch (e) {
+      pane.innerHTML = '<div class="nothing">could not read it — ' + esc(e.message) + '</div>';
+    }
+  }
+
+  // ── routing ──────────────────────────────────────────────────────────
+  // The hash is the single source of truth for which view is up, so a reload,
+  // a back button and a live SSE re-render all land in the same place.
+  function route(){
+    // Split rather than match: this whole page is authored inside a TypeScript
+    // template literal, where a \\/ in a regex literal collapses to a bare /
+    // and silently breaks the pattern. Slugs cannot contain a separator
+    // (smriti-repo validates that), so splitting is exact anyway.
+    const parts = (location.hash || '').replace('#', '').split('/').filter(Boolean);
+    if (parts[0] === 'r' && parts[1]) view = { kind: 'app', slug: decodeURIComponent(parts[1]) };
+    else if (parts[0] === 'p' && parts[1]) view = { kind: 'project', id: Number(decodeURIComponent(parts[1])) };
+    else view = { kind: 'board' };
+
+    const key = view.kind + ':' + (view.slug ?? view.id ?? '');
+    const changed = key !== lastViewKey;
+    lastViewKey = key;
+    // Selection is owned by the view: cleared when you move between views, kept
+    // when the view you are on simply re-renders (which SSE does about once a
+    // second while an agent is running).
+    const keep = changed ? -1 : sel;
+    flat = []; sel = -1;
+
+    // The treeline is the board's horizon, not a page ornament.
+    document.querySelector('.trees').classList.toggle('off', view.kind !== 'board');
+    if (view.kind === 'app') renderApp(view.slug);
+    else if (view.kind === 'project') renderProject(view.id);
+    else renderBoard();
+
+    sel = keep >= flat.length ? flat.length - 1 : keep;
+    paintSel();
+  }
+  const go = (hash) => { if (location.hash === hash) route(); else location.hash = hash; };
+
+  // Delegated wiring, re-run after every render. One place, so a control added
+  // to a page cannot quietly miss its handler.
+  function wire(){
+    const $$ = (s) => document.querySelectorAll('.sheet ' + s);
+    $$('[data-tid]').forEach((el) => {
       el.addEventListener('click', () => { const id = Number(el.dataset.tid); if (id) openDetail(id); });
+    });
+    $$('[data-app]').forEach((el) => {
+      const open = () => { if (el.dataset.app !== NO_APP) go('#/r/' + encodeURIComponent(el.dataset.app)); };
+      el.addEventListener('click', open);
+      el.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' '){ e.preventDefault(); open(); } });
+    });
+    $$('[data-proj]').forEach((el) => {
+      const open = () => go('#/p/' + el.dataset.proj);
+      el.addEventListener('click', open);
+      el.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' '){ e.preventDefault(); open(); } });
+    });
+    const back = document.querySelector('.sheet [data-back]');
+    if (back) back.addEventListener('click', () => {
+      if (view.kind === 'project'){
+        const p = projectById(view.id);
+        if (p && p.repo_slug){ go('#/r/' + encodeURIComponent(p.repo_slug)); return; }
+      }
+      go('');
+    });
+    $$('[data-tab]').forEach((el) => el.addEventListener('click', () => {
+      docTab = el.dataset.tab;
+      $$('[data-tab]').forEach((x) => x.classList.toggle('on', x === el));
+      if (view.kind === 'app') loadDoc(view.slug);
+    }));
+    const rl = document.querySelector('.sheet [data-reload]');
+    if (rl) rl.addEventListener('click', () => {
+      if (view.kind === 'app'){ loadDoc(view.slug, true); toast('re-read from disk'); }
+    });
+    $$('[data-doc]').forEach((el) => el.addEventListener('click', async () => {
+      const dv = $('#pagedoc'); if (!dv) return;
+      try { const res = await api('/api/doc/' + el.dataset.doc); dv.innerHTML = res.html; dv.classList.add('on'); }
+      catch (e) { toast('could not read the file: ' + esc(e.message)); }
+    }));
+    wireDescEditor();
+  }
+
+  // The description editor, shared by both pages — same click-to-edit
+  // affordance a ticket body already has. Its ids are page-specific on purpose:
+  // the detail overlay owns #desc/#descedit, and sharing them made this latch
+  // onto the overlay's nodes whenever the board was showing.
+  function wireDescEditor(){
+    const d = $('#pagedesc'), ta = $('#pagedescedit');
+    if (!d || !ta) return;
+    const save = async () => {
+      const next = ta.value.trim();
+      ta.classList.remove('on'); d.style.display = '';
+      const current = d.dataset.edit === 'repo'
+        ? ((repoBySlug(view.slug) || {}).description || '')
+        : ((projectById(Number(d.dataset.pid)) || {}).description || '');
+      if (next === current.trim()) return;
+      const url = d.dataset.edit === 'repo'
+        ? '/api/repos/' + encodeURIComponent(view.slug)
+        : '/api/projects/' + d.dataset.pid;
+      try {
+        await api(url, { method: 'PATCH', body: JSON.stringify({ description: next }) });
+        toast('description saved'); await refresh();
+      } catch (e) { toast('could not save: ' + esc(e.message)); }
+    };
+    d.addEventListener('click', () => {
+      d.style.display = 'none'; ta.classList.add('on'); ta.focus();
+      ta.onblur = save;
+      ta.onkeydown = (ev) => {
+        if (ev.key === 'Escape'){ ev.stopPropagation(); ta.onblur = null; ta.classList.remove('on'); d.style.display = ''; }
+        if (ev.key === 'Enter' && (ev.metaKey || ev.ctrlKey)) ta.blur();
+      };
     });
   }
 
@@ -616,8 +1073,16 @@ export function boardPage(): string {
     if (!r.ok) throw new Error((await r.text().catch(() => '')) || ('HTTP ' + r.status));
     return r.json();
   }
+  // True while a description editor is open. Re-rendering underneath one
+  // destroys the textarea without firing its blur handler, so the text is lost
+  // with no save — worse than showing data a second out of date.
+  function isEditing(){
+    const ta = document.querySelector('.descedit.on');
+    return Boolean(ta) && document.activeElement === ta;
+  }
+
   async function refresh(){
-    try { S = await api('/api/state'); render(); }
+    try { S = await api('/api/state'); if (!isEditing()) route(); }
     catch (e) {
       // 503 is the store failing to read; anything else is the server gone.
       const msg = /could not read/.test(String(e.message))
@@ -645,21 +1110,36 @@ export function boardPage(): string {
     try { await api('/api/tickets/' + t.id + '/done', { method: 'POST', body: '{}' }); toast('#' + t.id + ' shipped ✓'); refresh(); }
     catch (e) { toast('could not update: ' + esc(e.message)); }
   }
-  async function addTicket(title, project){
-    const body = JSON.stringify({ title, project });
+  async function addTicket(title, where){
+    const body = JSON.stringify(Object.assign({ title }, where || {}));
     const res = await api('/api/tickets', { method: 'POST', body });
     toast('added <b>#' + res.id + '</b> — press s to start it');
     refresh();
   }
   // Every other action reports its own failure; capture used to be the one
   // exception, so a rejected title closed the palette and showed nothing.
-  // Defaults the project to whatever is selected, because the server's cwd is
-  // whichever directory the board happened to be started from.
+  //
+  // Where a captured ticket lands is decided HERE and never by the server's
+  // cwd, which is whichever directory the board happened to be started from.
+  // On a page the answer is simply the page you are looking at; on the board it
+  // falls back to the selected card's app. Capturing with neither is fine —
+  // that is an idea, which is now a first-class place for it to be.
   async function capture(title){
+    if (view.kind === 'project'){
+      const p = projectById(view.id);
+      try { await addTicket(title, { project: String(p ? p.id : ''), repo: p && p.repo_slug ? p.repo_slug : '' }); }
+      catch (e) { toast('could not add: ' + esc(e.message)); }
+      return;
+    }
+    if (view.kind === 'app'){
+      try { await addTicket(title, { repo: view.slug }); }
+      catch (e) { toast('could not add: ' + esc(e.message)); }
+      return;
+    }
     const row = flat[sel];
     const t = row ? S.tickets.find((x) => x.id === row.id) : null;
-    const project = t ? t.project_slug : (S.tickets[0] ? S.tickets[0].project_slug : undefined);
-    try { await addTicket(title, project); }
+    const repo = t && t.repo_slug ? t.repo_slug : '';
+    try { await addTicket(title, { repo }); }
     catch (e) { toast('could not add: ' + esc(e.message)); }
   }
 
@@ -670,8 +1150,12 @@ export function boardPage(): string {
     detailId = id;
     const run = runFor(t);
     const docs = docsFor(t);
+    const proj = t.project_id != null ? projectById(t.project_id) : null;
     let h = '<h2>' + esc(t.title) + '</h2>' +
-      '<div class="m">#' + t.id + ' · ' + esc(t.project_slug) + ' · <b>' + esc(STATUS[t.status] || t.status) + '</b>' +
+      '<div class="m">#' + t.id + ' · ' +
+      (t.repo_slug ? '<span class="jump" data-app="' + esc(t.repo_slug) + '">' + esc(appLabel(t.repo_slug)) + '</span>' : 'no app yet') +
+      (proj ? ' / <span class="jump" data-proj="' + proj.id + '">' + esc(proj.name) + '</span>' : '') +
+      ' · <b>' + esc(STATUS[t.status] || t.status) + '</b>' +
       (t.branch ? ' · ' + esc(t.branch) : '') + (docs.length ? ' · ' + docs.length + ' document' + (docs.length > 1 ? 's' : '') : '') + '</div>';
     h += '<div class="body" id="desc" data-act="editdesc" title="click to edit">' +
       (t.body ? esc(t.body) : '<span class="ghost">add a description…</span>') + '</div>';
@@ -696,6 +1180,17 @@ export function boardPage(): string {
     if (t.pr_url && httpUrl(t.pr_url))
       h += '<a class="btn" href="' + esc(t.pr_url) + '" target="_blank" rel="noopener">open PR ↗</a>';
     h += '</div>';
+    // Re-filing, the other half of "tickets attached to projects": only
+    // offered within the ticket's own app, because moving between apps means
+    // moving a worktree and is a CLI decision, not a dropdown one.
+    if (t.repo_slug){
+      const opts = projectsIn(t.repo_slug).filter((p) => p.status === 'active');
+      h += '<div class="refile"><span>project</span><select id="refile">' +
+        '<option value="">— loose in ' + esc(appLabel(t.repo_slug)) + ' —</option>' +
+        opts.map((p) => '<option value="' + p.id + '"' +
+          (Number(t.project_id) === Number(p.id) ? ' selected' : '') + '>' + esc(p.name) + '</option>').join('') +
+        '</select></div>';
+    }
     if (docs.length){
       h += '<div class="trail">' + docs.map((d) =>
         '<div class="doc" data-doc="' + d.id + '"><span class="tag">' + esc(d.type) + '</span><span>' + esc(d.path.split('/').pop()) + '</span></div>'
@@ -764,6 +1259,25 @@ export function boardPage(): string {
         dv.innerHTML = res.html; dv.classList.add('on');
       } catch (e) { toast('could not read the file: ' + esc(e.message)); }
     }));
+    // The overlay binds its own navigation: wire() is scoped to .sheet, so
+    // these would otherwise never get a handler.
+    $('#detbody').querySelectorAll('[data-app]').forEach((el) => el.addEventListener('click', () => {
+      closeAll(); go('#/r/' + encodeURIComponent(el.dataset.app));
+    }));
+    $('#detbody').querySelectorAll('[data-proj]').forEach((el) => el.addEventListener('click', () => {
+      closeAll(); go('#/p/' + el.dataset.proj);
+    }));
+    const rf = $('#refile');
+    if (rf) rf.addEventListener('change', async () => {
+      // '' is a real choice — "take it out of its project" — so it is sent as
+      // null rather than omitted, which would mean "leave it alone".
+      const project = rf.value ? rf.value : null;
+      try {
+        await api('/api/tickets/' + t.id, { method: 'PATCH', body: JSON.stringify({ project }) });
+        toast(project ? 'filed into ' + esc(rf.options[rf.selectedIndex].text) : 'now loose in the app');
+        await refresh(); openDetail(t.id);
+      } catch (e) { toast('could not re-file: ' + esc(e.message)); }
+    });
   }
   // ── where the time went ──────────────────────────────────────────────
   // Fetched PER TICKET rather than filtered out of S.runs: /api/state carries
@@ -847,7 +1361,7 @@ export function boardPage(): string {
     return Number.isFinite(d) && d > 0 ? 'last ' + d + ' days' : 'all time';
   }
   async function openPace(){
-    tapKey('p');
+    tapKey('m');
     $('#pacebody').innerHTML = '<h2>pace</h2><div class="m">reading the trace…</div>';
     $('#pacev').classList.add('on');
     let s;
@@ -921,7 +1435,25 @@ export function boardPage(): string {
   function palRender(q){
     const ql = q.trim().toLowerCase();
     palItems = [];
-    if (q.trim()) palItems.push({ label: 'New ticket — “' + q.trim() + '”', r: '⏎', act: () => capture(q.trim()) });
+    if (q.trim()){
+      const into = view.kind === 'project' ? ' into this project'
+        : view.kind === 'app' ? ' into ' + appLabel(view.slug) : '';
+      palItems.push({ label: 'New ticket — “' + q.trim() + '”' + into, r: '⏎', act: () => capture(q.trim()) });
+    }
+    // Apps and projects are searchable too — on a board with several apps,
+    // typing the name is faster than finding its heading.
+    for (const r of (S.repositories || [])){
+      if (ql && !r.slug.toLowerCase().includes(ql) && !(r.name || '').toLowerCase().includes(ql)) continue;
+      if (!ql) continue;
+      palItems.push({ label: 'App — ' + (r.name || r.slug), r: 'page', act: () => go('#/r/' + encodeURIComponent(r.slug)) });
+      if (palItems.length > 9) break;
+    }
+    for (const p of (S.projects || [])){
+      if (ql && !p.name.toLowerCase().includes(ql) && !p.slug.toLowerCase().includes(ql)) continue;
+      if (!ql) continue;
+      palItems.push({ label: 'Project — ' + p.name, r: 'page', act: () => go('#/p/' + p.id) });
+      if (palItems.length > 9) break;
+    }
     for (const t of S.tickets){
       if (!ql || t.title.toLowerCase().includes(ql) || String(t.id) === ql){
         palItems.push({ label: '#' + t.id + ' ' + t.title, r: STATUS[t.status] || t.status, act: () => openDetail(t.id) });
@@ -950,7 +1482,17 @@ export function boardPage(): string {
     const typing = e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA');
 
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k'){ e.preventDefault(); inPal ? closeAll() : palOpen(); return; }
-    if (e.key === 'Escape'){ closeAll(); return; }
+    if (e.key === 'Escape'){
+      // On a page with nothing open, esc is "go back up" rather than a no-op:
+      // project → its app → the board.
+      const anyOpen = ['palv','detv','helpv'].some((id) => $('#' + id).classList.contains('on'));
+      closeAll();
+      if (!anyOpen && view.kind !== 'board'){
+        const b = document.querySelector('.sheet [data-back]');
+        if (b) b.click();
+      }
+      return;
+    }
 
     if (inPal){
       if (e.key === 'ArrowDown'){ e.preventDefault(); palSel = Math.min(palItems.length - 1, palSel + 1); palPaint(); }
@@ -969,9 +1511,21 @@ export function boardPage(): string {
       case 'd': markDone(t); break;
       case 'c': case '/': e.preventDefault(); tapKey('c'); palOpen(); break;
       case '?': tapKey('?'); $('#helpv').classList.add('on'); break;
-      case 'p': openPace(); break;
+      case 'm': openPace(); break;
       case 't': toggleTheme(); break;
       case 'r': refresh(); toast('refreshed'); break;
+      // p opens the app of whatever is selected — the one key that navigates
+      // between the two levels without reaching for the mouse.
+      case 'p': {
+        tapKey('p');
+        if (view.kind === 'board' && t && t.project_id != null) go('#/p/' + t.project_id);
+        else if (view.kind === 'board' && t && t.repo_slug) go('#/r/' + encodeURIComponent(t.repo_slug));
+        else if (view.kind === 'project'){
+          const pr = projectById(view.id);
+          if (pr && pr.repo_slug) go('#/r/' + encodeURIComponent(pr.repo_slug));
+        }
+        break;
+      }
     }
   });
   $('#palq').addEventListener('input', (e) => palRender(e.target.value));
@@ -986,9 +1540,14 @@ export function boardPage(): string {
     // and nothing ever re-drives refresh().
     es.onerror = () => toast('lost the server — rerun <b>smriti</b> in a terminal', 6000);
   } catch {}
+  // Back/forward and hand-edited URLs both drive the same router.
+  window.addEventListener('hashchange', () => route());
   // Coming back to the tab is the moment stale data is most obvious, and the
-  // cheapest moment to notice the server died while the laptop slept.
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
+  // cheapest moment to notice the server died while the laptop slept. Repo
+  // files are not watched, so this is also when an edited PROJECT.md shows up.
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden){ docCache.clear(); refresh(); }
+  });
   // Visibility-aware heartbeat: keeps the server alive only while the tab is
   // actually being looked at, so a backgrounded tab lets it idle out.
   setInterval(() => { if (!document.hidden) fetch('/api/ping').catch(() => {}); }, 5 * 60 * 1000);

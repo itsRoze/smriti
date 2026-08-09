@@ -9,7 +9,7 @@
 #   smriti trace list [--active] [--ticket N] [--limit N] [--json]
 #   smriti trace show <run-uid> [--json]
 #   smriti trace tail [--run UID] [--after ID] [--json]
-#   smriti trace stats [--days N] [--skill S] [--project P] [--json]
+#   smriti trace stats [--days N] [--skill S] [--repo SLUG] [--json]
 #
 # Exit codes:
 #   0  ok
@@ -65,7 +65,7 @@ usage:
   smriti trace list [--active] [--ticket N] [--limit N] [--json]
   smriti trace show <run-uid> [--json]
   smriti trace tail [--run UID] [--after ID] [--json]
-  smriti trace stats [--days N] [--skill S] [--project P] [--json]
+  smriti trace stats [--days N] [--skill S] [--repo SLUG] [--json]
 USAGE
   exit 2
 }
@@ -207,7 +207,7 @@ implicit_run() {
   slug=$(current_slug); branch=$(current_branch)
   [ -n "$slug" ] || return 0
   db "SELECT run_uid FROM runs
-      WHERE project_slug = $(sql_quote "$slug")
+      WHERE repo_slug = $(sql_quote "$slug")
         AND branch IS $(sql_quote_or_null "$branch")
         AND status IN ('running','awaiting')
       ORDER BY id DESC LIMIT 1;"
@@ -243,8 +243,19 @@ cmd_start() {
   # will not collide.
   uid=$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')
 
-  db_write "INSERT INTO runs (run_uid, ticket_id, project_slug, skill, branch, status, started_at)
+  # A run inherits the ticket's filing: same app, same project. Without this a
+  # run started inside a worktree would be filed by cwd alone and drift from the
+  # ticket it is tracing.
+  local project_sql="NULL"
+  if [ -n "$ticket" ]; then
+    project_sql=$(db "SELECT coalesce(project_id,'NULL') FROM tickets WHERE id = $ticket;")
+    local t_repo; t_repo=$(db "SELECT coalesce(repo_slug,'') FROM tickets WHERE id = $ticket;")
+    [ -n "$t_repo" ] && slug="$t_repo"
+  fi
+
+  db_write "INSERT INTO runs (run_uid, ticket_id, repo_slug, project_id, skill, branch, status, started_at)
             VALUES ($(sql_quote "$uid"), $(sql_quote_or_null "$ticket"), $(sql_quote "$slug"),
+                    ${project_sql:-NULL},
                     $(sql_quote "$skill"), $(sql_quote_or_null "$branch"), 'running',
                     $(sql_quote "$(now_utc)"));"
   printf 'RUN_UID=%s\n' "$uid"
@@ -338,7 +349,7 @@ cmd_list() {
 
   if [ "$json" -eq 1 ]; then
     db_json "$(segments_cte)
-             SELECT r.run_uid, r.ticket_id, r.project_slug, r.skill, r.branch, r.status,
+             SELECT r.run_uid, r.ticket_id, r.repo_slug, r.project_id, r.skill, r.branch, r.status,
                     r.started_at, r.ended_at,
                     (SELECT phase FROM events e WHERE e.run_uid = r.run_uid
                      ORDER BY e.id DESC LIMIT 1) AS last_phase,
@@ -355,7 +366,7 @@ cmd_list() {
   local rows
   rows=$(db "$(segments_cte)
              SELECT r.run_uid || char(9) || r.status || char(9) || r.skill || char(9) ||
-                    r.project_slug || char(9) || coalesce(r.branch,'—') || char(9) ||
+                    coalesce(r.repo_slug,'—') || char(9) || coalesce(r.branch,'—') || char(9) ||
                     COALESCE(t.duration_s, 0) || char(9) || COALESCE(t.you_s, 0)
              FROM runs r LEFT JOIN run_tot t ON t.run_uid = r.run_uid
              $where ORDER BY r.id DESC LIMIT $limit;")
@@ -434,7 +445,7 @@ cmd_show() {
   fi
 
   db "SELECT run_uid || '  ' || skill || '  (' || status || ')' || char(10) ||
-             'project: ' || project_slug || char(10) ||
+             'app:     ' || coalesce(repo_slug,'—') || char(10) ||
              'branch:  ' || coalesce(branch,'—') || char(10) ||
              'ticket:  ' || coalesce('#' || ticket_id, '—') || char(10) ||
              'started: ' || started_at
@@ -482,13 +493,13 @@ cmd_show() {
 # emitted three times in a run contributes a single number — otherwise a chatty
 # phase would dominate its own median with its own repetitions.
 cmd_stats() {
-  local json=0 days=30 skill="" project=""
+  local json=0 days=30 skill="" repo=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --json)    json=1; shift ;;
       --days)    [ $# -ge 2 ] || die "--days requires a value";    days="$2";    shift 2 ;;
       --skill)   [ $# -ge 2 ] || die "--skill requires a value";   skill="$2";   shift 2 ;;
-      --project) [ $# -ge 2 ] || die "--project requires a value"; project="$2"; shift 2 ;;
+      --repo)    [ $# -ge 2 ] || die "--repo requires a value";    repo="$2";    shift 2 ;;
       *) die "unknown flag: $1" ;;
     esac
   done
@@ -504,7 +515,7 @@ cmd_stats() {
   [ "$days" -gt 0 ] && scope="$scope AND CAST(strftime('%s', r.started_at) AS INTEGER)
                                         >= CAST(strftime('%s','now','-$days days') AS INTEGER)"
   [ -n "$skill" ]   && scope="$scope AND r.skill = $(sql_quote "$skill")"
-  [ -n "$project" ] && scope="$scope AND r.project_slug = $(sql_quote "$project")"
+  [ -n "$repo" ]    && scope="$scope AND r.repo_slug = $(sql_quote "$repo")"
 
   # The CTE chain and the final SELECT are kept apart so the plain-text read can
   # append its own tab-joining SELECT to the same chain. `median_you_s` is the

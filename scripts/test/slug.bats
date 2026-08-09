@@ -105,7 +105,7 @@ teardown() {
   stderr_output=$("$CLI" --print 2>&1 1>/dev/null)
   [[ "$stderr_output" == *"NOTE:"* ]]
   [[ "$stderr_output" == *"test-my-repo"* ]]
-  [[ "$stderr_output" == *"smriti project rename"* ]]
+  [[ "$stderr_output" == *"smriti repo rename"* ]]
 }
 
 @test "no migration notice for non-path-* slugs" {

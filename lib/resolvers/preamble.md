@@ -17,7 +17,9 @@ BRANCH_SLUG="${BRANCH//\//--}"
 # hand rather than by `smriti ticket start` — every skill must still work.
 # SLUG and BRANCH are passed in because we already have them; letting the
 # helper re-derive them would re-spawn smriti-slug on every skill invocation.
-eval "$(smriti ticket current --project "$SLUG" --branch "$BRANCH" 2>/dev/null)" 2>/dev/null
+# SLUG is a repository (an app); TICKET_PROJECT, when set, names the body of
+# work inside it that this ticket belongs to.
+eval "$(smriti ticket current --repo "$SLUG" --branch "$BRANCH" 2>/dev/null)" 2>/dev/null
 TICKET="${TICKET:-}"
 
 # Config
@@ -74,10 +76,10 @@ fi
 
 | Var | Meaning |
 |-----|---------|
-| `SLUG` | Per-project identity (cached). |
+| `SLUG` | The repository (app) this repo is, as a slug (cached). |
 | `BRANCH` | Current git branch. |
 | `BRANCH_SLUG` | Filename-safe form of `BRANCH` (slashes → `--`). Use for paths. |
-| `TICKET` | The ticket id this branch is working, or empty. `TICKET_TITLE` / `TICKET_STATUS` accompany it. Empty is normal — never require it. |
+| `TICKET` | The ticket id this branch is working, or empty. `TICKET_TITLE` / `TICKET_STATUS` / `TICKET_PROJECT` accompany it. Empty is normal — never require it. |
 | `IS_FIRST_TIME` | `yes` if this is the first smriti run in this repo. |
 | `LEAN` | `senior` or `prototype`. Skills should honor this. |
 | `CODEX_AVAILABLE` | `1` if Codex CLI is installed and authed. |

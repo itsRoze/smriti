@@ -62,7 +62,7 @@ if [ -f "$CACHE_FILE" ]; then
         if [ -n "$DERIVED" ] && [ "$DERIVED" != "$SLUG" ]; then
           printf 'NOTE: this repo had no remote when smriti first saw it (slug: %s).\n' "$SLUG" >&2
           printf '      It now has a remote — the derived slug would be '\''%s'\''.\n' "$DERIVED" >&2
-          printf '      Run '\''smriti project rename %s %s'\'' to migrate state.\n' "$SLUG" "$DERIVED" >&2
+          printf '      Run '\''smriti repo rename %s %s'\'' to migrate state.\n' "$SLUG" "$DERIVED" >&2
         fi
       fi
       ;;

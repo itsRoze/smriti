@@ -1,7 +1,7 @@
 {
   "name": "smriti",
-  "version": "1.2.0",
-  "description": "Personal Claude Code skill stack — one /begin flow from idea to reviewed, tested change.",
+  "version": "1.3.0",
+  "description": "Personal Claude Code skill stack \u2014 one /begin flow from idea to reviewed, tested change.",
   "license": "MIT",
   "type": "module",
   "scripts": {

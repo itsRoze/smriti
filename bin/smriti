@@ -18,7 +18,7 @@ SMRITI_BIN="$(cd "$(dirname "$_self")" && pwd -P)"
 # codex-probe, update-check, html) are still dispatchable by name — skills call
 # them — they are just not advertised. `smriti --commands` is the single source
 # the zsh completion reads, so the two can never drift.
-USER_COMMANDS=(board ticket project trace factory clean browse config principles-install)
+USER_COMMANDS=(board ticket project repo trace factory clean browse config principles-install)
 
 show_help() {
   cat <<EOF
@@ -26,13 +26,15 @@ smriti — personal Claude Code skill stack
 
 Usage: smriti [command] [args...]
 
-Run with no arguments in a terminal to open the board — every project, every
-ticket, what is running, and what is waiting on you, in your browser.
+Run with no arguments in a terminal to open the board — every app, every
+project, every ticket, what is running, and what is waiting on you, in your
+browser.
 
 Commands:
   board               The front door: the factory board, served locally
   ticket              Work items: add, list, show, start, edit, cancel, rm, done
-  project             Manage tracked projects (list, current, forget, new, rename)
+  project             Bodies of work inside an app: add, list, show, edit, done, rm
+  repo                Apps smriti tracks: list, show, edit, current, new, forget, rename
   trace               Run trace: start, emit, end, list, show, tail, stats
   factory             Scriptable listing of tickets and runs (--list)
   clean               Post-merge tidy: delete merged branches and their worktrees
