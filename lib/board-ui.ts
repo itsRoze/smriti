@@ -850,7 +850,7 @@ export function boardPage(): string {
       // A "loose" line under the only group would be noise — same rule the
       // board's own grouping follows.
       if (loose && projs.length){
-        h += '<div class="rproj loose" data-loose="' + esc(app) + '">' +
+        h += '<div class="rproj loose" role="button" tabindex="0" data-loose="' + esc(app) + '">' +
           '<span class="arrow">▸</span><span class="nm">loose</span>' +
           '<span class="n">' + loose + '</span></div>';
       }
@@ -1200,13 +1200,17 @@ export function boardPage(): string {
       el.addEventListener('click', open);
       el.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' '){ e.preventDefault(); open(); } });
     });
-    $$('[data-loose]').forEach((el) => el.addEventListener('click', () => {
-      if (view.kind !== 'board') go('');
-      // Raw, not esc(): that escapes for HTML, and an &amp; in a selector
-      // would match nothing. Slugs are validated to a safe alphabet upstream.
-      const h = document.querySelector('.sheet .phead[data-app="' + el.dataset.loose + '"]');
-      if (h) h.scrollIntoView({ block: 'start', behavior: 'smooth' });
-    }));
+    $$('[data-loose]').forEach((el) => {
+      const open = () => {
+        if (view.kind !== 'board') go('');
+        // Raw, not esc(): that escapes for HTML, and an &amp; in a selector
+        // would match nothing. Slugs are validated to a safe alphabet upstream.
+        const h = document.querySelector('.sheet .phead[data-app="' + el.dataset.loose + '"]');
+        if (h) h.scrollIntoView({ block: 'start', behavior: 'smooth' });
+      };
+      el.addEventListener('click', open);
+      el.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' '){ e.preventDefault(); open(); } });
+    });
     $$('[data-fold]').forEach((el) => el.addEventListener('click', () => {
       const key = el.dataset.fold;
       if (foldFlips.has(key)) foldFlips.delete(key); else foldFlips.add(key);
