@@ -364,6 +364,36 @@ describe('board UI', () => {
     } finally { await context.close(); }
   }, T);
 
+  it('an edit after a cancelled edit still saves', async () => {
+    if (!HAS_CHROMIUM) return;
+    const { context, page, errors } = await open();
+    try {
+      await openBodyTicket(page);
+      // Escape ABANDONS by clearing the blur handler. Opening a second editor
+      // has to re-arm it, or the next edit blurs into nothing and is lost with
+      // no error — the worst shape a bug can have on a description box.
+      await page.keyboard.press('e');
+      await page.waitForSelector('#descedit.on');
+      await page.locator('#descedit').press('Escape');
+      await page.waitForSelector('#descedit.on', { state: 'hidden' });
+
+      await page.keyboard.press('e');
+      await page.waitForSelector('#descedit.on');
+      await page.locator('#descedit').fill('rewritten after a cancel');
+      await page.locator('#descedit').press('Meta+Enter');
+
+      await page.waitForSelector('#desc:has-text("rewritten after a cancel")');
+      const shown = spawnSync(TICKET, ['show', String(MD_TICKET), '--json'], {
+        encoding: 'utf8', env: { ...process.env, SMRITI_HOME: HOME_DIR },
+      });
+      expect(JSON.parse(shown.stdout).ticket.body).toBe('rewritten after a cancel');
+
+      // Put it back, so the tests after this one still see the fixture body.
+      run(TICKET, ['edit', String(MD_TICKET), '--body', MD_BODY], appDir);
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+
   it('with rendering unavailable the body still keeps its line breaks', async () => {
     if (!HAS_CHROMIUM) return;
     // No errors assertion here, unlike every other test in this file: aborting

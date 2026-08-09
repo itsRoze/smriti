@@ -1182,6 +1182,10 @@ export function boardPage(): string {
   }
   function startEdit(el, ta){
     if (!el || !ta) return;
+    // Re-arm the blur save on every open. Escape ABANDONS by clearing onblur,
+    // so an editor opened after a cancelled one would otherwise blur into
+    // nothing and silently drop the edit.
+    if (ta.saveDesc) ta.onblur = ta.saveDesc;
     el.style.display = 'none';
     ta.classList.add('on');
     ta.focus();
@@ -1190,6 +1194,7 @@ export function boardPage(): string {
   // surface is built rather than on first click, so the e key and the keyboard
   // can open an editor that has never been clicked.
   function wireDescEdit(el, ta, save){
+    ta.saveDesc = save;
     ta.onblur = save;
     ta.onkeydown = (ev) => {
       if (ev.key === 'Escape'){
