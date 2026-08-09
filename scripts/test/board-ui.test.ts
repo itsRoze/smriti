@@ -73,10 +73,24 @@ beforeAll(async () => {
   // Finished work, so the fold has something to unfold. Cancelled rather than
   // two shipped: they are the two halves of "completed" and the board must
   // treat them alike behind the fold while drawing them differently on a card.
-  const shipped = run(TICKET, ['add', 'the old importer', '--project', 'search-v2'], appDir);
-  run(TICKET, ['done', (shipped.stdout.match(/\d+/) ?? ['0'])[0]], appDir);
-  const killed = run(TICKET, ['add', 'a road not taken'], appDir);
-  run(TICKET, ['cancel', (killed.stdout.match(/\d+/) ?? ['0'])[0]], appDir);
+  //
+  // The id comes back out of the store by title rather than scraped from
+  // stdout: a silently-wrong id here would fail later, inside the fold tests,
+  // pointing at the fold rather than at this line.
+  const idOf = (title: string) => {
+    const r = run(TICKET, ['list', '--all', '--json'], appDir);
+    if (r.status !== 0) throw new Error('ticket list failed: ' + r.stderr);
+    const found = JSON.parse(r.stdout).find((t: any) => t.title === title);
+    if (!found) throw new Error('fixture ticket never landed: ' + title);
+    return String(found.id);
+  };
+  const must = (r: ReturnType<typeof run>, what: string) => {
+    if (r.status !== 0) throw new Error(what + ' failed: ' + (r.stderr || r.stdout));
+  };
+  must(run(TICKET, ['add', 'the old importer', '--project', 'search-v2'], appDir), 'add shipped');
+  must(run(TICKET, ['done', idOf('the old importer')], appDir), 'done');
+  must(run(TICKET, ['add', 'a road not taken'], appDir), 'add cancelled');
+  must(run(TICKET, ['cancel', idOf('a road not taken')], appDir), 'cancel');
 
   const r = spawnSync('bun', [BOARD, '--url'], {
     encoding: 'utf8',
@@ -310,6 +324,26 @@ describe('the margin', () => {
     } finally { await context.close(); }
   }, T);
 
+  // Both jump rows navigate and THEN look for their target. Assigning the hash
+  // updates it synchronously but fires hashchange as a later task, so a naive
+  // lookup runs against the page you were still on and always misses.
+  it('the ideas row reaches the board from a page you were already on', async () => {
+    if (!HAS_CHROMIUM) return;
+    const { context, page, errors } = await open();
+    try {
+      await page.goto(url.split('?')[0] + '#/r/test-demo', { waitUntil: 'domcontentloaded' });
+      await page.waitForSelector('.slab h1');
+
+      await page.locator('.rail [data-ideas]').click();
+      await page.waitForFunction(() => !location.hash || location.hash === '#');
+      // It landed on the board AND found the band — a miss used to toast
+      // "no ideas captured yet" while the ideas sat right there.
+      await page.waitForSelector('.phead[data-app="(ideas)"]');
+      expect(await page.locator('#toast.on').count()).toBe(0);
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+
   it('collapses with b, and the choice survives a reload', async () => {
     if (!HAS_CHROMIUM) return;
     const { context, page, errors } = await open();
@@ -393,6 +427,32 @@ describe('the fold', () => {
       await page.waitForSelector('.phead[data-app="(ideas)"]');
       const ideasPlot = page.locator('.plot').filter({ has: page.locator('[data-app="(ideas)"]') });
       expect(await ideasPlot.locator('.histline').count()).toBe(0);
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+
+  // The regression this whole feature could most easily have shipped: the fold
+  // inserts cards into the MIDDLE of the board's selection list, so restoring
+  // the old numeric index put the highlight on a different ticket — and the
+  // next d would have marked that one done.
+  it('opening a fold above the selection does not move the selection', async () => {
+    if (!HAS_CHROMIUM) return;
+    const { context, page, errors } = await open();
+    try {
+      // Walk down to the app-less idea, which sorts AFTER test-demo's cards.
+      for (let i = 0; i < 12; i++) {
+        await page.keyboard.press('ArrowDown');
+        const t = await page.locator('.card.sel .t').innerText().catch(() => '');
+        if (t === 'an idea with no app') break;
+      }
+      expect(await page.locator('.card.sel .t').innerText()).toBe('an idea with no app');
+
+      // test-demo's fold sits above it and adds a card when opened.
+      await page.locator('.plot').filter({ has: page.locator('[data-app="test-demo"]') })
+        .locator('.histline').click();
+      await page.waitForSelector('.card.done');
+
+      expect(await page.locator('.card.sel .t').innerText()).toBe('an idea with no app');
       expect(errors).toEqual([]);
     } finally { await context.close(); }
   }, T);

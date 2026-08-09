@@ -93,15 +93,15 @@ export function boardPage(): string {
      (data-rail, persisted). Deliberately not a width probe read once in
      JS at load — that leaves the margin wrong for the rest of the
      session the moment you resize the window. */
-  :root{--rail-w:198px;--rail-pad:20px;--rail-detail:inline;--rail-lab:inline-block;--rail-proj:flex;--rail-items:stretch}
+  :root{--rail-w:198px;--rail-pad:20px;--rail-detail:inline;--rail-lab:inline-block;--rail-proj:flex;--rail-just:flex-start;--rail-row-pad:6px;--rail-row-end:12px;--rail-glyph:"\\2039"}
   @media (max-width:1200px){
-    :root{--rail-w:58px;--rail-pad:0px;--rail-detail:none;--rail-lab:none;--rail-proj:none;--rail-items:center}
+    :root{--rail-w:58px;--rail-pad:0px;--rail-detail:none;--rail-lab:none;--rail-proj:none;--rail-just:center;--rail-row-pad:0px;--rail-row-end:0px;--rail-glyph:"\\203A"}
   }
   /* The explicit choice must outrank the breakpoint in BOTH directions, so
      it is an attribute selector — a media query adds no specificity, and a
      bare :root inside one would lose to nothing at all. */
-  :root[data-rail="open"]{--rail-w:198px;--rail-pad:20px;--rail-detail:inline;--rail-lab:inline-block;--rail-proj:flex;--rail-items:stretch}
-  :root[data-rail="collapsed"]{--rail-w:58px;--rail-pad:0px;--rail-detail:none;--rail-lab:none;--rail-proj:none;--rail-items:center}
+  :root[data-rail="open"]{--rail-w:198px;--rail-pad:20px;--rail-detail:inline;--rail-lab:inline-block;--rail-proj:flex;--rail-just:flex-start;--rail-row-pad:6px;--rail-row-end:12px;--rail-glyph:"\\2039"}
+  :root[data-rail="collapsed"]{--rail-w:58px;--rail-pad:0px;--rail-detail:none;--rail-lab:none;--rail-proj:none;--rail-just:center;--rail-row-pad:0px;--rail-row-end:0px;--rail-glyph:"\\203A"}
   @media (max-width:700px){:root,:root[data-rail]{--rail-w:0px} .rail,.rtab{display:none}}
 
   .page{display:flex;position:relative;z-index:2;min-height:100vh}
@@ -110,7 +110,7 @@ export function boardPage(): string {
     width:var(--rail-w);height:100vh;overflow:hidden auto;
     padding:38px 0 26px var(--rail-pad);
     border-right:2.5px solid var(--ink-4);
-    display:flex;flex-direction:column;align-items:var(--rail-items);
+    display:flex;flex-direction:column;
   }
   .rail .rlab{
     display:var(--rail-lab);align-self:flex-start;
@@ -119,8 +119,12 @@ export function boardPage(): string {
     background:linear-gradient(180deg,transparent 52%,rgba(var(--hi-rgb),var(--hi-wash)) 52%,rgba(var(--hi-rgb),var(--hi-wash)) 92%,transparent 92%);
     background-size:0% 100%;background-repeat:no-repeat;animation:swipe .6s ease-out .15s forwards;
   }
+  /* Rows are full width so the current-app wash spans the margin; centring the
+     collapsed sigil is therefore justify-content on the row, NOT align-items on
+     the column — that could never have moved a width:100% child. */
   .ritem{
-    display:flex;align-items:center;gap:10px;padding:6px 12px 6px 6px;
+    display:flex;align-items:center;justify-content:var(--rail-just);
+    gap:10px;padding:6px var(--rail-row-end) 6px var(--rail-row-pad);
     cursor:pointer;border-radius:9px;margin-bottom:2px;width:100%;
   }
   .ritem .sig{width:26px;height:26px;font-size:8.5px;border-radius:9px 11px 8px 10px/10px 8px 11px 9px}
@@ -154,9 +158,11 @@ export function boardPage(): string {
     background:linear-gradient(180deg,transparent 8%,rgba(var(--hi-rgb),var(--hi-wash)) 8%,rgba(var(--hi-rgb),var(--hi-wash)) 92%,transparent 92%);
     box-shadow:inset 3px 0 0 var(--hi);
   }
-  /* Outside .rail, which would clip a tab hanging off its edge, and FIXED
-     rather than absolute: the rail is sticky, so a tab that scrolled away with
-     the document would strand the control halfway down a long board. */
+  /* Outside .rail, which would clip a tab hanging off its edge, and outside
+     .page too — that carries a z-index and so traps its descendants in one
+     stacking slot, which would have quietly pinned this under the key bar.
+     FIXED rather than absolute: the rail is sticky, so a tab that scrolled away
+     would strand the control halfway down a long board. */
   .rtab{
     position:fixed;left:calc(var(--rail-w) - 11px);top:74px;z-index:9;
     width:21px;height:21px;display:grid;place-items:center;padding:0;
@@ -164,6 +170,10 @@ export function boardPage(): string {
     border:2.5px solid var(--ink-4);border-radius:7px 9px 6px 8px/8px 6px 9px 7px;
     transform:rotate(-3deg);cursor:pointer;
   }
+  /* The glyph is CSS, from the same token that sets the width. Deriving it in
+     JS meant a resize across the breakpoint left the arrow pointing the wrong
+     way until something else happened to re-render. */
+  .rtab::before{content:var(--rail-glyph)}
   .rtab:hover{color:var(--ink);border-color:var(--ink-3)}
 
   .box{
@@ -532,9 +542,9 @@ export function boardPage(): string {
 </style>
 </head>
 <body>
+<button class="rtab" id="rtab" title="the margin — b" aria-label="show or hide the margin"></button>
 <div class="page">
 <nav class="rail" id="rail" aria-label="apps and projects"></nav>
-<button class="rtab" id="rtab" title="the margin — b" aria-label="collapse the margin">‹</button>
 <div class="sheet">
   <div class="top">
     <div class="mark">smriti <span>factory</span></div>
@@ -714,18 +724,25 @@ export function boardPage(): string {
   // S.repositories — that table holds a row for every repo you have ever stood
   // in, most of which have no tickets and a machine-generated slug, and an
   // index listing those is noise wearing the shape of navigation.
+  // Memoised for the length of one render: the margin asks for it once, the
+  // board once, and hueFor once per app. Cleared by route() before anything
+  // draws, so it can never outlive a refresh.
+  let appsMemo = null;
   function appsWithWork(){
-    return [...new Set(
+    if (appsMemo) return appsMemo;
+    appsMemo = [...new Set(
       S.tickets.map(appOf).concat((S.projects || []).map((p) => p.repo_slug || NO_APP)),
     )].sort((a, b) => (a === NO_APP ? 1 : b === NO_APP ? -1 : a.localeCompare(b)));
+    return appsMemo;
   }
 
   // Stable per-app colour, by position in the sorted app list — so an app keeps
   // its colour on the board and on its own page.
   function hueFor(slug){
-    const apps = [...new Set(S.tickets.map(appOf).concat((S.projects||[]).map((p) => p.repo_slug || NO_APP)))]
-      .filter((a) => a !== NO_APP).sort();
-    const i = apps.indexOf(slug);
+    // The same derivation the board and the margin use, not a second copy of
+    // it — the copy sorted differently (plain sort vs localeCompare), so a
+    // mixed-case slug could take its colour from a different app's position.
+    const i = appsWithWork().filter((a) => a !== NO_APP).indexOf(slug);
     return i < 0 ? 'var(--ink-3)' : HUES[i % HUES.length];
   }
   function sigFor(slug){
@@ -810,6 +827,12 @@ export function boardPage(): string {
       (shipped && cancelled ? ' · ' : '') +
       (cancelled ? 'cancelled <b>' + cancelled + '</b>' : '') + '</span></button>';
     if (on){
+      // Its own stagger, from zero. cardHtml stamps animation-delay from a
+      // board-wide counter, and .card holds the from-state (opacity:0) for the
+      // whole delay — so cards unfolded low on a busy board stayed blank for
+      // over a second after the click, which reads as a control that did not
+      // work. These appear on demand, so they start their own sequence.
+      cardIdx = 0;
       h += '<div class="cards folded">';
       for (const t of done){ h += cardHtml(t); flat.push({ id: t.id, kind: 'card' }); }
       h += '</div>';
@@ -824,9 +847,12 @@ export function boardPage(): string {
   function renderRail(){
     let h = '<div class="rlab">apps</div>';
     for (const app of appsWithWork()){
-      const openN = ticketsIn(app).filter(isOpen).length;
+      // One pass over the app's tickets, not three: this redraws with the rest
+      // of the page about once a second while an agent is running.
+      const mine = ticketsIn(app).filter(isOpen);
+      const openN = mine.length;
       const projs = projectsIn(app).filter((p) => p.status === 'active');
-      const loose = ticketsIn(app).filter((t) => t.project_id == null && isOpen(t)).length;
+      const loose = mine.filter((t) => t.project_id == null).length;
       const ideas = app === NO_APP;
       const hue = hueFor(app);
       const cur = !ideas && view.kind === 'app' && view.slug === app;
@@ -843,9 +869,10 @@ export function boardPage(): string {
 
       for (const p of projs){
         const on = view.kind === 'project' && Number(view.id) === Number(p.id);
+        const n = mine.filter((t) => Number(t.project_id) === Number(p.id)).length;
         h += '<div class="rproj' + (on ? ' on' : '') + '" role="button" tabindex="0" data-proj="' + p.id + '">' +
           '<span class="arrow">▸</span><span class="nm">' + esc(p.name) + '</span>' +
-          '<span class="n">' + ticketsOf(p.id).filter(isOpen).length + '</span></div>';
+          '<span class="n">' + n + '</span></div>';
       }
       // A "loose" line under the only group would be noise — same rule the
       // board's own grouping follows.
@@ -856,11 +883,6 @@ export function boardPage(): string {
       }
     }
     $('#rail').innerHTML = h;
-    const tab = $('#rtab');
-    const collapsed = getComputedStyle(document.documentElement)
-      .getPropertyValue('--rail-detail').trim() === 'none';
-    tab.textContent = collapsed ? '›' : '‹';
-    tab.setAttribute('aria-label', (collapsed ? 'open' : 'collapse') + ' the margin');
   }
 
   // ── the board ────────────────────────────────────────────────────────
@@ -1140,6 +1162,7 @@ export function boardPage(): string {
     // template literal, where a \\/ in a regex literal collapses to a bare /
     // and silently breaks the pattern. Slugs cannot contain a separator
     // (smriti-repo validates that), so splitting is exact anyway.
+    appsMemo = null;
     const parts = (location.hash || '').replace('#', '').split('/').filter(Boolean);
     if (parts[0] === 'r' && parts[1]) view = { kind: 'app', slug: decodeURIComponent(parts[1]) };
     else if (parts[0] === 'p' && parts[1]) view = { kind: 'project', id: Number(decodeURIComponent(parts[1])) };
@@ -1151,7 +1174,13 @@ export function boardPage(): string {
     // Selection is owned by the view: cleared when you move between views, kept
     // when the view you are on simply re-renders (which SSE does about once a
     // second while an agent is running).
-    const keep = changed ? -1 : sel;
+    //
+    // Kept by WHAT is selected, not by where it sat. Unfolding completed work
+    // inserts cards into the middle of the list, so restoring a bare index
+    // moved the highlight onto a different ticket — and the next d would have
+    // marked that one done instead. Matched on kind too, because a ticket can
+    // appear both in "waiting on you" and as a card.
+    const keepRef = changed ? null : (sel >= 0 ? flat[sel] : null);
     flat = []; sel = -1;
 
     // The treeline is the board's horizon, not a page ornament.
@@ -1163,19 +1192,29 @@ export function boardPage(): string {
     else if (view.kind === 'project') renderProject(view.id);
     else renderBoard();
 
-    sel = keep >= flat.length ? flat.length - 1 : keep;
+    sel = keepRef
+      ? flat.findIndex((f) => f.id === keepRef.id && f.kind === keepRef.kind)
+      : -1;
     paintSel();
   }
   const go = (hash) => { if (location.hash === hash) route(); else location.hash = hash; };
 
+  // Scroll the board to an app's band. Assigning location.hash updates it
+  // synchronously but fires hashchange as a LATER task, so navigating and then
+  // looking for the heading finds the page you were still on — the lookup
+  // missed every time, and the ideas row reported "no ideas captured yet" while
+  // ideas sat on the board behind it. Render first, then look.
+  function jumpToBand(slug){
+    if (view.kind !== 'board'){ location.hash = ''; route(); }
+    const band = document.querySelector('.sheet .phead[data-app="' + slug + '"]');
+    if (band) band.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    else if (slug === NO_APP) toast('no ideas captured yet — press <b>c</b>');
+  }
+
   // Delegated wiring, re-run after every render. One place, so a control added
   // to a page cannot quietly miss its handler.
-  // Scoped to .page rather than .sheet: the margin is a sibling of the sheet,
-  // and everything in it — app links, project links, the fold — would be inert
-  // under the narrower scope. The overlays stay outside .page and keep their
-  // own wiring, so widening this cannot reach into them.
   function wire(){
-    const $$ = (s) => document.querySelectorAll('.page ' + s);
+    const $$ = (s) => document.querySelectorAll('.sheet ' + s);
     $$('[data-tid]').forEach((el) => {
       el.addEventListener('click', () => { const id = Number(el.dataset.tid); if (id) openDetail(id); });
     });
@@ -1189,32 +1228,15 @@ export function boardPage(): string {
       el.addEventListener('click', open);
       el.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' '){ e.preventDefault(); open(); } });
     });
-    $$('[data-ideas]').forEach((el) => {
-      // No app, so no page — take them to the band on the board instead.
-      const open = () => {
-        if (view.kind !== 'board'){ go(''); }
-        const band = document.querySelector('.sheet .phead[data-app="' + NO_APP + '"]');
-        if (band) band.scrollIntoView({ block: 'start', behavior: 'smooth' });
-        else toast('no ideas captured yet — press <b>c</b>');
-      };
-      el.addEventListener('click', open);
-      el.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' '){ e.preventDefault(); open(); } });
-    });
-    $$('[data-loose]').forEach((el) => {
-      const open = () => {
-        if (view.kind !== 'board') go('');
-        // Raw, not esc(): that escapes for HTML, and an &amp; in a selector
-        // would match nothing. Slugs are validated to a safe alphabet upstream.
-        const h = document.querySelector('.sheet .phead[data-app="' + el.dataset.loose + '"]');
-        if (h) h.scrollIntoView({ block: 'start', behavior: 'smooth' });
-      };
-      el.addEventListener('click', open);
-      el.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' '){ e.preventDefault(); open(); } });
-    });
     $$('[data-fold]').forEach((el) => el.addEventListener('click', () => {
       const key = el.dataset.fold;
       if (foldFlips.has(key)) foldFlips.delete(key); else foldFlips.add(key);
       route();
+      // route() replaced the button that fired this, so focus fell to <body>.
+      // Put it back on the control the user is standing on, or activating the
+      // fold by keyboard costs them their place on the page.
+      const again = document.querySelector('.sheet [data-fold="' + key + '"]');
+      if (again && document.activeElement === document.body) again.focus();
     }));
     const back = document.querySelector('.sheet [data-back]');
     if (back) back.addEventListener('click', () => {
@@ -1278,15 +1300,18 @@ export function boardPage(): string {
   // rather than guess — otherwise toggling on a narrow window appears to do
   // nothing the first time.
   function toggleRail(){
+    // On a phone the margin is display:none and its width is pinned to 0, so
+    // there is nothing to toggle — and writing the choice anyway would let a
+    // phone session decide how the next desktop session opens.
+    if (!$('#rail').offsetParent) return;
     const collapsed = getComputedStyle(document.documentElement)
       .getPropertyValue('--rail-detail').trim() === 'none';
     const next = collapsed ? 'open' : 'collapsed';
     document.documentElement.dataset.rail = next;
     localStorage.setItem('smriti-rail', next);
-    // route() rather than renderRail() alone: wire() re-binds the whole page,
-    // and calling it without replacing the sheet's nodes would bind every card
-    // a second time.
-    tapKey('b'); route();
+    // The margin alone: the width is pure CSS, and the sheet has no reason to
+    // be torn down and re-animated because a nav column changed shape.
+    tapKey('b'); renderRail();
   }
 
   // Completed work, globally. Clearing the per-section overrides makes this
@@ -1794,6 +1819,22 @@ export function boardPage(): string {
         break;
       }
     }
+  });
+  // The margin is bound ONCE, by delegation on a container that renderRail
+  // never replaces. That is what lets b redraw the margin alone instead of
+  // re-rendering the whole board — which was replaying every card's entrance
+  // animation on each press.
+  function railActivate(e){
+    const el = e.target.closest('[data-app],[data-proj],[data-ideas],[data-loose]');
+    if (!el) return;
+    if (el.dataset.proj) go('#/p/' + el.dataset.proj);
+    else if (el.dataset.loose) jumpToBand(el.dataset.loose);
+    else if (el.dataset.ideas) jumpToBand(NO_APP);
+    else if (el.dataset.app) go('#/r/' + encodeURIComponent(el.dataset.app));
+  }
+  $('#rail').addEventListener('click', railActivate);
+  $('#rail').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' '){ e.preventDefault(); railActivate(e); }
   });
   $('#rtab').addEventListener('click', toggleRail);
   $('#palq').addEventListener('input', (e) => palRender(e.target.value));
