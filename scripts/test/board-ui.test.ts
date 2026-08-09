@@ -70,6 +70,13 @@ beforeAll(async () => {
   run(TICKET, ['add', 'index the corpus', '--project', 'search-v2', '--ready'], appDir);
   run(TICKET, ['add', 'a one-off bug', '--ready'], appDir);
   run(TICKET, ['add', 'an idea with no app', '--repo', '-'], appDir);
+  // Finished work, so the fold has something to unfold. Cancelled rather than
+  // two shipped: they are the two halves of "completed" and the board must
+  // treat them alike behind the fold while drawing them differently on a card.
+  const shipped = run(TICKET, ['add', 'the old importer', '--project', 'search-v2'], appDir);
+  run(TICKET, ['done', (shipped.stdout.match(/\d+/) ?? ['0'])[0]], appDir);
+  const killed = run(TICKET, ['add', 'a road not taken'], appDir);
+  run(TICKET, ['cancel', (killed.stdout.match(/\d+/) ?? ['0'])[0]], appDir);
 
   const r = spawnSync('bun', [BOARD, '--url'], {
     encoding: 'utf8',
@@ -259,4 +266,155 @@ describe('board UI', () => {
       expect(errors).toEqual([]);
     } finally { await context.close(); }
   });
+});
+
+// The margin (the app/project index down the left) and the fold (the count
+// line that reveals finished work). Both are drawn fresh on every render and
+// both remember things — which is where they can go wrong, so that is what
+// these test rather than the markup.
+describe('the margin', () => {
+  it('lists the apps the board draws, ideas last, and never an empty repo row', async () => {
+    if (!HAS_CHROMIUM) return;
+    const { context, page, errors } = await open();
+    try {
+      await page.waitForSelector('.rail .ritem');
+      const names = await page.locator('.rail .ritem .nm').allInnerTexts();
+      expect(names).toEqual(['test-demo', 'ideas']);
+      // Its projects hang under it, with the loose band beside them.
+      const projects = await page.locator('.rail .rproj .nm').allInnerTexts();
+      expect(projects).toContain('Search v2');
+      expect(projects).toContain('loose');
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+
+  it('marks where you are, and a project in it opens that project', async () => {
+    if (!HAS_CHROMIUM) return;
+    const { context, page, errors } = await open();
+    try {
+      // Nothing is current on the board itself.
+      expect(await page.locator('.rail .ritem.on').count()).toBe(0);
+
+      await page.locator('.rail .rproj[data-proj]').first().click();
+      await page.waitForFunction(() => location.hash.startsWith('#/p/'));
+      await page.waitForSelector('.rail .rproj.on');
+      expect(await page.locator('.rail .rproj.on .nm').innerText()).toBe('Search v2');
+      // The margin is still there — that is the whole point of it.
+      expect(await page.locator('.rail .ritem').count()).toBe(2);
+
+      await page.locator('.rail .ritem[data-app]').first().click();
+      await page.waitForFunction(() => location.hash === '#/r/test-demo');
+      await page.waitForSelector('.rail .ritem.on');
+      expect(await page.locator('.rail .ritem.on .nm').innerText()).toBe('test-demo');
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+
+  it('collapses with b, and the choice survives a reload', async () => {
+    if (!HAS_CHROMIUM) return;
+    const { context, page, errors } = await open();
+    try {
+      const railWidth = () => page.evaluate(() =>
+        getComputedStyle(document.querySelector('.rail')!).width);
+      const wide = await railWidth();
+
+      await page.keyboard.press('b');
+      await page.waitForFunction(() => document.documentElement.dataset.rail === 'collapsed');
+      const narrow = await railWidth();
+      expect(parseFloat(narrow)).toBeLessThan(parseFloat(wide));
+      // Collapsed is a sigil column, not nothing: the apps are still legible.
+      expect(await page.locator('.rail .ritem').count()).toBe(2);
+
+      await page.reload({ waitUntil: 'domcontentloaded' });
+      await page.waitForFunction(() => (document.querySelector('#plots')?.children.length ?? 0) > 0);
+      expect(await railWidth()).toBe(narrow);
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+});
+
+describe('the fold', () => {
+  it('hides finished work behind a count line that reveals it', async () => {
+    if (!HAS_CHROMIUM) return;
+    const { context, page, errors } = await open();
+    try {
+      await page.goto(url.split('?')[0] + '#/r/test-demo', { waitUntil: 'domcontentloaded' });
+      await page.waitForSelector('.histline');
+
+      // Hidden by default — the line counts both halves of "completed".
+      expect(await page.locator('.card.done').count()).toBe(0);
+      // innerText comes back through text-transform:uppercase.
+      const line = (await page.locator('.histline').innerText()).toLowerCase();
+      expect(line).toContain('shipped 1');
+      expect(line).toContain('cancelled 1');
+
+      await page.locator('.histline').click();
+      await page.waitForSelector('.card.done');
+      const revealed = await page.locator('.card.done .t').allInnerTexts();
+      expect(revealed).toContain('the old importer');
+      expect(revealed).toContain('a road not taken');
+
+      // And it folds back.
+      await page.locator('.histline').click();
+      await page.waitForFunction(() => document.querySelectorAll('.card.done').length === 0);
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+
+  it('stays open across a refresh — the board redraws itself every second', async () => {
+    if (!HAS_CHROMIUM) return;
+    const { context, page, errors } = await open();
+    try {
+      await page.goto(url.split('?')[0] + '#/r/test-demo', { waitUntil: 'domcontentloaded' });
+      await page.waitForSelector('.histline');
+      await page.locator('.histline').click();
+      await page.waitForSelector('.card.done');
+
+      // r is the same refresh() an SSE 'changed' event drives, and it replaces
+      // the view's html wholesale. A fold that lived in the DOM would shut here.
+      await page.keyboard.press('r');
+      await page.waitForTimeout(400);
+      expect(await page.locator('.card.done').count()).toBeGreaterThan(0);
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+
+  it('draws no count line for a project with nothing finished', async () => {
+    if (!HAS_CHROMIUM) return;
+    const { context, page, errors } = await open();
+    try {
+      // Search v2 owns the shipped importer, so it HAS a line...
+      await page.goto(url.split('?')[0] + '#/p/1', { waitUntil: 'domcontentloaded' });
+      await page.waitForSelector('.slab h1');
+      expect(await page.locator('.histline').count()).toBe(1);
+      // ...while the ideas band has nothing finished at all, so the board draws
+      // no control there rather than a dead one.
+      await page.goto(url.split('?')[0] + '#', { waitUntil: 'domcontentloaded' });
+      await page.waitForSelector('.phead[data-app="(ideas)"]');
+      const ideasPlot = page.locator('.plot').filter({ has: page.locator('[data-app="(ideas)"]') });
+      expect(await ideasPlot.locator('.histline').count()).toBe(0);
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+
+  it('h toggles every fold at once, and the choice survives a reload', async () => {
+    if (!HAS_CHROMIUM) return;
+    const { context, page, errors } = await open();
+    try {
+      await page.goto(url.split('?')[0] + '#/r/test-demo', { waitUntil: 'domcontentloaded' });
+      await page.waitForSelector('.histline');
+      expect(await page.locator('.card.done').count()).toBe(0);
+
+      await page.keyboard.press('h');
+      await page.waitForSelector('.card.done');
+
+      await page.reload({ waitUntil: 'domcontentloaded' });
+      await page.waitForSelector('.card.done');
+      expect(await page.locator('.card.done').count()).toBeGreaterThan(0);
+
+      await page.keyboard.press('h');
+      await page.waitForFunction(() => document.querySelectorAll('.card.done').length === 0);
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
 });
