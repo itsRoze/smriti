@@ -929,7 +929,10 @@ export function boardPage(): string {
         .sort(byStatus);
       const projs = projectsIn(app).filter((p) => p.status === 'active');
       const done = all.filter((t) => !isOpen(t) && !items.includes(t));
-      if (!items.length && !projs.length && !done.length) continue;
+      // An app with nothing live stays OFF the board even though it has a
+      // history — the board answers "what needs attention now". Its record is
+      // still one click away, in the margin and on its own page.
+      if (!items.length && !projs.length) continue;
 
       const hue = hueFor(app);
       html += '<div class="plot"><div class="phead" role="button" tabindex="0" data-app="' + esc(app) + '">' +
