@@ -120,11 +120,11 @@ export function boardPage(): string {
     box-decoration-break:clone;-webkit-box-decoration-break:clone;padding:0 2px;
   }
   .wait .sub2{margin-top:9px;font-family:ui-monospace,Menlo,monospace;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-3)}
+  .wait .sub2 b{color:var(--orange);font-weight:400}
   /* The one thing on a waiting row you can act on, so it reads as an action
      rather than as more metadata. */
   .planlink{color:var(--hi);text-decoration:none;border-bottom:1px solid transparent;font-weight:600}
   .planlink:hover,.planlink:focus-visible{border-bottom-color:currentColor}
-  .wait .sub2 b{color:var(--orange);font-weight:400}
   .wait .empty{font-size:19px;color:var(--ink-3);padding:6px}
 
   .trees{display:block;width:100%;height:auto;margin:6px 0 -2px;opacity:.95}
@@ -1214,7 +1214,7 @@ export function boardPage(): string {
     // md.ts applies to document links a stored javascript: url would run
     // against this page's own authenticated API when clicked.
     const gate = gateFor(t);
-    if (gate)
+    if (gate && httpUrl(gate.html_url))
       h += '<a class="btn go" href="' + esc(gate.html_url) + '" target="_blank" rel="noopener">open the plan ↗</a>';
     if (t.pr_url && httpUrl(t.pr_url))
       h += '<a class="btn" href="' + esc(t.pr_url) + '" target="_blank" rel="noopener">open PR ↗</a>';

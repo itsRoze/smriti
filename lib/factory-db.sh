@@ -70,7 +70,7 @@ _factory_conn_args() {
 #
 # Reading it costs one sqlite3 invocation (~4ms against ~16ms for a whole
 # `ticket list`). That is the price of a version that cannot lie, and it is also
-# what makes a future v3 possible.
+# what let v3 be added without guesswork about what any given store already has.
 FACTORY_SCHEMA_VERSION=3
 
 # The store's schema version. Three answers, and they must stay distinct:

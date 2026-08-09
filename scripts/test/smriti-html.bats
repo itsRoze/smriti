@@ -461,3 +461,17 @@ run_session() { "$TRACE" list --json | jq -r ".[] | select(.run_uid==\"$RUN\") |
   ( cd "$WORK/elsewhere" && bun "$HTML" stop --session "$sid" )
   [ "$(run_status)" = "running" ]
 }
+
+@test "session id: a traversal attempt is 'no such session', not a path read" {
+  # The id reaches smriti-html from the board, which reads it out of factory.db
+  # — data, not a constant, and it is about to be joined onto a path.
+  mkdir -p "$SMRITI_HOME/evil"
+  printf '1234\nnonce\n' > "$SMRITI_HOME/evil/portfile"
+  run bun "$HTML" url --session '../evil'
+  [ "$status" -eq 6 ]
+  run bun "$HTML" await --session '../evil' --timeout 300
+  [ "$status" -eq 6 ]
+  run bun "$HTML" stop --session '../evil'
+  [ "$status" -eq 0 ]
+  [ -f "$SMRITI_HOME/evil/portfile" ]   # and it did not delete what it found
+}
