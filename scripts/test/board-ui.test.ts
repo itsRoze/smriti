@@ -300,6 +300,13 @@ describe('board UI', () => {
       // ...while clicking the row itself still does open it.
       await page.locator('.wait .item').first().click();
       await page.waitForSelector('#detv.on');
+
+      // The overlay carries the same click-through, chosen by an explicit
+      // "awaiting with a live URL" predicate rather than by whichever run a
+      // bare find() happens to reach first.
+      const btn = page.locator('#detv .acts a:has-text("open the plan")');
+      await btn.waitFor();
+      expect(await btn.getAttribute('href')).toBe(`http://127.0.0.1:${port}/`);
       expect(errors).toEqual([]);
     } finally {
       await context.close();
