@@ -112,10 +112,13 @@ export function renderMarkdown(src: string): string {
       i += 2;
       const rows: string[][] = [];
       while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i])) rows.push(cells(lines[i++]));
+      // Wrapped so a wide table scrolls inside itself. Plan tables are the wide
+      // kind (keymaps, before/after columns) and an unwrapped one scrolls the
+      // whole page sideways.
       out.push(
-        `<table><thead><tr>${head.map((c) => `<th>${c}</th>`).join('')}</tr></thead><tbody>` +
+        `<div class="tablewrap"><table><thead><tr>${head.map((c) => `<th>${c}</th>`).join('')}</tr></thead><tbody>` +
           rows.map((r) => `<tr>${r.map((c) => `<td>${c}</td>`).join('')}</tr>`).join('') +
-          `</tbody></table>`,
+          `</tbody></table></div>`,
       );
       continue;
     }

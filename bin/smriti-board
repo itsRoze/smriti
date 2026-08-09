@@ -96,42 +96,50 @@ function openInBrowser(url: string): void {
 // defensive — any failure lands on the printed command, which always works.
 // The board never fails a start because the backend did.
 
-type Launch = { method: 'herdr' | 'manual'; attach: string; existing?: boolean; agentStatus?: string };
+type Launch = {
+  method: 'herdr' | 'manual';
+  attach: string;
+  existing?: boolean;
+  agentStatus?: string;
+  prompting?: boolean;
+};
 
-// Is there already a herdr agent for this ticket? Without this check, starting
-// an already-in-progress ticket tried to spawn a SECOND agent under the same
-// name — the launch failed and the board fell back to a paste command, telling
-// you to run claude by hand for a session that was already open.
-type Session = { name: string; status: string; cwd: string };
+type Session = { name: string; status: string; cwd: string; pane: string };
 
 // Every herdr agent, so the board can show what a session is actually doing.
 // This is the only source that knows a Claude session is blocked on input —
 // smriti's trace only sees /begin's own gates.
+//
+// Deliberately NOT filtered on `name`: herdr drops the assigned name (an agent
+// started as `t3` was later listed with no name at all, so `agent read t3`
+// answered agent_not_found). Filtering on it made live sessions vanish from the
+// board — no blocked indicator, and start offered again on work already running.
+// `cwd` is the identifier herdr does not lose, and it equals worktree_path.
 function herdrSessions(): Session[] {
   if (!Bun.which('herdr')) return [];
   const r = sh('herdr', ['agent', 'list'], 8000);
   if (!r.ok) return [];
   try {
     return (JSON.parse(r.out)?.result?.agents ?? [])
-      .filter((a: { name?: string }) => a?.name)
-      .map((a: { name: string; agent_status?: string; cwd?: string }) => ({
-        name: a.name,
-        status: a.agent_status ?? 'unknown',
-        cwd: a.cwd ?? '',
-      }));
+      .map((a: { name?: string; agent_status?: string; status?: string; cwd?: string; pane_id?: string }) => ({
+        name: a?.name ?? '',
+        status: a?.agent_status ?? a?.status ?? 'unknown',
+        cwd: a?.cwd ?? '',
+        pane: a?.pane_id ?? '',
+      }))
+      .filter((s: Session) => s.name || s.cwd);
   } catch { return []; }
 }
 
-function existingAgent(name: string): { found: boolean; status?: string } {
-  if (!Bun.which('herdr')) return { found: false };
-  const r = sh('herdr', ['agent', 'list'], 8000);
-  if (!r.ok) return { found: false };
-  try {
-    const agents = JSON.parse(r.out)?.result?.agents ?? [];
-    const hit = agents.find((a: { name?: string }) => a?.name === name);
-    if (hit) return { found: true, status: hit.agent_status ?? hit.status ?? undefined };
-  } catch {}
-  return { found: false };
+// Is there already a session for this ticket? Without this check, starting an
+// already-in-progress ticket tried to spawn a SECOND agent under the same name —
+// the launch failed and the board fell back to a paste command, telling you to
+// run claude by hand for a session that was already open.
+//
+// Matched on the worktree path first, for the name-loss reason above.
+function existingAgent(name: string, dir?: string): { found: boolean; status?: string; name?: string; pane?: string } {
+  const hit = herdrSessions().find((s) => (dir && s.cwd === dir) || (s.name && s.name === name));
+  return hit ? { found: true, status: hit.status, name: hit.name, pane: hit.pane } : { found: false };
 }
 
 // Default is `bypass` (--dangerously-skip-permissions), because the whole point
@@ -148,18 +156,64 @@ function permissionMode(): 'ask' | 'bypass' {
   return r.out.trim() === 'ask' ? 'ask' : 'bypass';
 }
 
-function launchSession(dir: string, ticketId: number): Launch {
+// Non-blocking spawn. The whole board runs on one event loop, so the spawnSync
+// used everywhere else would freeze every other request — including the polling
+// that draws the board — for as long as it waits. Prompt delivery waits on a
+// human-scale UI, so it has to stay off the loop.
+async function shAsync(bin: string, args: string[], timeoutMs: number): Promise<boolean> {
+  const p = Bun.spawn([bin, ...args], { stdout: 'ignore', stderr: 'ignore' });
+  const killer = setTimeout(() => p.kill(), timeoutMs);
+  try { return (await p.exited) === 0; } finally { clearTimeout(killer); }
+}
+
+// Type the prompt into the session, the way you would.
+//
+// `herdr agent prompt` is the documented way to do this and it does not work
+// against Claude Code — it answers agent_prompt_stalled even with the agent
+// sitting at idle. Sending the keystrokes does work, but only once Claude is
+// actually able to receive them, and two things stand in the way:
+//
+//   1. Every ticket worktree is a directory Claude has never been run in, so it
+//      opens on "Is this a project you trust?" and reads nothing else until that
+//      is answered. There is no flag to pre-accept it (--print skips the dialog,
+//      but that is not an interactive session), and the trust record lives in
+//      claude's own ~/.claude.json, which is not ours to rewrite underneath a
+//      running process.
+//   2. agent_status reaches `idle` several seconds before the input box exists.
+//      The placeholder is the honest signal that a keystroke will land.
+//
+// Typing before either was settled is what "the session opened but /begin never
+// ran" was: the text went nowhere, and the session sat on the welcome screen
+// improvising until someone attached to it.
+async function deliverPrompt(pane: string, prompt: string): Promise<boolean> {
+  // A miss here is the normal case for a worktree you have already opened once,
+  // so this is a bounded look, not a requirement.
+  if (await shAsync('herdr', ['pane', 'wait-output', pane, '--match', 'trust', '--timeout', '15000'], 20000)) {
+    await shAsync('herdr', ['pane', 'send-keys', pane, 'Enter'], 5000);
+  }
+  if (!await shAsync('herdr', ['pane', 'wait-output', pane, '--regex', 'Try "', '--timeout', '60000'], 65000)) {
+    return false; // never became ready — leave the session alone rather than typing into it blind
+  }
+  await Bun.sleep(1500);
+  if (!await shAsync('herdr', ['pane', 'send-text', pane, prompt], 10000)) return false;
+  await Bun.sleep(500);
+  return shAsync('herdr', ['pane', 'send-keys', pane, 'Enter'], 10000);
+}
+
+function launchSession(dir: string, ticketId: number, force = false): Launch {
   const prompt = `/begin ticket:${ticketId}`;
   const name = `t${ticketId}`;
-  const claudeArgs = permissionMode() === 'bypass'
-    ? ['claude', '--dangerously-skip-permissions', prompt]
-    : ['claude', prompt];
+  // Flags only. These are appended to the executable that --kind claude already
+  // chose, so naming `claude` again ran `claude claude …` and the prompt was
+  // swallowed as an argument to nothing.
+  const claudeFlags = permissionMode() === 'bypass' ? ['--dangerously-skip-permissions'] : [];
 
   // Already running (or already run) — hand back the way in rather than
   // starting a duplicate.
-  const prior = existingAgent(name);
+  const prior = force ? { found: false as const } : existingAgent(name, dir);
   if (prior.found) {
-    return { method: 'herdr', attach: `herdr agent attach ${name}`, existing: true, agentStatus: prior.status };
+    const target = prior.name || name;
+    return { method: 'herdr', attach: `herdr agent attach ${target}`, existing: true, agentStatus: prior.status };
   }
   // Single-quoted with any ' doubled: repo paths with spaces are a supported
   // case elsewhere in this repo, and an unquoted cd silently lands you in the
@@ -167,7 +221,7 @@ function launchSession(dir: string, ticketId: number): Launch {
   const q = (v: string) => `'${v.replace(/'/g, `'\\''`)}'`;
   const manual = {
     method: 'manual' as const,
-    attach: `cd ${q(dir)} && ${claudeArgs.map(q).join(' ')}`,
+    attach: `cd ${q(dir)} && ${['claude', ...claudeFlags, prompt].map(q).join(' ')}`,
   };
 
   if (Bun.which('herdr')) {
@@ -192,9 +246,15 @@ function launchSession(dir: string, ticketId: number): Launch {
         // rejects it as agent_pane_busy. Retry briefly rather than giving up —
         // in testing this succeeded on the second attempt, a second later.
         for (let i = 0; i < 8; i++) {
-          const st = sh('herdr', ['agent', 'start', name, '--kind', 'claude', '--pane', pane, '--', ...claudeArgs], 45000);
+          const args = ['agent', 'start', name, '--kind', 'claude', '--pane', pane];
+          if (claudeFlags.length) args.push('--', ...claudeFlags);
+          const st = sh('herdr', args, 45000);
           if (st.ok && !/"error"/.test(st.out)) {
-            return { method: 'herdr', attach: `herdr agent attach ${name}` };
+            // Deliberately not awaited: the answer to "did the session start" is
+            // already known, and typing the prompt takes as long as claude takes
+            // to boot. The board watches agent status for the rest.
+            void deliverPrompt(pane, prompt);
+            return { method: 'herdr', attach: `herdr agent attach ${name}`, prompting: true };
           }
           if (!/agent_pane_busy/.test(st.out + st.errOut)) break; // a real failure
           Bun.sleepSync(1000);
@@ -433,21 +493,29 @@ async function cmdServer(): Promise<never> {
         return json({ path: dir, ...launch });
       }
 
-      // Explicitly restart a finished session: tear the old agent down first,
-      // because herdr will not reuse the name while it exists.
+      // Explicitly replace a session: close the old pane, then start fresh.
       const restart = url.pathname.match(/^\/api\/tickets\/(\d+)\/restart$/);
       if (restart && req.method === 'POST') {
         touch();
         const id = Number(restart[1]);
-        // herdr 0.8 has no `agent stop`; the verbs are list/get/read/send-keys/
-        // prompt/rename/focus/wait/attach. Renaming the old agent frees the
-        // name and keeps its pane around, which is what you want — the point of
-        // a restart is a fresh session, not destroying the previous transcript.
-        if (Bun.which('herdr')) sh('herdr', ['agent', 'rename', `t${id}`, `t${id}-prev`], 10000);
+        // `start` is idempotent and reports the existing worktree, which is how
+        // we find the old session — it is the pane whose cwd is this worktree.
         const r = sh(TICKET, ['start', String(id)], 30000);
         if (!r.ok) return json({ error: r.errOut || 'could not restart' }, 500);
         const dir = r.out.split('\n')[0].trim();
-        const launch = launchSession(dir, id);
+        // herdr 0.8 has no `agent stop`. Closing the pane is what actually ends
+        // the session: renaming the agent only frees the name, and the old claude
+        // would still be sitting in that pane, so the new `agent start` would be
+        // refused as agent_pane_busy forever. A restart replaces the session, so
+        // losing the old pane is the point rather than a cost.
+        const old = existingAgent(`t${id}`, dir);
+        if (old.found && old.pane && Bun.which('herdr')) {
+          sh('herdr', ['pane', 'close', old.pane], 10000);
+          Bun.sleepSync(500);
+        }
+        // force: the session we just closed can still be listed for a moment,
+        // and matching on cwd would otherwise make restart a no-op.
+        const launch = launchSession(dir, id, true);
         broadcast();
         return json({ path: dir, ...launch });
       }

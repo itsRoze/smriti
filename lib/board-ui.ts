@@ -340,7 +340,8 @@ export function boardPage(): string {
   .docview h1:first-child,.docview h2:first-child{margin-top:0}
   .docview pre{background:rgba(var(--sh),.09);padding:10px 12px;border-radius:8px;overflow-x:auto;font-size:12.5px}
   .docview code{font-family:ui-monospace,Menlo,monospace;font-size:.85em}
-  .docview table{border-collapse:collapse;margin:10px 0;font-size:14px}
+  .docview .tablewrap{overflow-x:auto;margin:10px 0}
+  .docview table{border-collapse:collapse;margin:0;font-size:14px}
   .docview th,.docview td{border:1.5px solid var(--ink-4);padding:5px 9px;text-align:left}
   .docview blockquote{border-left:3px solid var(--ink-4);margin:10px 0;padding:2px 14px;color:var(--ink-3)}
   .docview ul,.docview ol{padding-left:22px}
@@ -471,7 +472,12 @@ export function boardPage(): string {
   // The live agent for a ticket, if herdr has one. 'blocked' means the session
   // is sitting at a prompt waiting for you — a permission request, a question,
   // a gate. Nothing else in smriti can see that.
-  function sessionFor(t){ return (S.sessions || []).find((x) => x.name === 't' + t.id); }
+  // Matched on the worktree path, not the name: herdr forgets the name it was
+  // given, and a name-only match made live sessions disappear from the board.
+  function sessionFor(t){
+    return (S.sessions || []).find((x) =>
+      (t.worktree_path && x.cwd === t.worktree_path) || (x.name && x.name === 't' + t.id));
+  }
   function docsFor(t){ return S.documents.filter((d) => d.ticket_id === t.id); }
 
   // ── the model ────────────────────────────────────────────────────────
@@ -1162,7 +1168,11 @@ export function boardPage(): string {
       : st === 'done' ? 'that session finished — attach to see it, or restart:'
       : 'session is already open — jump to it with:';
     const notes = {
-      herdr: res.existing ? existingNote : 'session started under herdr — jump to it with:',
+      herdr: res.existing ? existingNote
+        // The prompt is typed into the session once claude has finished booting,
+        // so it is genuinely still in flight when this renders.
+        : res.prompting ? 'session started — /begin is being typed into it now:'
+        : 'session started under herdr — jump to it with:',
       manual: 'worktree is ready — run this in a terminal:',
     };
     a.innerHTML = '<div class="note">' + esc(notes[res.method] || 'ready:') + '</div>' +
