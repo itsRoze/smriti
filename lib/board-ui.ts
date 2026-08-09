@@ -154,10 +154,11 @@ export function boardPage(): string {
     background:linear-gradient(180deg,transparent 8%,rgba(var(--hi-rgb),var(--hi-wash)) 8%,rgba(var(--hi-rgb),var(--hi-wash)) 92%,transparent 92%);
     box-shadow:inset 3px 0 0 var(--hi);
   }
-  /* The fold tab lives on .page, not inside .rail — the rail scrolls its own
-     overflow, which would clip a tab hanging off its edge. */
+  /* Outside .rail, which would clip a tab hanging off its edge, and FIXED
+     rather than absolute: the rail is sticky, so a tab that scrolled away with
+     the document would strand the control halfway down a long board. */
   .rtab{
-    position:absolute;left:calc(var(--rail-w) - 11px);top:74px;z-index:4;
+    position:fixed;left:calc(var(--rail-w) - 11px);top:74px;z-index:9;
     width:21px;height:21px;display:grid;place-items:center;padding:0;
     font:inherit;font-size:12px;color:var(--ink-3);background:var(--paper);
     border:2.5px solid var(--ink-4);border-radius:7px 9px 6px 8px/8px 6px 9px 7px;
@@ -366,8 +367,11 @@ export function boardPage(): string {
 
   .keys{
     position:fixed;left:var(--rail-w);right:0;bottom:0;z-index:8;padding:14px 26px;
-    display:flex;justify-content:center;gap:20px;flex-wrap:wrap;
-    background:linear-gradient(180deg,transparent,var(--paper) 44%);
+    display:flex;justify-content:center;gap:12px 20px;flex-wrap:wrap;
+    /* Reaches paper early: with twelve hints this wraps to two rows on a
+       narrow window, and a fade tuned for one row leaves the top row sitting
+       unreadable over a card. */
+    background:linear-gradient(180deg,transparent,var(--paper) 24%);
     font-family:ui-monospace,Menlo,monospace;font-size:10px;letter-spacing:.12em;
     text-transform:uppercase;color:var(--ink-3)}
   .k{
