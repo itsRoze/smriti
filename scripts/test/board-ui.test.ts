@@ -302,6 +302,35 @@ describe('the margin', () => {
     } finally { await context.close(); }
   }, T);
 
+  // A key earns a slot in the bottom bar only when nothing on screen can wear
+  // it. b and h each have a control that is always visible, so the control
+  // carries the key and the bar stays a list of ten.
+  it('carries its own key hint, and the bottom bar does not', async () => {
+    if (!HAS_CHROMIUM) return;
+    const { context, page, errors } = await open();
+    try {
+      const bar = await page.locator('.keys .k').allInnerTexts();
+      expect(bar).toHaveLength(10);
+      expect(bar.join(' ').toLowerCase()).not.toContain('margin');
+      expect(await page.locator('.keys .k[data-k="b"]').count()).toBe(0);
+      expect(await page.locator('.keys .k[data-k="h"]').count()).toBe(0);
+
+      // Legible at rest, not hover-only: the board replaces its html about once
+      // a second, and a swap under a still cursor never regains :hover.
+      const hint = page.locator('.rtab .kb');
+      expect((await hint.innerText()).toLowerCase()).toBe('b');
+      expect(Number(await hint.evaluate((el) => getComputedStyle(el).opacity))).toBe(1);
+
+      // And the full list is still one keypress away.
+      await page.keyboard.press('?');
+      await page.waitForSelector('#helpv.on');
+      const help = (await page.locator('#helpv').innerText()).toLowerCase();
+      expect(help).toContain('the margin');
+      expect(help).toContain('completed work');
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+
   it('marks where you are, and a project in it opens that project', async () => {
     if (!HAS_CHROMIUM) return;
     const { context, page, errors } = await open();

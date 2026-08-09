@@ -176,6 +176,37 @@ export function boardPage(): string {
   .rtab::before{content:var(--rail-glyph)}
   .rtab:hover{color:var(--ink);border-color:var(--ink-3)}
 
+  /* ── keys that live on their control ──────────────────────────────────
+     A key earns a permanent slot in the bottom bar only if nothing on screen
+     can wear it. Move, open, start, capture, done, the palette — those act on
+     the selection or on nothing yet, so the bar is their only home. b and h
+     each have a control that is always on screen in a fixed place, so the
+     control names its own key and the bar stays a list of ten.
+
+     Written down rather than revealed on approach, unlike .goto elsewhere.
+     Hover was the first instinct and it is wrong here: the board replaces its
+     html wholesale about once a second while an agent runs, and a node swapped
+     out under a stationary cursor does not regain :hover until the mouse moves
+     again — so the hint would flicker, or never arrive at all. Marginalia is
+     written down anyway. Quiet enough at rest to be annotation rather than
+     chrome, and it warms when you approach the control it belongs to. */
+  .kb{
+    font-family:ui-monospace,Menlo,monospace;font-size:9.5px;letter-spacing:.16em;
+    text-transform:uppercase;color:var(--ink-4);pointer-events:none;
+    transition:color .12s ease;
+  }
+  /* On paper, so the margin rule does not run through the letter — the same
+     thing the tab itself does where it straddles the line. */
+  .rtab .kb{
+    position:absolute;top:calc(100% + 4px);left:50%;transform:translateX(-50%);
+    background:var(--paper);padding:1px 3px 0;line-height:1.3;
+  }
+  .rtab:hover .kb,.rtab:focus-visible .kb,.rtab .kb.hit{color:var(--orange)}
+  body:has(.rail:hover) .rtab .kb{color:var(--ink-3)}
+
+  .histline .kb{margin-left:auto;padding-left:14px}
+  .histline:hover .kb,.histline:focus-visible .kb,.histline .kb.hit{color:var(--orange)}
+
   .box{
     border:2.5px solid var(--ink);background:var(--paper-2);
     border-radius:16px 22px 14px 20px/20px 14px 22px 16px;
@@ -378,10 +409,7 @@ export function boardPage(): string {
   .keys{
     position:fixed;left:var(--rail-w);right:0;bottom:0;z-index:8;padding:14px 26px;
     display:flex;justify-content:center;gap:12px 20px;flex-wrap:wrap;
-    /* Reaches paper early: with twelve hints this wraps to two rows on a
-       narrow window, and a fade tuned for one row leaves the top row sitting
-       unreadable over a card. */
-    background:linear-gradient(180deg,transparent,var(--paper) 24%);
+    background:linear-gradient(180deg,transparent,var(--paper) 44%);
     font-family:ui-monospace,Menlo,monospace;font-size:10px;letter-spacing:.12em;
     text-transform:uppercase;color:var(--ink-3)}
   .k{
@@ -542,7 +570,7 @@ export function boardPage(): string {
 </style>
 </head>
 <body>
-<button class="rtab" id="rtab" title="the margin — b" aria-label="show or hide the margin"></button>
+<button class="rtab" id="rtab" title="the margin — b" aria-label="show or hide the margin"><span class="kb" data-k="b" aria-hidden="true">b</span></button>
 <div class="page">
 <nav class="rail" id="rail" aria-label="apps and projects"></nav>
 <div class="sheet">
@@ -575,8 +603,6 @@ export function boardPage(): string {
   <span><span class="k" data-k="c">C</span>capture</span>
   <span><span class="k" data-k="p">P</span>project</span>
   <span><span class="k" data-k="d">D</span>done</span>
-  <span><span class="k" data-k="b">B</span>margin</span>
-  <span><span class="k" data-k="h">H</span>completed</span>
   <span><span class="k" data-k="k">⌘K</span>anything</span>
   <span><span class="k" data-k="m">M</span>pace</span>
   <span><span class="k" data-k="t">T</span>theme</span>
@@ -599,7 +625,7 @@ export function boardPage(): string {
     <div><b>s</b> — start work</div><div><b>c</b> — capture (into what you're on)</div>
     <div><b>d</b> — mark done</div><div><b>⌘K / /</b> — palette, apps & projects too</div>
     <div><b>p</b> — open its project / app</div><div><b>m</b> — pace (medians)</div>
-    <div><b>b</b> — the margin, open / collapsed</div><div><b>h</b> — completed work, shown / hidden</div>
+    <div><b>b</b> — the margin, open / collapsed</div><div><b>h</b> — completed work, every group</div>
     <div><b>esc</b> — close, then back up a level</div>
     <div><b>t</b> — light / dark</div><div><b>?</b> — this</div>
   </div>
@@ -760,9 +786,17 @@ export function boardPage(): string {
     const el = $('#toast'); el.innerHTML = msg; el.classList.add('on');
     clearTimeout(el._t); el._t = setTimeout(() => el.classList.remove('on'), ms);
   }
-  function tapKey(k){
-    const el = document.querySelector('.k[data-k="'+k+'"]');
-    if (el){ el.classList.add('hit'); setTimeout(() => el.classList.remove('hit'), 130); }
+  // Flashes wherever this key is drawn — a keycap in the bar, or the hint on
+  // the control that owns it. Not .k-scoped any more, because keys now live in
+  // two places and each decides for itself what .hit looks like: the keycap
+  // presses down, the hint surfaces. Pressing b makes the margin's own label
+  // appear, which is how the mapping gets taught.
+  // ms because the two kinds of mark want different holds: a keycap press is a
+  // 130ms tap, while surfacing a hint the user has never seen needs long enough
+  // to read.
+  function tapKey(k, ms){
+    const el = document.querySelector('[data-k="'+k+'"]');
+    if (el){ el.classList.add('hit'); setTimeout(() => el.classList.remove('hit'), ms || 130); }
   }
 
   // One ticket card. Shared by the board and both pages so a card can never
@@ -825,7 +859,10 @@ export function boardPage(): string {
       '<span class="arrow">' + (on ? '▾' : '▸') + '</span><span class="txt">' +
       (shipped ? 'shipped <b>' + shipped + '</b>' : '') +
       (shipped && cancelled ? ' · ' : '') +
-      (cancelled ? 'cancelled <b>' + cancelled + '</b>' : '') + '</span></button>';
+      (cancelled ? 'cancelled <b>' + cancelled + '</b>' : '') + '</span>' +
+      // "all", because the key is honest about doing more than the button: this
+      // line folds THIS group, h folds every one of them.
+      '<span class="kb" data-k="h" aria-hidden="true">h all</span></button>';
     if (on){
       // Its own stagger, from zero. cardHtml stamps animation-delay from a
       // board-wide counter, and .card holds the from-state (opacity:0) for the
@@ -1311,7 +1348,7 @@ export function boardPage(): string {
     localStorage.setItem('smriti-rail', next);
     // The margin alone: the width is pure CSS, and the sheet has no reason to
     // be torn down and re-animated because a nav column changed shape.
-    tapKey('b'); renderRail();
+    renderRail(); tapKey('b', 900);
   }
 
   // Completed work, globally. Clearing the per-section overrides makes this
@@ -1320,7 +1357,9 @@ export function boardPage(): string {
     showCompleted = !showCompleted;
     foldFlips = new Set();
     localStorage.setItem('smriti-completed', showCompleted ? 'shown' : 'hidden');
-    tapKey('h'); route();
+    // After the render, not before: route() replaces the fold lines, and the
+    // mark would be put on a node that no longer exists by the time it shows.
+    route(); tapKey('h', 900);
     toast(showCompleted ? 'showing what finished' : 'completed work folded away', 1400);
   }
 
