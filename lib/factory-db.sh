@@ -71,7 +71,7 @@ _factory_conn_args() {
 # Reading it costs one sqlite3 invocation (~4ms against ~16ms for a whole
 # `ticket list`). That is the price of a version that cannot lie, and it is also
 # what makes a future v3 possible.
-FACTORY_SCHEMA_VERSION=2
+FACTORY_SCHEMA_VERSION=3
 
 # The store's schema version. Three answers, and they must stay distinct:
 # a number, or failure — because "could not read it" is not "it is current".
@@ -86,12 +86,24 @@ _db_version() {
   printf '%s' "$v"
 }
 
-_db_migrate_v2() {
+# Every migration step, newest last, run under ONE lock and stamped ONCE at the
+# end. The steps are guarded on the shape they change rather than on the version
+# they came from, so a database at any older version — or at a mixed shape from
+# an interrupted upgrade — converges by running only what it is actually missing.
+#
+# The single stamp is load-bearing. When each step stamped for itself, adding a
+# v3 step meant a v2-shaped database took the v2 path, got stamped 3, and never
+# gained the v3 column at all: the version said current while the shape was not.
+_db_migrate() {
   # Serialised with a directory lock: `mkdir` is atomic, so exactly one process
   # migrates. Without it two worktrees reaching a cold store at once both pass
   # the guard, and the loser's transaction then runs against tables the winner
   # already rebuilt — failing on a column that no longer exists and reporting a
   # migration failure for a database that is in fact perfectly fine.
+  #
+  # It is also what makes the v3 column probe safe: probe-then-ALTER is a
+  # read-modify-write, and two upgraders passing the probe together would leave
+  # the loser failing on `duplicate column`.
   local lock="${SMRITI_HOME:-$HOME/.smriti}/.factory-migrating"
   local waited=0
   while ! mkdir "$lock" 2>/dev/null; do
@@ -114,21 +126,48 @@ _db_migrate_v2() {
     return 0
   fi
 
+  # ── step v2: project_slug → repo_slug + project_id ──────────────────────
+  #
   # Version says old, but is the shape actually old? A database can be at the
   # new shape with an unstamped version — one built by a pre-release of this
   # change, or reshaped by hand. Running the rebuild against it would fail on a
-  # column that is already gone, so stamp it and stop instead.
+  # column that is already gone, so skip to the next step instead.
   local pending
   pending=$(sqlite3 "$FACTORY_DB" ".timeout 10000" \
     "SELECT count(*) FROM pragma_table_info('tickets') WHERE name='project_slug';" 2>/dev/null) || {
       rmdir "$lock" 2>/dev/null || true; return 1; }
-  if [ "$pending" != "1" ]; then
-    sqlite3 "$FACTORY_DB" ".timeout 10000" "PRAGMA user_version = $FACTORY_SCHEMA_VERSION;" >/dev/null 2>&1 || {
+  if [ "$pending" = "1" ]; then _db_migrate_step_v2 "$lock"; fi
+
+  # ── step v3: runs.html_session ──────────────────────────────────────────
+  #
+  # A pure column add, so ALTER TABLE rather than the rebuild above — and
+  # deliberately so. Other /begin sessions write runs and events to this same
+  # database while we are here, and a table rebuild under concurrent writers can
+  # lose rows or orphan events. ADD COLUMN is metadata-only: it takes a brief
+  # write lock and touches no row.
+  local has_html
+  has_html=$(sqlite3 "$FACTORY_DB" ".timeout 10000" \
+    "SELECT count(*) FROM pragma_table_info('runs') WHERE name='html_session';" 2>/dev/null) || {
       rmdir "$lock" 2>/dev/null || true; return 1; }
-    rmdir "$lock" 2>/dev/null || true
-    return 0
+  if [ "$has_html" != "1" ]; then
+    sqlite3 "$FACTORY_DB" ".timeout 10000" \
+      "ALTER TABLE runs ADD COLUMN html_session TEXT;" >/dev/null 2>&1 || {
+        rmdir "$lock" 2>/dev/null || true
+        echo "${SMRITI_TOOL:-smriti-factory}: could not add runs.html_session; the database is unchanged" >&2
+        exit 3
+      }
   fi
 
+  # Only now, with every step applied, does the version become current.
+  sqlite3 "$FACTORY_DB" ".timeout 10000" "PRAGMA user_version = $FACTORY_SCHEMA_VERSION;" >/dev/null 2>&1 || {
+    rmdir "$lock" 2>/dev/null || true; return 1; }
+  rmdir "$lock" 2>/dev/null || true
+}
+
+# The v1 → v2 table rebuild. Called with the lock held; exits the process on
+# failure the way it always has, so its caller never sees a half-applied shape.
+_db_migrate_step_v2() {
+  local lock="$1"
   # foreign_keys OFF so dropping runs does not cascade events away, and
   # legacy_alter_table ON so RENAME TO does not rewrite the REFERENCES clauses
   # of the tables still pointing at the old names mid-flight. Both are no-ops
@@ -191,15 +230,14 @@ _db_migrate_v2() {
      DROP TABLE documents; ALTER TABLE documents_v2 RENAME TO documents;
      DROP TABLE runs;      ALTER TABLE runs_v2      RENAME TO runs;
 
-     PRAGMA user_version = $FACTORY_SCHEMA_VERSION;
-
      COMMIT;" || {
       rmdir "$lock" 2>/dev/null || true
       echo "${SMRITI_TOOL:-smriti-factory}: factory.db migration failed; the database is unchanged" >&2
       echo "${SMRITI_TOOL:-smriti-factory}: it is a single transaction, so nothing was half-applied." >&2
       exit 3
     }
-  rmdir "$lock" 2>/dev/null || true
+  # Deliberately does NOT release the lock or stamp the version: _db_migrate
+  # owns both, and later steps still have to run under the same lock.
 }
 
 _db_ready() {
@@ -226,7 +264,7 @@ _db_ready() {
     exit 3
   fi
   if [ "$_v" -lt "$FACTORY_SCHEMA_VERSION" ]; then
-    _db_migrate_v2 || {
+    _db_migrate || {
       echo "${SMRITI_TOOL:-smriti-factory}: $FACTORY_DB needs migrating to schema v$FACTORY_SCHEMA_VERSION but the attempt did not complete." >&2
       exit 3
     }

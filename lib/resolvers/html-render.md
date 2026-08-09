@@ -27,6 +27,11 @@ findings; persist decisions back to the markdown doc as usual.
    browser, and prints one JSON line `{"session_id","port","url"}`. **Capture
    `session_id`** — every later call passes it (explicit, no implicit "current
    session", so concurrent loops never collide).
+   It also **opens the run's gate in the trace by itself** (`awaiting`, phase
+   `approve` unless you pass `--phase`), so the board can list the run under
+   *waiting on you* and click straight through to this page. Do **not** emit
+   those gate events by hand — `serve`/`render` open the gate and `await`/`stop`
+   close it, and a manual emit only doubles them.
 3. **await** — `smriti html await --session <id>` blocks until the user submits,
    then prints the decision payload JSON to stdout. Read it.
 4. **Apply + revise** — apply each card's accept/reject deterministically; read
@@ -34,7 +39,9 @@ findings; persist decisions back to the markdown doc as usual.
    your markdown. If `action` is `finish`, leave the loop.
 5. **render** — `smriti html render --session <id> <next-spec.json>` swaps the
    content and bumps `revision_id`; the open tab live-reloads. Go to step 3.
-6. **stop** — `smriti html stop --session <id>` when the loop ends.
+6. **stop** — `smriti html stop --session <id>` when the loop ends. This also
+   closes the gate if no decision ever came back, so an abandoned loop does not
+   leave the run parked in *waiting on you* forever.
 
 ### Spec (what you send)
 
@@ -49,9 +56,10 @@ the code ever disagree, the code wins** — this is a mirror for convenience.
 | `revision_id` | string | bump on every `render` (`rev-1`, `rev-2`, …) |
 | `source_hash` | string | hash of the reviewed doc (staleness guard) |
 | `sections[]` | array | `{ id, title, cards[] }` |
-| `cards[]` | array | `{ id, title, body_md, status?, default_decision? }` |
+| `cards[]` | array | `{ id, title, body_md, status?, default_decision?, mockup_html? }` |
 | `card.status` | `open` \| `resolved` \| `new` | optional, default `open` |
 | `card.default_decision` | `accept` \| `reject` \| `edit` | optional pre-selection |
+| `card.mockup_html` | string | optional; a complete self-contained HTML document, shown as a rendered picture under the body (max 2 MB) |
 | `global_notes_prompt` | string | optional; placeholder for the overall-notes box |
 
 <!-- example:spec -->
@@ -84,7 +92,8 @@ the code ever disagree, the code wins** — this is a mirror for convenience.
           "id": "tests-1",
           "title": "No idle-timeout test",
           "body_md": "Add a short-idle override so the reaper is covered.",
-          "status": "new"
+          "status": "new",
+          "mockup_html": "<!doctype html><style>body{font:14px system-ui;padding:24px}</style><h1>What the reaper log looks like</h1>"
         }
       ]
     }
@@ -119,6 +128,23 @@ the code ever disagree, the code wins** — this is a mirror for convenience.
   "global_notes": "Looks right — proceed."
 }
 ```
+
+### Mockups (`card.mockup_html`)
+
+When the decision is about something **visual**, put the mockup in the card
+rather than describing it. `mockup_html` takes a complete self-contained HTML
+document and renders it as a picture beneath `body_md`.
+
+- **Self-contained.** Inline every style; no external CSS, fonts, or images.
+- **It runs in a sandbox** — `allow-scripts`, deliberately *without*
+  `allow-same-origin`. Scripts work (a light/dark toggle behaves), but the frame
+  is on an opaque origin: it cannot reach the review page, and **`localStorage`
+  throws**, so a toggle works for the session without remembering.
+- **Do not size it.** smriti measures the document and fits the frame to it,
+  clamped between 360px and 80% of the viewport; taller mockups scroll inside
+  their own frame.
+- **Never put HTML in `body_md`.** That field is escape-first — markup there
+  renders as visible source, which is the bug this field exists to fix.
 
 ### Finding identity (the merge contract)
 

@@ -626,3 +626,108 @@ split_run() {
   [ "$status" -eq 0 ]
   [ ! -f "$SMRITI_HOME/factory.db" ]
 }
+
+# ─── the html-session join (T8) ─────────────────────────────────────────────
+#
+# The column carries the `smriti html` session a run's CURRENT gate is served
+# on, so the board can click a "waiting on you" row through to the live review.
+# Written by smriti-html rather than by a skill — these tests exercise the
+# primitive underneath that.
+
+@test "html-session: --html-session records the session and list --json exposes it" {
+  local uid; uid=$(start_run)
+  "$CLI" emit approve awaiting --run "$uid" --html-session sess-abc123
+  run "$CLI" list --json
+  [ "$status" -eq 0 ]
+  echo "$output" | jq -e '.[0].html_session == "sess-abc123"'
+  echo "$output" | jq -e '.[0].status == "awaiting"'
+}
+
+@test "html-session: every emit rewrites it, so closing a gate clears the link" {
+  local uid; uid=$(start_run)
+  "$CLI" emit approve awaiting --run "$uid" --html-session sess-abc123
+  "$CLI" emit approve ok --run "$uid"
+  run "$CLI" list --json
+  echo "$output" | jq -e '.[0].html_session == null'
+  echo "$output" | jq -e '.[0].status == "running"'
+}
+
+@test "html-session: an emit with no flag clears it — the column is the latest event" {
+  local uid; uid=$(start_run)
+  "$CLI" emit approve awaiting --run "$uid" --html-session sess-abc123
+  "$CLI" emit implement start --run "$uid"
+  run "$CLI" list --json
+  echo "$output" | jq -e '.[0].html_session == null'
+}
+
+@test "html-session: end clears it — a finished run has no gate to click into" {
+  local uid; uid=$(start_run)
+  "$CLI" emit approve awaiting --run "$uid" --html-session sess-abc123
+  "$CLI" end --run "$uid"
+  run "$CLI" list --json
+  echo "$output" | jq -e '.[0].html_session == null'
+}
+
+@test "html-session: an emit after end cannot re-hang a link on a finished run" {
+  # `trace` tolerates a late emit by design — the event still records. Without
+  # the html_session write riding inside the SAME guarded UPDATE as the status,
+  # such an emit would put a live-looking link on a run that is already over.
+  local uid; uid=$(start_run)
+  "$CLI" end --run "$uid"
+  "$CLI" emit approve awaiting --run "$uid" --html-session sess-zombie
+  run "$CLI" list --json
+  echo "$output" | jq -e '.[0].html_session == null'
+  echo "$output" | jq -e '.[0].status == "done"'
+}
+
+@test "if-html-session: a matching id closes the gate" {
+  local uid; uid=$(start_run)
+  "$CLI" emit approve awaiting --run "$uid" --html-session sess-match
+  "$CLI" emit approve ok --run "$uid" --if-html-session sess-match
+  run "$CLI" list --json
+  echo "$output" | jq -e '.[0].status == "running"'
+  echo "$output" | jq -e '.[0].html_session == null'
+}
+
+@test "if-html-session: a non-matching id writes NOTHING — not even an event" {
+  # A no-op has to leave no trace at all. Guarding only the run update would
+  # still record a phantom "the gate closed" event on a gate that is still open.
+  local uid; uid=$(start_run)
+  "$CLI" emit approve awaiting --run "$uid" --html-session sess-mine
+  local before; before=$("$CLI" tail --run "$uid" --after 0 | wc -l | tr -d ' ')
+  "$CLI" emit approve ok --run "$uid" --if-html-session sess-someone-else
+  local after; after=$("$CLI" tail --run "$uid" --after 0 | wc -l | tr -d ' ')
+  [ "$before" = "$after" ]
+  run "$CLI" list --json
+  echo "$output" | jq -e '.[0].status == "awaiting"'
+  echo "$output" | jq -e '.[0].html_session == "sess-mine"'
+}
+
+@test "if-html-session: closing twice is idempotent — await and stop can both call it" {
+  local uid; uid=$(start_run)
+  "$CLI" emit approve awaiting --run "$uid" --html-session sess-once
+  "$CLI" emit approve ok --run "$uid" --if-html-session sess-once
+  local after_first; after_first=$("$CLI" tail --run "$uid" --after 0 | wc -l | tr -d ' ')
+  "$CLI" emit approve ok --run "$uid" --if-html-session sess-once
+  local after_second; after_second=$("$CLI" tail --run "$uid" --after 0 | wc -l | tr -d ' ')
+  [ "$after_first" = "$after_second" ]
+}
+
+@test "if-html-session: a stale stop cannot close the gate a newer serve opened" {
+  local uid; uid=$(start_run)
+  "$CLI" emit approve awaiting --run "$uid" --html-session sess-old
+  "$CLI" emit approve ok      --run "$uid" --if-html-session sess-old
+  "$CLI" emit approve awaiting --run "$uid" --html-session sess-new
+  "$CLI" emit approve ok      --run "$uid" --if-html-session sess-old   # the late stop
+  run "$CLI" list --json
+  echo "$output" | jq -e '.[0].status == "awaiting"'
+  echo "$output" | jq -e '.[0].html_session == "sess-new"'
+}
+
+@test "html-session: --html-session and --if-html-session require values" {
+  local uid; uid=$(start_run)
+  run "$CLI" emit approve ok --run "$uid" --html-session
+  [ "$status" -ne 0 ]
+  run "$CLI" emit approve ok --run "$uid" --if-html-session
+  [ "$status" -ne 0 ]
+}

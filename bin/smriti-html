@@ -36,8 +36,8 @@ import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { renderMarkdown } from '../lib/md.ts';
 
-const TOOL_VERSION = '0.2.0';
-const SCHEMA_VERSION = 1;
+const TOOL_VERSION = '0.3.0';
+const SCHEMA_VERSION = 2;
 
 // Generous idle window: a server with no await/render/submit activity for this
 // long self-terminates (D2) so a skill that died mid-loop doesn't orphan it.
@@ -66,6 +66,11 @@ type Card = {
   body_md: string;
   status?: CardStatus;
   default_decision?: Decision;
+  // A complete, self-contained HTML document shown as a picture beneath the
+  // body. Exists because /begin has always told the agent to put a mockup in
+  // front of you at Gate 2 and there was nowhere to put one: body_md is
+  // escape-first, so a mockup rendered as a wall of visible source.
+  mockup_html?: string;
 };
 
 type Section = { id: string; title: string; cards: Card[] };
@@ -99,7 +104,9 @@ type Payload = {
 
 const SPEC_KEYS = new Set(['title', 'skill', 'session_id', 'revision_id', 'source_hash', 'sections', 'global_notes_prompt']);
 const SECTION_KEYS = new Set(['id', 'title', 'cards']);
-const CARD_KEYS = new Set(['id', 'title', 'body_md', 'status', 'default_decision']);
+const CARD_KEYS = new Set(['id', 'title', 'body_md', 'status', 'default_decision', 'mockup_html']);
+// A runaway guard, not an expected size — a real mockup is tens of KB.
+const MAX_MOCKUP_BYTES = 2 * 1024 * 1024;
 const PAYLOAD_KEYS = new Set(['session_id', 'revision_id', 'source_hash', 'action', 'decisions', 'global_notes']);
 const DECISION_KEYS = new Set(['decision', 'edited_text', 'notes']);
 const DECISIONS = new Set<Decision>(['accept', 'reject', 'edit']);
@@ -163,6 +170,15 @@ function validateSpec(input: unknown): Spec {
       if (co.default_decision !== undefined) {
         if (typeof co.default_decision !== 'string' || !DECISIONS.has(co.default_decision as Decision)) throw new ValidationError(`card ${cid}: invalid default_decision`);
         card.default_decision = co.default_decision as Decision;
+      }
+      if (co.mockup_html !== undefined) {
+        if (typeof co.mockup_html !== 'string' || co.mockup_html.length === 0) {
+          throw new ValidationError(`card ${cid}: mockup_html must be a non-empty string`);
+        }
+        if (co.mockup_html.length > MAX_MOCKUP_BYTES) {
+          throw new ValidationError(`card ${cid}: mockup_html is ${co.mockup_html.length} bytes (max ${MAX_MOCKUP_BYTES})`);
+        }
+        card.mockup_html = co.mockup_html;
       }
       return card;
     });
@@ -251,6 +267,48 @@ function jsonForScript(obj: unknown): string {
   return JSON.stringify(obj).replace(/</g, '\\u003c');
 }
 
+// Appended to every mockup so the frame can tell the page how tall it wants to
+// be. Injected rather than required of the author: a mockup is a picture
+// someone drew, not a component that has to implement a protocol.
+const MOCKUP_SHIM = `<script>(function(){
+  function post(){
+    var d=document.documentElement, b=document.body;
+    var h=Math.max(d?d.scrollHeight:0, b?b.scrollHeight:0, d?d.offsetHeight:0);
+    try{ parent.postMessage({__smriti_mockup_height:h}, '*'); }catch(e){}
+  }
+  addEventListener('load', post);
+  addEventListener('resize', post);
+  if (window.ResizeObserver && document.documentElement) {
+    new ResizeObserver(post).observe(document.documentElement);
+  }
+  setTimeout(post, 60);
+})();<\/script>`;
+
+// A mockup goes in an iframe with `sandbox="allow-scripts"` and deliberately
+// WITHOUT allow-same-origin.
+//
+// Not decoration: these mockups ship their own <style> redefining --paper /
+// --ink / --hi — the exact tokens this page uses — so anything inline would
+// repaint the review page carrying the decision-submit JS. Withholding
+// allow-same-origin puts the frame on an opaque origin, where it cannot reach
+// the parent document, read its cookies, or touch the submit path. The pair is
+// safe precisely BECAUSE it is not also same-origin: a frame granted both can
+// remove its own sandbox.
+//
+// allow-scripts stays because mockups carry light/dark toggles, and a dead
+// toggle is a mockup that lies about the design. The cost is that localStorage
+// throws on an opaque origin, so a toggle works but will not remember.
+function mockupHtml(card: Card): string {
+  if (!card.mockup_html) return '';
+  const doc = card.mockup_html + MOCKUP_SHIM;
+  return `
+        <div class="mockup">
+          <iframe class="mockupframe" data-mockup="${escapeHtml(card.id)}" title="${escapeHtml(card.title)} — mockup"
+            sandbox="allow-scripts" referrerpolicy="no-referrer" loading="lazy"
+            srcdoc="${escapeHtml(doc)}"></iframe>
+        </div>`;
+}
+
 // renderHtml(spec) → a self-contained interactive page. ONE function so the
 // look can be re-themed later without touching protocol logic. The same page
 // works two ways: opened as a file:// it shows the copy-paste floor; served
@@ -272,7 +330,7 @@ function renderHtml(spec: Spec): string {
           <span class="badge badge-${status}">${status}</span>
           <h3>${escapeHtml(card.title)}</h3>
         </header>
-        <div class="body">${renderMarkdown(card.body_md)}</div>
+        <div class="body">${renderMarkdown(card.body_md)}</div>${mockupHtml(card)}
         <div class="controls">
           <div class="decision">${radio('accept', 'Accept')} ${radio('reject', 'Reject')} ${radio('edit', 'Edit')}</div>
           <textarea class="cardtext" placeholder="${ph}"></textarea>
@@ -359,6 +417,12 @@ ${cards}
     color:var(--muted);padding:7px 13px;border:1px solid var(--hair);border-radius:8px;cursor:pointer;transition:.13s;user-select:none}
   .decision input{position:absolute;opacity:0;width:0;height:0}
   .decision label:hover{border-color:var(--muted)}
+  /* A mockup is a picture, so it breaks the 780px measure the prose keeps.
+     Centred by pulling half the overhang off each side. */
+  .mockup{margin:1em 0 1.2em;width:min(1200px,96vw);position:relative;left:50%;transform:translateX(-50%)}
+  .mockupframe{display:block;width:100%;height:560px;border:1px solid var(--hair);border-radius:10px;
+    background:var(--paper-2);box-shadow:0 10px 30px -18px rgba(27,24,21,.5)}
+  @media(max-width:820px){.mockup{width:100%;left:0;transform:none}}
   .decision label:has(input:checked){color:var(--paper);background:var(--signal);border-color:var(--signal)}
   textarea{width:100%;min-height:52px;font:14.5px/1.5 "Hanken Grotesk",system-ui,sans-serif;padding:10px 12px;
     border-radius:9px;border:1px solid var(--hair);background:var(--paper-2);color:var(--ink);resize:vertical}
@@ -420,6 +484,31 @@ ${sectionsHtml}
 
 <script>
 const SESSION = ${jsonForScript(session)};
+
+// Mockup frames report how tall they want to be. Their origin is the string
+// "null" — that is what a sandbox without allow-same-origin means — so origin
+// is not a check worth making. SOURCE IDENTITY is: only a message whose source
+// is one of our own frames' contentWindow can resize that frame, and it can
+// only ever resize itself.
+//
+// Clamped both ways. A floor so a mockup whose scripts never run is short
+// rather than invisible; a ceiling so a tall one scrolls inside its own frame
+// instead of pushing the Accept bar off the page.
+(function(){
+  var MIN = 360, MAX = Math.round(innerHeight * 0.8);
+  addEventListener('message', function(e){
+    var h = e.data && e.data.__smriti_mockup_height;
+    if (typeof h !== 'number' || !isFinite(h) || h <= 0) return;
+    var frames = document.querySelectorAll('iframe.mockupframe');
+    for (var i = 0; i < frames.length; i++) {
+      if (frames[i].contentWindow === e.source) {
+        frames[i].style.height = Math.max(MIN, Math.min(Math.ceil(h), MAX)) + 'px';
+        return;
+      }
+    }
+  });
+})();
+
 function buildPayload(action) {
   const decisions = {};
   document.querySelectorAll('article.card[data-card-id]').forEach((card) => {
@@ -597,14 +686,18 @@ Render / validate:
                         {ok, unknown_card_ids}; exit 3 if invalid/unknown ids.
 
 Loop transport (thread --session, printed by serve):
-  serve <spec.json> [--no-open] [--idle <ms>]
+  serve <spec.json> [--no-open] [--idle <ms>] [--phase <name>] [--no-trace]
                         Start a detached 127.0.0.1 server; print {session_id,port,url}.
+                        Also opens the run's gate in the trace (phase defaults to
+                        'approve'); --no-trace skips that.
   render --session <id> <spec.json>
                         Swap content + bump revision for a live session (re-render).
   await --session <id> [--timeout <ms>]
                         Block until the user submits for the current revision;
                         print the decision payload JSON.
-  stop  --session <id>  Tear the server down (idempotent).
+  stop  --session <id>  Tear the server down (idempotent). Closes the gate.
+  url   --session <id>  Print {session_id,port,url} if that server is genuinely
+                        up (pid + port + identity checked); exit 6 if not.
   help                  Show this help.
 
 Exit codes: 0=ok 1=usage 2=runtime 3=invalid 5=await-timeout 6=no-server
@@ -651,7 +744,17 @@ async function cmdRender(args: string[]): Promise<number> {
       });
     } catch { process.stderr.write(`smriti-html: server unreachable for session ${session}\n`); return 6; }
     const data = (await res.json()) as { status: string; revision_id?: string };
-    if (data.status === 'ok') { process.stdout.write(`${data.revision_id}\n`); return 0; }
+    if (data.status === 'ok') {
+      // A revision is up, which means the ball is back in their court. This is
+      // the case that was silent before: the skill revised, re-rendered, and
+      // the trace still said `running` while a page sat there waiting.
+      // Re-reads the trace ref rather than taking one on the command line, so
+      // the run and phase stay whatever `serve` decided.
+      const ref = readTraceRef(session);
+      gateOpen(ref, session);
+      process.stdout.write(`${data.revision_id}\n`);
+      return 0;
+    }
     process.stderr.write(`smriti-html: render rejected: ${data.status}\n`);
     return 2;
   }
@@ -719,8 +822,21 @@ function rand12(): string {
   return globalThis.crypto.randomUUID().replace(/-/g, '').slice(0, 12);
 }
 
+// Session state is keyed by the session id ALONE, deliberately. It used to live
+// under the project's views dir, which meant finding a session needed its id
+// *and* a repo slug — and the two slugs in play are derived independently (a
+// run's from its ticket, a view's from the cwd at serve time). They agree today;
+// nothing makes them agree. A `sess-` id is globally unique, so it is the only
+// key this ever needed.
+//
+// Rendered HTML files stay under the project — those are artifacts you browse.
+// This is ephemeral machinery.
+function sessionsRoot(): string {
+  return join(SMRITI_HOME, 'html-sessions');
+}
+
 function serverStateDir(sessionId: string): string {
-  return join(projectViewsDir(), '.server', sessionId);
+  return join(sessionsRoot(), sessionId);
 }
 
 function readPortfile(sessionId: string): { port: number; nonce: string } | null {
@@ -736,10 +852,113 @@ function pidAlive(pid: number): boolean {
   try { process.kill(pid, 0); return true; } catch { return false; }
 }
 
+// ─── Gate bracketing (T8) ────────────────────────────────────────────────────
+//
+// The transport emits BOTH edges of the gate, because it is the only thing that
+// actually knows them: serve/render open a gate, await/stop close it. This used
+// to be an instruction in begin/SKILL.md.tmpl with no paired leave event at all,
+// and runs sat in `awaiting` for the rest of their lives — a false "waiting on
+// you" for work that was quietly implementing, and every minute of it booked
+// against your-time instead of the agent's.
+//
+// An instruction can be forgotten. A transport that emits on its own cannot be.
+//
+// Everything here is BEST EFFORT: no open run, no smriti-trace on disk, a locked
+// database — all of it is swallowed. Bookkeeping must never break the review
+// loop it is describing.
+
+type TraceRef = { run_uid: string; phase: string };
+
+function traceBin(): string | null {
+  const p = join(SMRITI_BIN, 'smriti-trace');
+  return existsSync(p) ? p : null;
+}
+
+function traceEmit(args: string[]): void {
+  const bin = traceBin();
+  if (!bin) return;
+  try { spawnSync(bin, ['emit', ...args], { stdio: 'ignore', timeout: 5000 }); } catch { /* never fatal */ }
+}
+
+// The run this session belongs to, resolved ONCE at serve time and written
+// beside the portfile. Re-deriving it later from the cwd's branch would be a
+// second guess at a question already answered — and `stop` may well be called
+// from somewhere else entirely.
+function currentRunUid(): string | null {
+  const bin = traceBin();
+  if (!bin) return null;
+  try {
+    const r = spawnSync(bin, ['list', '--active', '--json'], { encoding: 'utf8', timeout: 5000 });
+    if (r.status !== 0 || !r.stdout) return null;
+    const runs = JSON.parse(r.stdout) as Array<{ run_uid?: string; branch?: string }>;
+    const branch = sh('git', ['branch', '--show-current']);
+    // Prefer this branch's run; fall back to the only active one if there is
+    // exactly one, which covers a detached HEAD or a run started elsewhere.
+    const mine = runs.find((r2) => r2.branch && r2.branch === branch);
+    if (mine?.run_uid) return mine.run_uid;
+    return runs.length === 1 ? (runs[0].run_uid ?? null) : null;
+  } catch { return null; }
+}
+
+function writeTraceRef(statedir: string, ref: TraceRef | null): void {
+  if (!ref) return;
+  try { writeFileSync(join(statedir, 'trace.json'), JSON.stringify(ref)); } catch { /* best effort */ }
+}
+
+function readTraceRef(sessionId: string): TraceRef | null {
+  try {
+    const o = JSON.parse(readFileSync(join(serverStateDir(sessionId), 'trace.json'), 'utf8'));
+    return typeof o?.run_uid === 'string' && typeof o?.phase === 'string' ? o as TraceRef : null;
+  } catch { return null; }
+}
+
+// A page is up: a human is now the blocker. Carries the session id so the board
+// can click the "waiting on you" row straight through to this page.
+function gateOpen(ref: TraceRef | null, sessionId: string): void {
+  if (!ref) return;
+  traceEmit([ref.phase, 'awaiting', '--run', ref.run_uid, '--html-session', sessionId]);
+}
+
+// The gate is over. --if-html-session scopes it to the gate WE opened, which is
+// what lets await and stop both call this: whichever lands first closes it and
+// the other writes nothing at all, and a late stop cannot close a gate that a
+// newer serve has since opened.
+function gateClose(sessionId: string): void {
+  const ref = readTraceRef(sessionId);
+  if (!ref) return;
+  traceEmit([ref.phase, 'ok', '--run', ref.run_uid, '--if-html-session', sessionId]);
+}
+
+// Is this session's server genuinely up? A portfile is NOT the answer — a
+// crashed server leaves one behind until some later `serve` happens to sweep
+// it, and a board that links on file-existence links to nothing.
+//
+// Three proofs, cheapest first: the pid is alive, the port answers, and the
+// server answering says it is THIS session. The last one is what a recycled pid
+// or a reused port cannot fake.
+async function probeSession(sessionId: string): Promise<{ port: number } | null> {
+  const dir = serverStateDir(sessionId);
+  const info = readPortfile(sessionId);
+  if (!info) return null;
+
+  let pid = 0;
+  try { pid = parseInt((readFileSync(join(dir, 'pidfile'), 'utf8').trim().split('\n')[0]) ?? '', 10); } catch { pid = 0; }
+  if (!pid || !pidAlive(pid)) { rmSync(dir, { recursive: true, force: true }); return null; }
+
+  try {
+    const res = await fetch(`http://127.0.0.1:${info.port}/__alive`, { signal: AbortSignal.timeout(1500) });
+    if (!res.ok) return null;
+    const body = await res.json() as { session_id?: string };
+    if (body?.session_id !== sessionId) return null;
+  } catch { return null; }
+
+  return { port: info.port };
+}
+
 // D2 — sweep statedirs whose server process is gone (stale pidfile). Belt for
 // the case where a previous run died before `stop` and before idle-exit fired.
 function sweepOrphans(): void {
-  const base = join(projectViewsDir(), '.server');
+  const base = sessionsRoot();
   if (!existsSync(base)) return;
   for (const entry of readdirSync(base)) {
     const dir = join(base, entry);
@@ -759,15 +978,23 @@ function cmdServe(args: string[]): number {
   let specPath: string | null = null;
   let open = true;
   let idleMs = DEFAULT_IDLE_MS;
+  // 'approve' because /begin's plan gate is the overwhelming caller; a
+  // multi-finding /code-review loop is the same transport at a different gate
+  // and passes its own.
+  let phase = 'approve';
+  let trace = true;
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === '--no-open') open = false;
+    else if (a === '--no-trace') trace = false;
+    else if (a === '--phase') phase = args[++i] ?? '';
     else if (a === '--idle') idleMs = parseInt(args[++i] ?? '', 10) || DEFAULT_IDLE_MS;
     else if (a.startsWith('--')) err(`serve: unknown flag: ${a}`);
     else if (!specPath) specPath = a;
     else err(`serve: unexpected argument: ${a}`);
   }
   if (!specPath) err('serve: <spec.json> required');
+  if (!phase) err('serve: --phase requires a value');
 
   let spec: Spec;
   try { spec = validateSpec(readJsonFile(specPath)); }
@@ -802,9 +1029,38 @@ function cmdServe(args: string[]): number {
     return 2;
   }
 
+  // The gate opens only once the page is genuinely reachable — announcing
+  // "waiting on you" for a server that never bound would be the same lie in the
+  // other direction.
+  if (trace) {
+    const ref = currentRunUid();
+    const traceRef = ref ? { run_uid: ref, phase } : null;
+    writeTraceRef(dir, traceRef);
+    gateOpen(traceRef, sessionId);
+  }
+
   const url = `http://127.0.0.1:${info.port}/`;
   process.stdout.write(JSON.stringify({ session_id: sessionId, port: info.port, url }) + '\n');
   if (open) openInBrowser(url);
+  return 0;
+}
+
+// url --session <id> → where that session is, if it is genuinely up.
+// Exit 6 for "no live server" — the code `await` already uses, so a caller
+// learns no second dialect.
+async function cmdUrl(args: string[]): Promise<number> {
+  let sessionId = '';
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '--session') sessionId = args[++i] ?? '';
+    else err(`url: unknown argument: ${a}`);
+  }
+  if (!sessionId) err('url: --session <id> required');
+  const live = await probeSession(sessionId);
+  if (!live) { process.stderr.write(`smriti-html: no live server for session ${sessionId}\n`); return 6; }
+  process.stdout.write(JSON.stringify({
+    session_id: sessionId, port: live.port, url: `http://127.0.0.1:${live.port}/`,
+  }) + '\n');
   return 0;
 }
 
@@ -856,6 +1112,15 @@ async function cmdServer(args: string[]): Promise<number> {
 
       if (req.method === 'GET' && path === '/') {
         return new Response(renderHtml(state.spec), { headers: { 'content-type': 'text/html; charset=utf-8' } });
+      }
+
+      // Liveness, answering with our OWN id. Unauthenticated on purpose: it
+      // reveals nothing a port scan would not, and `url` has to be able to ask
+      // before it has any reason to trust this port. Echoing the session id is
+      // the part that matters — it is how a caller tells "our server" from
+      // "something else that inherited this port".
+      if (req.method === 'GET' && path === '/__alive') {
+        return json({ session_id: sessionId, revision_id: state.current });
       }
 
       if (req.method === 'POST' && path === '/submit') {
@@ -1004,7 +1269,15 @@ async function cmdAwait(args: string[]): Promise<number> {
       });
     } catch { process.stderr.write(`smriti-html: server unreachable for session ${sessionId}\n`); return 6; }
     const data = (await res.json()) as { status: string; payload?: Payload };
-    if (data.status === 'submission' && data.payload) { process.stdout.write(JSON.stringify(data.payload) + '\n'); return 0; }
+    if (data.status === 'submission' && data.payload) {
+      // A decision came back: they answered, so the gate is over. ONLY here —
+      // a timeout below means the page is still waiting, and an unreachable
+      // server above means they now have to paste the payload by hand. Both are
+      // still genuinely blocked on a person, so both stay `awaiting`.
+      gateClose(sessionId);
+      process.stdout.write(JSON.stringify(data.payload) + '\n');
+      return 0;
+    }
     if (data.status === 'timeout') continue; // poll window elapsed with no submit — re-issue
     process.stderr.write(`smriti-html: await got status "${data.status}"\n`);
     return 2;
@@ -1025,6 +1298,12 @@ async function cmdStop(args: string[]): Promise<number> {
   const dir = serverStateDir(sessionId);
   const pf = join(dir, 'pidfile');
   if (!existsSync(pf)) { process.stdout.write('already stopped\n'); return 0; } // idempotent
+  // The loop is ending. If `await` already closed the gate this is a no-op —
+  // --if-html-session sees the column cleared and writes nothing. If the loop
+  // ended WITHOUT a decision, this is the only thing standing between the run
+  // and a permanent phantom "waiting on you". Before the teardown, because the
+  // statedir (and the trace ref in it) is about to be deleted.
+  gateClose(sessionId);
   // Read pid/port BEFORE the graceful stop — the server deletes its statedir on
   // /__stop, so re-reading the pidfile afterward would race into ENOENT.
   const pid = parseInt((readFileSync(pf, 'utf8').trim().split('\n')[0]) ?? '', 10);
@@ -1053,6 +1332,7 @@ async function main(): Promise<void> {
     case 'check-spec':    code = cmdCheckSpec(rest); break;
     case 'check-payload': code = cmdCheckPayload(rest); break;
     case 'serve':         code = cmdServe(rest); break;
+    case 'url':           code = await cmdUrl(rest); break;
     case 'await':         code = await cmdAwait(rest); break;
     case 'stop':          code = await cmdStop(rest); break;
     case '__server':      code = await cmdServer(rest); break; // hidden — spawned by serve

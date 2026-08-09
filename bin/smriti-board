@@ -44,6 +44,7 @@ const TICKET = join(SMRITI_BIN, 'smriti-ticket');
 const TRACE = join(SMRITI_BIN, 'smriti-trace');
 const REPO = join(SMRITI_BIN, 'smriti-repo');
 const PROJECT = join(SMRITI_BIN, 'smriti-project');
+const HTML = join(SMRITI_BIN, 'smriti-html');
 const SMRITI_HOME = process.env.SMRITI_HOME || join(homedir(), '.smriti');
 const STATE_DIR = join(SMRITI_HOME, '.server', 'factory');
 const IDLE_MS = Number(process.env.SMRITI_BOARD_IDLE_MS || 45 * 60 * 1000);
@@ -130,7 +131,27 @@ type Session = { name: string; status: string; cwd: string; pane: string };
 
 // Only what this file touches — the payload is passed through to the page
 // verbatim, and smriti-trace owns its shape.
-type Run = { run_uid: string; status: string };
+type Run = { run_uid: string; status: string; html_session?: string | null; html_url?: string };
+
+// The live review page for a run parked at a gate, or nothing.
+//
+// Resolved on every read rather than stored, because the port dies with the
+// server and a link built from a remembered port is a link to nothing. Only
+// `awaiting` runs are asked about — that is the only state where a gate can be
+// open — so this is bounded to the handful of rows in "waiting on you", and is
+// almost always zero.
+//
+// The answer is treated as DATA, not gospel: only a plausible numeric port is
+// accepted, and the URL is synthesized here rather than taken from the JSON.
+async function resolveHtmlUrls(runs: Run[]): Promise<void> {
+  const gated = runs.filter((r) => r.status === 'awaiting' && r.html_session);
+  if (!gated.length) return;
+  await Promise.all(gated.map(async (r) => {
+    const out = await readJsonAsync<{ port?: unknown }>(['url', '--session', String(r.html_session)], HTML);
+    const port = Number(out?.port);
+    if (Number.isInteger(port) && port > 0 && port < 65536) r.html_url = `http://127.0.0.1:${port}/`;
+  }));
+}
 
 // Every herdr agent, so the board can show what a session is actually doing.
 // This is the only source that knows a Claude session is blocked on input —
@@ -382,9 +403,11 @@ async function cmdServer(): Promise<never> {
         }
         const byUid = new Map<string, Run>();
         for (const r of [...(active ?? []), ...(recent ?? [])]) byUid.set(r.run_uid, r);
+        const runs = [...byUid.values()];
+        await resolveHtmlUrls(runs);
         return json({
           tickets,
-          runs: [...byUid.values()],
+          runs,
           documents: documents ?? [],
           repositories: repositories ?? [],
           projects: projects ?? [],
