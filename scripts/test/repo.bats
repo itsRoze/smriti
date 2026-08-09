@@ -150,7 +150,7 @@ teardown() {
   run "$CLI" new my-cool-project
   [ "$status" -eq 0 ]
   [[ "$output" == *"Created: my-cool-project/"* ]]
-  [[ "$output" == *"/bootstrap"* ]]
+  [[ "$output" == *"/begin"* ]]
   [ -d "$WORK/my-cool-project/.git" ]
 }
 

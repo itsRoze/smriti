@@ -196,5 +196,5 @@ else
   else
     echo "Setup complete. $REGISTERED skill(s) registered."
   fi
-  echo "Try: /bootstrap"
+  echo "Try: /begin"
 fi

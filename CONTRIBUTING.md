@@ -11,7 +11,7 @@ everyone up (generated files), and how changes get shipped.
 - [Bun](https://bun.sh) ≥ 1.0 — build scripts, codegen, tests
 - [Git](https://git-scm.com) and [jq](https://jqlang.github.io/jq/)
 - [bats-core](https://github.com/bats-core/bats-core) to run the test suite (`brew install bats-core`)
-- Optional: [`gh`](https://cli.github.com) for `/ship`'s GitHub path
+- Optional: [`gh`](https://cli.github.com) for the GitHub path when shipping
 
 ## Setup
 
@@ -65,21 +65,21 @@ via symlinks, and absolute-path tests miss path-resolution bugs.
 
 ## Coding principles
 
-Code in this repo follows `lib/resolvers/principles.md` — a tiered guide (Tier 1
-hard gates: searchability, locality, explicitness, consistency; Tier 2 user
-preferences; Tier 3 tie-breakers). The review skills cite it by tier. Skim it
-before a non-trivial change.
+Code in this repo follows `lib/resolvers/principles.md` — four behaviors that
+lower a model's cost-per-edit: searchability, locality, explicit over implicit,
+and one obvious pattern per job. It is short on purpose; skim it before a
+non-trivial change.
 
 ## How changes ship
 
 smriti is built with its own pipeline — that *is* the dev workflow. The short
 version:
 
-1. **`/begin`** — describe the work; it routes to brainstorm/plan/debug or builds directly.
-2. **`/brainstorm` → `/plan` → `/plan-eng-review`** — design, decompose, lock architecture.
-3. **`/work`** — build the plan unit by unit.
-4. **`/eng-review`** (+ `/design-review` if UI changed) — staff-engineer pass.
-5. **`/ship`** — tests, version bump, CHANGELOG, bisectable commits, PR via `gh`.
+1. **`/begin`** — describe the work, or paste the bug. It explores, plans, gets a
+   Codex second opinion, and serves the plan for approval.
+2. **You approve the plan** — the one gate that matters, in the browser.
+3. It implements, runs `/code-review`, and verifies.
+4. **You test, then say the word** — it ships and cleans the branch up itself.
 
 If you're contributing without the pipeline, that's fine too — just keep commits
 conventional (`feat:`, `fix:`, `chore:`, `docs:`…), add a CHANGELOG entry, and

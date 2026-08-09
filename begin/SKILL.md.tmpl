@@ -1,14 +1,15 @@
 ---
 name: begin
 description: |
-  The smriti flow. One command that takes a change from idea to reviewed,
-  tested code: explores the codebase with parallel agents, drafts a plan, gets
-  a Codex second opinion, serves it as an interactive HTML plan you approve or
-  revise, then implements, runs /code-review, and verifies with Playwright
-  screenshots. Stops for you at exactly three moments — a genuine question,
-  plan approval, and final review — and moves on its own in between.
+  The smriti flow. One command from idea to a reviewed, tested, shipped change:
+  explores the codebase, drafts a plan, gets a Codex second opinion, serves it as
+  an interactive HTML plan you approve, then implements, reviews, verifies and
+  ships. Bootstraps the repo on first run, and investigates root cause first when
+  what you describe is a bug.
+  Stops for you at exactly three moments — a genuine question, plan approval, and
+  final review — and moves on its own in between.
   Manual-only — type /begin explicitly.
-  Use when starting any feature or change: "/begin <what you want to build>".
+  Use for any change: "/begin <what you want>", "/begin ticket:7", or paste a stack trace.
 disable-model-invocation: true
 allowed-tools:
   - Bash
@@ -25,81 +26,61 @@ allowed-tools:
 
 # /begin — the smriti flow
 
-One straight line from idea to a reviewed, tested change. You own three gates;
-smriti drives everything between them.
+One straight line from idea to a shipped change. You own three gates; smriti drives
+everything between them.
 
 <user_prompt> #$ARGUMENTS </user_prompt>
 
-## The three gates (where you stop for the human)
+| Gate | When | What you decide |
+|------|------|-----------------|
+| **1 · Clarify** | after understanding, *only if* there's a genuine fork | answer the question |
+| **2 · Approve** | after the plan + Codex pass | approve, or revise (**always** interactive HTML) |
+| **3 · Review** | after implement + review + verify | you test, then say the word to ship |
 
-| Gate | When | What you ask for |
-|------|------|------------------|
-| **1 · Clarify** | after understanding, *only if* there's a genuine fork | a tight set of questions |
-| **2 · Approve** | after the plan + Codex pass | approve, or request changes (**always** interactive HTML) |
-| **3 · Review** | after implement + review + verify | you test; you decide PR vs. main |
+Between gates, keep moving. No mid-flow "should I proceed?" checkpoints, no
+manufactured questions.
 
-Between gates, keep moving — don't stop to narrate or ask permission.
+**Never re-invoke `/begin`.** This skill runs the whole flow itself, including
+bootstrap, debug, ship and clean — those are steps here, not separate skills.
 
-## Hard rules
-
-1. **Never re-invoke /begin.** This skill runs the whole flow itself.
-2. **Stop only at the three gates.** No manufactured questions, no mid-flow
-   "should I proceed?" checkpoints.
-3. **Preserve the user's original request verbatim** when handing to a subskill
-   (`code-review`, `ship`, `frontend-design`, `bootstrap`).
-4. **No `PROJECT.md` → stop and recommend `/bootstrap` first.** begin reads it
-   for context and won't proceed without it.
-5. **Full flow, always.** Even a one-line change runs plan → approve → verify.
-   There is no trivial-edit fast path — the gates are cheap and the discipline
-   is the point.
+**Preserve the user's original request verbatim** when handing to `code-review` or
+`frontend-design`.
 
 ## Working a ticket
 
-The preamble sets `$TICKET` when the current branch belongs to one (i.e. the
-branch was cut by `smriti ticket start`). Two ways the flow picks one up:
+`$TICKET` is set when the branch was cut by `smriti ticket start`. If the request names
+one instead (`/begin ticket:7`), read it with `smriti ticket show 7`, treat its body as
+the request, and start it if it isn't already:
 
-- **Already on a ticket branch** — `$TICKET` is set. Use the ticket's title and
-  body as context alongside the request, and stamp the id on the plan and the
-  finish summary.
-- **The request names one** — `/begin ticket:7` or `/begin ticket:7 also fix the
-  header`. Read it with `smriti ticket show 7`, treat its body as the request
-  (plus any extra text the user added), and start it if it isn't already:
+```bash
+WT=$(smriti ticket start 7) && cd "$WT"
+```
 
-  ```bash
-  WT=$(smriti ticket start 7) && cd "$WT"
-  ```
-
-**A ticket is never required.** A bare `/begin "do the thing"` on any branch
-works exactly as before — `$TICKET` is simply empty and nothing is stamped.
+A ticket is never required. A bare `/begin "do the thing"` works with `$TICKET` empty
+and nothing stamped.
 
 ## Tracing the run
 
-Open a run at Step 0, mark each step as it completes, and close it at Step 9.
-This is what makes a run visible in `smriti factory` while it is happening, and
-reviewable afterwards.
+Open a run at Step 0, close it at Step 9 — this is what makes it visible in
+`smriti factory` while it happens.
 
 ```bash
 smriti trace start begin --ticket "${TICKET:--}" >/dev/null 2>&1 || true
 ```
 
-There is no run id to carry around: `emit` and `end` find the open run for this
-branch themselves. Then after each step: `smriti trace emit <phase> ok || true`,
-using the step's own name — `ground`, `understand`, `clarify`, `plan`, `codex`, `approve`,
-`implement`, `review`, `verify`. Two that carry weight:
+After each step: `smriti trace emit <phase> ok || true`, using the step's own name —
+`ground`, `understand`, `clarify`, `plan`, `codex`, `approve`, `implement`, `review`,
+`verify`, `ship`. Two carry weight: entering Gate 2 is `smriti trace emit approve
+awaiting || true` (what lists the run under *waiting on you*), and Step 9 ends with
+`smriti trace end || true` (or `--status failed` if you're handing back red).
 
-- **entering Gate 2** — `smriti trace emit approve awaiting || true`, which is
-  what lists the run under *waiting on you*.
-- **Step 9** — `smriti trace end || true` (or `--status failed` if you're
-  handing back red).
-
-**Never let tracing affect the work.** Every call is `|| true`; a trace failure
-is invisible bookkeeping, not a reason to stop.
+Every call is `|| true`. A trace failure is invisible bookkeeping, never a reason to stop.
 
 ---
 
 ## Step 0 · Ground (silent)
 
-The preamble already ran. Now read context silently — do not echo:
+Read context silently — do not echo:
 
 ```bash
 [ -f PROJECT.md ] && cat PROJECT.md
@@ -108,46 +89,81 @@ git log --oneline -10 2>/dev/null
 git status --short 2>/dev/null
 ```
 
-If `HAS_PROJECT_DOC=no`, stop: *"No PROJECT.md — run /bootstrap first so I have
-project context."* Do not continue.
+Note whether the request has **UI scope** (a new screen or component, a visible surface
+change). It gates the `frontend-design` consults below.
 
-Note whether the request has **UI scope** (a new screen/component, a visible
-surface change). It gates the `frontend-design` consults below.
+### First run in a repo — bootstrap inline
 
-## Step 1 · Understand — agents running
+If `PROJECT.md` is missing, capture durable context *before* planning. Pre-fill silently
+from `package.json` / `pyproject.toml` / `Cargo.toml` / `go.mod`, `README.md`, recent
+`git log`, and deploy hints (`vercel.json`, `fly.toml`, `railway.toml`, `Dockerfile`).
+Then ask **one bundled `AskUserQuestion`** covering: project type; target user;
+monetization (only if a business); **lean** (`senior` = rigor, `prototype` = speed);
+tech stack (confirm the pre-fill); deploy target; design priority.
 
-Map the change and its blast radius with **parallel `Explore` agents** rather
-than reading serially. Dispatch 2–4 in **one message**, each on a distinct
-facet, then synthesize their findings:
+Then persist: `smriti config set lean <senior|prototype>`, and write `PROJECT.md` with
+Overview / Users / Lean / Tech Stack / Deploy / Design Priority / Decisions Log. Run
+`smriti principles-install` — if it exits non-zero, **stop and surface it**; the
+fail-loud is by design.
 
-- **Relevant files** — where this change lands and what it touches.
-- **Existing patterns** — how similar things are already done here (so the plan
-  reuses one obvious pattern, not a fourth blend — Tier 1d).
-- **Integration points & edges** — callers, data flow, config, migrations.
-- **Tests** — the suite shape and how this area is currently covered.
+If design priority is high and there's no `DESIGN.md`, recommend `/design-consultation`
+once. Then continue into the actual request — do not stop and hand back.
 
-Scope each agent tightly ("very thorough" only when the surface is genuinely
-wide). The agents locate; you synthesize and decide.
+## Step 1 · Understand — agents in parallel
 
-**UI scope →** consult the `frontend-design` skill now so the plan reflects a
-polished, on-brand result rather than a generic one:
+Map the change and its blast radius with **parallel `Explore` agents**, 2–4 dispatched
+in one message, each on a distinct facet: where the change lands; how similar things
+are already done here; integration points, callers and config; how the area is tested.
+Scope each tightly. The agents locate; you synthesize.
+
+**UI scope →** consult `frontend-design` now, so the plan reflects a polished result:
 
 ```
-Skill(skill="frontend-design", args="<the UI change, with what you learned about the app's existing look>")
+Skill(skill="frontend-design", args="<the UI change, plus what you learned about the app's existing look>")
 ```
+
+### When the request is a bug — investigate before planning
+
+A symptom, a stack trace, a failing test, or an issue reference means the root cause is
+unknown, and a plan written over an unknown cause is a guess. Ingest the report first —
+`smriti ticket show <id>`, `gh issue view <n> --json title,body,comments,labels` (read
+every comment), or the Linear MCP `get_issue`. Then:
+
+1. **Reproduce.** 2–3 attempts; if it only sometimes reproduces, say so and treat it as
+   intermittent rather than fixed.
+2. **Trace backward** from the symptom. Read stack traces bottom-to-top. Find the first
+   frame where input is already invalid — that bounds the search. `git log` the
+   suspect files; bisect a suspected regression.
+3. **Establish a gapless causal chain** before proposing any fix. Where a link is
+   uncertain, make a falsifiable prediction and check it. If you cannot explain every
+   step from cause to symptom, you are not ready to plan.
+4. **One change at a time** when testing hypotheses, and when a fix fails, explicitly
+   invalidate the hypothesis behind it rather than stacking another attempt on top.
+
+Write the findings to a debug doc alongside the plan (same filename contract, `--type
+debug`) so `smriti latest-doc --type debug` finds it:
+
+```bash
+DEBUG_FILE="$PLAN_DIR/$BRANCH_SLUG-debug-$TS.md"
+smriti ticket doc "${TICKET:--}" --type debug --path "$DEBUG_FILE" 2>/dev/null || true
+```
+
+Then plan the fix as normal. The plan's **Approach** is the root cause and the minimal
+fix for it — not a redesign, unless the investigation showed the design itself is the
+cause.
 
 ## Step 2 · Clarify — **Gate 1** (only if needed)
 
-If understanding surfaced **genuine forks** — a real design decision, or an
-ambiguity you can't resolve from the code, PROJECT.md, or sensible defaults —
-ask a tight set of `AskUserQuestion`s and stop for the answer.
+If understanding surfaced a **genuine fork** — a real design decision, or an ambiguity
+you can't resolve from the code, `PROJECT.md`, or sensible defaults — ask a tight set of
+`AskUserQuestion`s and stop for the answer. If the request is unambiguous, skip this
+gate entirely. A forced question is worse than none.
 
-If the request is unambiguous, **skip this gate entirely**. Don't manufacture
-questions — a forced question is worse than none.
+{{ASK_USER_FORMAT}}
 
 ## Step 3 · Draft the plan
 
-Write the plan **out of the repo**, following the smriti filename contract so
+Write the plan **out of the repo**, following the filename contract so
 `smriti latest-doc --type plan` finds it:
 
 ```bash
@@ -155,140 +171,92 @@ TS=$(date -u +%Y-%m-%dT%H-%M-%SZ)
 PLAN_DIR="${SMRITI_HOME:-$HOME/.smriti}/projects/$SLUG"
 mkdir -p "$PLAN_DIR"
 PLAN_FILE="$PLAN_DIR/$BRANCH_SLUG-plan-$TS.md"
-```
-
-Once written, register it so the ticket carries its paper trail. The file on
-disk stays the source of truth — this only indexes where it lives:
-
-```bash
 smriti ticket doc "${TICKET:--}" --type plan --path "$PLAN_FILE" 2>/dev/null || true
 ```
 
-The plan is what the **user** approves, and the user does not read or write the
-code. Write for someone deciding whether this is the right thing to build, not
-for someone about to type it. Concrete and strictly scoped to this request:
+The plan is what the **user** approves, and the user does not read the code. Write for
+someone deciding whether this is the right thing to build:
 
 - **Header** — `**Slug:**`, `**Branch:**`, `**Date:**`, `**Ticket:**` (`$TICKET`, or `—`).
 - **Problem** — the actual problem, restated.
-- **Approach** — the recommended direction, named, with *why*. If there's a real
-  fork, present 2–3 options with trade-offs and mark your recommendation.
-- **Shape** — the durable artifacts this creates or changes, shown rather than
-  described: table columns and what a row means; folder and file layout; routes,
-  commands, or config keys added; the states a thing can be in. This is the part
-  worth being concrete about, because it is what the user lives with afterwards
-  and the expensive thing to get wrong.
-- **What changes for you** — the functional impact in behavioural terms: what
-  can be done that couldn't be, what looks or behaves differently, what stops
-  working, what needs migrating or re-running. If nothing user-visible changes,
-  say so plainly.
-- **Cost** — performance and operational impact, when there is any real one:
-  what gets slower or heavier, what grows without bound, what now runs on every
-  request or every poll. Omit the section rather than padding it.
+- **Approach** — the recommended direction, named, with *why*. Real fork → 2–3 options with trade-offs and a marked recommendation.
+- **Shape** — the durable artifacts this creates or changes, shown rather than described: table columns and what a row means; file layout; routes, commands or config keys added; the states a thing can be in. This is what the user lives with afterwards.
+- **What changes for you** — behavioural impact: what becomes possible, what looks different, what stops working, what needs migrating. If nothing user-visible changes, say so.
+- **Cost** — real performance or operational impact only. Omit rather than pad.
 - **Risks / open questions** — only real ones.
-- **Test plan** — how "done" is verified, as the guarantees being established
-  (not a list of test file names).
+- **Test plan** — the guarantees being established, not test file names.
 
-**Keep out of the plan:** file inventories and Create/Modify/Test tables, code
-and function signatures, and step-by-step edit sequences. Name the *component*
-that changes ("the board's session matching", "the plan renderer") when it aids
-understanding, never the path list. You will have explored the code in Step 1 and
-can work from that at implementation time — the plan does not need to carry it,
-and a plan that reads like a diff hides the decisions the user is there to make.
-The exception is when the file or folder layout **is** the deliverable, which is
-what **Shape** is for.
+**Keep out:** file inventories, Create/Modify tables, code, and step-by-step edit
+sequences. Name the *component* that changes, not the path list. The exception is when
+the file layout **is** the deliverable — that's what **Shape** is for.
 
-**Sizable UI change →** build **mockups** so the user *sees* the change at Gate 2
-rather than reading prose. Use the `frontend-design` skill and what Step 1 learned
-about the app's real look, and write a self-contained HTML fragment beside the
-plan for the approval view to embed. Skip mockups for trivial UI (copy, one field,
-a spacing nudge) and backend-only work.
+**Sizable UI change →** build mockups so the user *sees* it at Gate 2. Use
+`frontend-design` and write a self-contained HTML fragment beside the plan for the
+approval view to embed. Skip for trivial UI and backend-only work.
 
 ## Step 4 · Codex second opinion on the plan
 
-Get an independent review of the plan before spending the user's approval on it.
-Run the Codex pass **against `$PLAN_FILE`** per the *Codex second opinion* section
-below (availability-gated, filesystem-boundary-prefixed, output rendered
-verbatim). Fold real gaps into the plan; append a short **`## Codex review`**
-note on what you changed — and anything you deliberately rejected, with the reason.
+Review the plan independently before spending the user's approval on it. Run the Codex
+pass **against `$PLAN_FILE`** per the section below. Fold real gaps in; append a short
+**`## Codex review`** noting what changed and what you rejected, with reasons.
 
 ## Step 5 · Approve the plan — **Gate 2** (interactive HTML)
 
-Present the plan as the interactive HTML view the user approves or revises, per
-the *Interactive HTML review loop* section below. The markdown plan stays the
-source of truth; the spec is a generated view of it.
+Present the plan as the interactive HTML view, per the *Interactive HTML review loop*
+below. The markdown plan stays the source of truth; the spec is a generated view of it.
 
-Map the plan to the spec:
+- **One card per plan section.** Card `id`s stay stable across re-renders.
+- Each `body_md` is that section's essence — the decision and why, in brief.
+- `source_hash` over `$PLAN_FILE`; `global_notes_prompt` invites overall direction.
+- Built mockups? Include them as a **Design** card.
 
-- **One card per plan section** (or per Implementation Unit if the plan is
-  unit-shaped). Card `id`s are stable across re-renders so edits round-trip.
-- Each `body_md` is that section's essence — the approach + why, in brief.
-- `source_hash` over `$PLAN_FILE`; set `global_notes_prompt` to invite overall
-  direction ("Approve, or tell me what to change?").
-- If you built UI mockups, include them as a **Design** section/card so the user
-  sees the change.
+**ALWAYS render Gate 2 as HTML** — running `smriti html serve` + `await` is mandatory.
+Do **not** substitute a plain `AskUserQuestion` because it seems quicker: presenting the
+plan as a single question is a bug, not a shortcut. The loop is `serve` → `await` →
+apply. A `reject`/`edit` or `global_notes` → revise the **plan markdown**, bump
+`revision_id`, `render`, re-await. `action: finish` → `stop` and go to Step 6.
 
-**ALWAYS render Gate 2 as HTML.** The plan is a multi-section review, so it goes
-through the interactive HTML loop **every time** — running `smriti html serve` +
-`await` is mandatory here. Do **NOT** substitute a plain `AskUserQuestion` for the
-HTML view because it seems quicker or simpler: presenting the plan as a single
-question instead of the rendered review is a bug, not a shortcut.
-
-The loop: `serve` → `await` → apply the payload. A card `reject`/`edit` or
-`global_notes` → revise the **plan markdown**, bump `revision_id`, `render`, and
-re-await. `action: finish` → the plan is approved; `stop` the session and advance
-to Step 6.
-
-The **only** permitted fallback to a single AskUserQuestion (*approve / request
-changes*) is when `smriti html serve` fails to start and no page ever renders.
-If the server becomes unreachable *after* the page rendered (`await`/`render`
-exit 6), stay in HTML: the rendered page's **"Copy response"** block lets the
-user paste the payload JSON back to you. Never fall back as a discretionary
-choice; never because AskUserQuestion is simpler. Absent a serve-fails-to-start
-failure, Gate 2 is HTML — and it is never a hard stop.
+The **only** permitted fallback is when `smriti html serve` fails to start and no page
+ever renders. If the server dies *after* rendering (exit 6), stay in HTML — the page's
+**"Copy response"** block lets the user paste the payload back.
 
 ## Step 6 · Implement
 
-Build the approved plan end to end:
+Build the approved plan end to end. Follow its approach and the codebase's existing
+patterns, test as you go rather than batching it, and commit incrementally with the
+co-author trailer. Honor `LEAN`.
 
-- Follow the plan's approach and the codebase's existing patterns.
-- **Test as you go** — don't batch all testing to the end.
-- Commit incrementally with clear messages (co-author trailer per the project's
-  convention). Honor `LEAN`.
-
-No sub-review skills, no state ledger, no completion blocks — just the work.
+{{CO_AUTHOR_TRAILER}}
 
 ## Step 7 · Review
-
-Run smriti's native code review on the diff:
 
 ```
 Skill(skill="code-review", args="<the original request, for context>")
 ```
 
-Fix the **real correctness bugs** it surfaces; apply judgment on nits and style.
-Design correctness is already carried by the `frontend-design` consults, so there
-is no separate design-review pass. Re-run the project's checks after fixing.
+Fix the real correctness bugs; apply judgment on nits. Re-run the project's checks after.
 
-## Step 8 · Verify — Playwright + screenshots
+## Step 8 · Verify
 
-Prove the change actually works before handing back.
+Prove the change works before handing back.
 
-**Web work (a localhost dev server exists):** capture rendered evidence with the
-browser CLI — screenshots, ARIA snapshot, and console errors across viewports:
+**Web work (a localhost dev server exists)** — capture rendered evidence across
+viewports. `--out` is required; point it where `smriti clean` expects to purge it:
 
 ```bash
-smriti browse audit http://localhost:<port>/<changed-route> [<more routes>]
+AUDIT_DIR="${SMRITI_HOME:-$HOME/.smriti}/projects/$SLUG/audits/$BRANCH_SLUG-$(date -u +%Y-%m-%dT%H-%M-%SZ)"
+smriti browse audit --out "$AUDIT_DIR" http://localhost:<port>/<changed-route> [<more routes>]
 ```
 
-(Run `smriti browse install` once if Chromium isn't present.) Surface the
-screenshots and flag any console errors in the finish summary.
+(`smriti browse install` once if Chromium is missing.) Surface the screenshots and flag
+console errors in the finish summary.
 
-**Non-web work (CLI, library, backend):** run the test suite and any relevant
-CLI checks from the plan's test plan. Screenshots don't apply — say so.
+**Non-web work** — run the test suite and the plan's test-plan checks. Screenshots don't
+apply; say so.
 
-If verification fails, fix and re-verify before Step 9. Don't hand back red.
+If verification fails, fix and re-verify. Don't hand back red.
 
-## Step 9 · Finish & ship — **Gate 3**
+## Step 9 · Finish — **Gate 3**
 
 Summarize and **stop for the human**:
 
@@ -301,13 +269,41 @@ Summarize and **stop for the human**:
    next (you): test it, then say the word to ship.
 ```
 
-Then **stop**. The user tests. **Shipping is explicit and on their word** — this
-flow never opens a PR or pushes on its own:
+Then stop. The user tests. **Shipping is on their word** — never push or open a PR on
+your own.
 
-- User says "open a PR" / "ship it" / "push to main" → invoke `Skill(skill="ship",
-  args="<PR or main, per what they said>")`. Pass the ticket id along in `args`
-  when there is one, so the PR body can reference it.
-- Until they say so, you're done. Do not auto-invoke `/ship`.
+### Shipping, once they say so
+
+Destination comes from config, not a question: `smriti config get ship_target` →
+`pr` (default) or `main`.
+
+{{BASE_BRANCH_DETECT}}
+
+1. **Pre-flight.** `BASE_BRANCH=$(smriti default-branch)`. Stop if there's no diff
+   against `origin/$BASE_BRANCH`, or if the target is a PR while already on the base branch.
+2. **Tests.** Run the project's suite. A failure introduced on this branch → fix or
+   abort, the user's call. Pre-existing on base → proceed with a note.
+3. **Sync.** `git fetch origin "$BASE_BRANCH"` then `git merge --no-edit
+   "origin/$BASE_BRANCH"`. On conflict: `git merge --abort`, report, stop.
+4. **Commit** anything outstanding, with the trailer.
+5. **Land it:**
+   - **`pr`** — push the branch, then `gh pr create` (or `gh pr edit` if one is already
+     open; report and stop if it's closed or merged). Title is the most descriptive
+     non-mechanical commit subject, used as-is. Body is `## Summary` (2–3 sentences
+     synthesized from the diff, not a commit dump), `## Test plan` (checkboxes), then
+     `Ticket: #<id> — <title>` when `$TICKET` is set. Record it:
+     `smriti ticket pr "${TICKET:--}" "$PR_URL"` → the ticket moves to `in_review`.
+   - **`main`** — checkout the base branch, merge this one, push. On rejection,
+     `pull --rebase` and retry once.
+   - **No `gh` or no remote** — push the branch if you can and print the title and body
+     for manual use.
+6. **Clean, only if the branch actually merged** — the `main` path, or a `pr` whose PR is
+   already merged. Then `smriti clean --branch "<branch>"`, which switches to the base
+   branch, deletes the branch, removes its worktree, purges its scratch docs and marks
+   the ticket `shipped`. If the PR is still open, stop here and say so — `smriti clean`
+   is available whenever the merge lands.
+
+Close the run: `smriti trace end || true`.
 
 ---
 

@@ -57,13 +57,13 @@ One command — **`/begin`** — takes a change from idea to a reviewed, tested 
     6  Implement      build the plan, test as you go, incremental commits
     7  Review         native /code-review on the diff; fix real bugs
     8  Verify         Playwright audit (web) or test suite / CLI checks
-    9 ★ Gate 3        Finish — summarize, then STOP. You say the word to ship.
+    9 ★ Gate 3        Finish — summarize, then STOP. You say the word; it ships.
 ```
 
 Read the steps top to bottom, that's the whole thing:
 
-0. **Ground** — read `PROJECT.md` / `DESIGN.md` and the git state. No `PROJECT.md`? It stops and tells you to run `/bootstrap` first.
-1. **Understand** — fans out parallel `Explore` subagents to map the blast radius, existing patterns, integration points, and test coverage. UI scope pulls in the `frontend-design` skill.
+0. **Ground** — read `PROJECT.md` / `DESIGN.md` and the git state. No `PROJECT.md`? Its first run in a repo captures that context inline and writes it, then carries on.
+1. **Understand** — fans out parallel `Explore` subagents to map the blast radius, existing patterns, integration points, and test coverage. UI scope pulls in the `frontend-design` skill. A bug report is investigated to root cause here, before anything gets planned.
 2. ★ **Gate 1 · Clarify** — asks a tight set of questions *only* when there's a real fork it can't resolve from the code, `PROJECT.md`, or sensible defaults. Skips otherwise.
 3. **Plan** — writes a plan doc to `~/.smriti/projects/<slug>/<branch>-plan-<ts>.md`, out of your repo. A sizable UI change also builds mockups via `frontend-design` so you *see* it at Gate 2.
 4. **Codex review** — an independent Codex pass critiques the plan; real gaps get folded in. Autonomous — smriti runs it by default and skips it (with a one-line note) only for genuinely small, straightforward changes. Availability-gated — skipped silently if Codex isn't installed.
@@ -71,24 +71,25 @@ Read the steps top to bottom, that's the whole thing:
 6. **Implement** — builds the plan, tests as it goes, makes incremental commits.
 7. **Review** — runs smriti's native `/code-review` on the diff and fixes real bugs.
 8. **Verify** — Playwright screenshots + ARIA + console errors via `smriti browse audit` for web work; test suite / CLI checks for non-web.
-9. ★ **Gate 3 · Finish** — summarizes the change (with screenshots) and then **stops**. Shipping is explicit: you say the word and it invokes `/ship`.
+9. ★ **Gate 3 · Finish** — summarizes the change (with screenshots) and then **stops**. Shipping is explicit: you say the word, and it ships and cleans up itself. Destination comes from `ship_target` (`pr` by default, or `main`).
 
 ## The skills
 
-Six skills. `/begin` is the spine; the rest are the setup and teardown around it.
+Two skills: the flow, and the taste.
 
 | Skill | What it does | Writes |
 |-------|--------------|--------|
-| `/begin` | The whole flow — idea to reviewed, tested result, three human gates. Manual-only. | `~/.smriti/projects/<slug>/<branch>-plan-<ts>.md` |
-| `/bootstrap` | One-time repo init. Installs the coding principles into the repo's `CLAUDE.md`. | `PROJECT.md` |
+| `/begin` | The whole flow — idea to reviewed, tested, shipped result, three human gates. Bootstraps the repo on first run, investigates root cause when the request is a bug, and ships and cleans up at the end. Manual-only. | `PROJECT.md` on first run; `~/.smriti/projects/<slug>/<branch>-{plan,debug}-<ts>.md` |
 | `/design-consultation` | Build a design system from scratch — the greenfield "establish the vibe" step. | `DESIGN.md` + self-contained HTML preview |
-| `/debug` | Standalone root-cause investigator. | `~/.smriti/projects/<slug>/<branch>-debug-<ts>.md` |
-| `/ship` | Get the branch out on your explicit word — open a PR or push straight to main. Deliberately light: no version bumps, no CHANGELOG, no inline review. | — |
-| `/clean` | Post-merge tidy — checkout base, pull, delete the merged branch, prune. Also purges that branch's out-of-repo scratch (plan/design/debug docs + audits), since the work has shipped. | — |
+
+`/bootstrap`, `/debug`, `/ship` and `/clean` used to be separate skills. They are steps
+inside `/begin` now — the ceremony existed so a human could inspect the middle of the
+pipeline, and that is no longer how this gets used. `smriti clean` remains as a CLI for
+tidying branches by hand.
 
 ## Install
 
-Requires [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Bun](https://bun.sh) ≥ 1.0, [Git](https://git-scm.com), [jq](https://jqlang.github.io/jq/), and optionally [`gh`](https://cli.github.com) for `/ship`'s GitHub path. To run the test suite (`bun run test`): [bats-core](https://github.com/bats-core/bats-core) (`brew install bats-core`).
+Requires [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Bun](https://bun.sh) ≥ 1.0, [Git](https://git-scm.com), [jq](https://jqlang.github.io/jq/), and optionally [`gh`](https://cli.github.com) for the GitHub path when shipping. To run the test suite (`bun run test`): [bats-core](https://github.com/bats-core/bats-core) (`brew install bats-core`).
 
 ```bash
 git clone https://github.com/itsRoze/smriti.git ~/.claude/skills/smriti
@@ -127,7 +128,7 @@ Claude: Implement — button + clipboard util + toast; 3 commits, tests green.
         Say the word to ship.
 You:    ship it
 
-Claude: /ship → PR opened.
+Claude: shipped → PR opened.
 ```
 
 ## Architecture
@@ -147,15 +148,15 @@ Claude: /ship → PR opened.
 ├── factory.db                               # the work layer: tickets, document index, runs + phase events
 ├── slug-cache/<sha>                         # path → slug mapping (one entry per worktree; same repo → same slug)
 └── projects/<slug>/                         # a branch's plan/design/debug docs + audits are
-    │                                         #   purged by /clean when that branch is deleted
+    │                                         #   purged by `smriti clean` when that branch is deleted
     ├── <branch>-plan-<ts>.md                 # implementation plans (one per /begin run)
-    ├── <branch>-debug-<ts>.md                # debug summaries (one per /debug run)
+    ├── <branch>-debug-<ts>.md                # root-cause summaries (when /begin investigates a bug)
     ├── views/                                # generated HTML views for Gate 2 (never committed)
     ├── auth-state.json                       # Playwright storageState for verify (mode 0600, never committed)
     └── audits/<branch>-<ts>/                 # verify — screenshots, ARIA snapshots, audit.json per URL
 
 <your-repo>/
-├── PROJECT.md                              # /bootstrap output (committed)
+├── PROJECT.md                              # written by /begin's first run (committed)
 ├── DESIGN.md                               # /design-consultation output (committed)
 └── CLAUDE.md                               # @-imports lib/resolvers/principles.md from smriti install
 ```
@@ -260,9 +261,9 @@ ask the way it would if you launched it by hand:
 smriti config set board_permissions ask
 ```
 
-`/begin`, `/debug`, `/ship` and `/clean` pick the ticket up from the branch, so
-status tracking costs nothing: `/ship` moves it to in review and records the
-PR, and `/clean` marks it shipped once the merge is confirmed. Plans, debug
+`/begin` picks the ticket up from the branch, so status tracking costs nothing:
+shipping moves it to in review and records the PR, and cleaning marks it
+shipped once the merge is confirmed. Plans, debug
 docs and audits are indexed against the ticket as they're written — the files
 stay on disk as the source of truth, and the ticket just knows where they are.
 
@@ -289,6 +290,7 @@ smriti trace tail --after 0    # the cursor query — live tail and history in o
 | `lean` | `senior` / `prototype` | `senior` | review depth — `senior` insists on failure-mode coverage; `prototype` ships rough |
 | `codex_default` | `on` / `auto` / `off` | `auto` | Codex review mode — `on` always runs it, `auto` lets Claude decide per change (runs unless the change is really small or straightforward), `off` never runs it. Legacy `ask` is treated as `auto`. |
 | `browse_enabled` | `true` / `false` | (asked at `./setup`) | enables `/begin`'s verify browser step via `smriti browse` (Playwright) |
+| `ship_target` | `pr` / `main` | `pr` | where `/begin` lands a change once you say ship — `pr` pushes and opens/updates a PR (ticket → in review), `main` merges into the base branch and cleans up (ticket → shipped) |
 | `proactive` | `true` / `false` | `true` | reserved (proactive skill suggestions) |
 | `explain_level` | `default` / `terse` | `default` | reserved (output verbosity) |
 
@@ -323,12 +325,12 @@ And `smriti project` owns the bodies of work inside an app:
 
 ## Principles
 
-`lib/resolvers/principles.md` is the authoritative coding-principles file shared across every project that opts in. Tier 1 (hard gates) operationalizes "optimize for AI" as four behaviors — searchability, locality, explicitness, consistency. Tier 2 captures user preferences (small functions, descriptive names, facade only on second consumer, etc.). Tier 3 is a narrative tie-breaker. A smell appendix names common failure modes (rigidity, fragility, immobility, opacity) for cite-ability in review findings.
+`lib/resolvers/principles.md` is the coding-principles file shared across every project that opts in. It is four behaviors — searchability, locality, explicit over implicit, and one obvious pattern per job — chosen because they are what most directly lowers a model's cost-per-edit. Style guidance (naming, function size, comment discipline) used to live here too and was removed: current models do it natively, and the tier ladder that ranked it was drag.
 
 **Two consumers, one source of truth:**
 
 - **Write-time:** the project's `CLAUDE.md` `@`-imports the file, so Claude Code auto-loads the principles at session start in any repo that's installed.
-- **Review-time:** `/begin`'s `/code-review` step reads the same principles as explicit criteria — every finding cites a tier and rule.
+- **Review-time:** `/begin`'s `/code-review` step reads the same principles as explicit criteria.
 
 When you edit `lib/resolvers/principles.md`, every project that imports it picks up the change on the next Claude Code session. No per-project sync.
 
@@ -345,7 +347,7 @@ Idempotent. Adds (or updates) a sentinel-marker block in the project's `CLAUDE.m
 @~/.claude/skills/smriti/lib/resolvers/principles.md
 ```
 
-Run it once per repo. `/bootstrap` calls it automatically for new repos; existing already-bootstrapped repos run it directly. Re-running on the same repo is a no-op. If the install path ever moves, re-running updates the `@`-line in place via the marker. The CLI fails loud rather than silently overwriting if user content has been inserted between the marker and the `@`-line.
+Run it once per repo. `/begin`'s first run calls it automatically; already-set-up repos run it directly. Re-running on the same repo is a no-op. If the install path ever moves, re-running updates the `@`-line in place via the marker. The CLI fails loud rather than silently overwriting if user content has been inserted between the marker and the `@`-line.
 
 ### Soft auto-nudge
 
@@ -360,7 +362,7 @@ That's the rollout signal — opt in when you see it. No interactive prompts; ig
 ### Trade-offs accepted
 
 - **Path portability.** The `@`-import uses the smriti install path (`~/.claude/skills/smriti/`). On machines where smriti lives elsewhere, the import won't resolve until the user updates the path. Acceptable trade-off in solo / intrapreneur use.
-- **No cite-by-ID.** Reviews say `Tier 1b (locality)` rather than `violates p1-locality`.
+- **No cite-by-ID.** Reviews say `locality` rather than `violates p1-locality`.
 - **Mid-session reload.** Adding the `@`-import in an already-running Claude Code session won't auto-load until the session restarts — the CLI prints a one-line reminder.
 
 ## Browser verification

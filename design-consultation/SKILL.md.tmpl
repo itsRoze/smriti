@@ -8,7 +8,7 @@ description: |
   The `/begin` flow and the `frontend-design` skill read DESIGN.md as the source of
   truth for UI work.
   Use when the project has UI scope but no DESIGN.md, or when the user wants to refresh
-  the design system. Proactively invoke when /bootstrap set design priority = high and
+  the design system. Proactively invoke when /begin's first run set design priority = high and
   no DESIGN.md exists.
 allowed-tools:
   - Bash
@@ -52,7 +52,7 @@ If `HAS_DESIGN=yes`, ask once: **update / start fresh / cancel**.
 - start fresh — backup `DESIGN.md` to `DESIGN.md.bak.<datetime>`, then proceed as if new
 - cancel — exit silently
 
-If `PROJECT.md` is missing, recommend `/bootstrap` first and exit. The product context in PROJECT.md is critical input — don't proceed without it.
+If `PROJECT.md` is missing, recommend `/begin` first and exit — its first run writes PROJECT.md. The product context there is critical input; don't proceed without it.
 
 ## Phase 1: Product context (single AskUserQuestion)
 
