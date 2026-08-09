@@ -413,8 +413,7 @@ cmd_new() {
   echo "Next steps:"
   echo "  cd $name"
   echo "  claude                    # open Claude Code"
-  echo "  /begin                    # sets up PROJECT.md + principles on first run"
-  echo "  /begin                    # build your first feature end to end"
+  echo "  /begin                    # sets up PROJECT.md + principles, then builds"
 }
 
 # ─── forget ─────────────────────────────────────────────────────────────────

@@ -141,7 +141,7 @@ teardown() {
 
 @test "IS_FIRST_TIME: a second worktree of a known repo is not first-time" {
   # The slug cache is keyed by path, so every freshly-cut worktree used to look
-  # like a brand-new project and fire the /bootstrap nudge. With a ticket per
+  # like a brand-new project and fire the first-run nudge. With a ticket per
   # worktree that would happen on every single ticket.
   mkdir -p "$WORK/wt-repo"
   git -C "$WORK/wt-repo" init -q -b main

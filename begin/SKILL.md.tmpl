@@ -26,8 +26,7 @@ allowed-tools:
 
 # /begin — the smriti flow
 
-One straight line from idea to a shipped change. You own three gates; smriti drives
-everything between them.
+One straight line from idea to a shipped change.
 
 <user_prompt> #$ARGUMENTS </user_prompt>
 
@@ -37,44 +36,28 @@ everything between them.
 | **2 · Approve** | after the plan + Codex pass | approve, or revise (**always** interactive HTML) |
 | **3 · Review** | after implement + review + verify | you test, then say the word to ship |
 
-Between gates, keep moving. No mid-flow "should I proceed?" checkpoints, no
-manufactured questions.
-
-**Never re-invoke `/begin`.** This skill runs the whole flow itself, including
-bootstrap, debug, ship and clean — those are steps here, not separate skills.
-
-**Preserve the user's original request verbatim** when handing to `code-review` or
-`frontend-design`.
+Between gates, keep moving — no "should I proceed?" checkpoints. Bootstrap, debug,
+ship and clean are steps here, not separate skills, so **never re-invoke `/begin`**.
+Preserve the user's request verbatim when handing to `code-review` or `frontend-design`.
 
 ## Working a ticket
 
 `$TICKET` is set when the branch was cut by `smriti ticket start`. If the request names
 one instead (`/begin ticket:7`), read it with `smriti ticket show 7`, treat its body as
-the request, and start it if it isn't already:
-
-```bash
-WT=$(smriti ticket start 7) && cd "$WT"
-```
-
-A ticket is never required. A bare `/begin "do the thing"` works with `$TICKET` empty
-and nothing stamped.
+the request, and start it if it isn't already — `WT=$(smriti ticket start 7) && cd "$WT"`.
+A ticket is never required; without one `$TICKET` is empty and nothing is stamped.
 
 ## Tracing the run
-
-Open a run at Step 0, close it at Step 9 — this is what makes it visible in
-`smriti factory` while it happens.
 
 ```bash
 smriti trace start begin --ticket "${TICKET:--}" >/dev/null 2>&1 || true
 ```
 
-After each step: `smriti trace emit <phase> ok || true`, using the step's own name —
+After each step, `smriti trace emit <phase> ok || true` with that step's own name:
 `ground`, `understand`, `clarify`, `plan`, `codex`, `approve`, `implement`, `review`,
-`verify`, `ship`. Two carry weight: entering Gate 2 is `smriti trace emit approve
-awaiting || true` (what lists the run under *waiting on you*), and Step 9 ends with
-`smriti trace end || true` (or `--status failed` if you're handing back red).
-
-Every call is `|| true`. A trace failure is invisible bookkeeping, never a reason to stop.
+`verify`, `ship`. Gates emit `awaiting` instead of `ok` — that is what lists a run under
+*waiting on you*, and what bills the wait to your time rather than the agent's. Every
+call is `|| true`: a trace failure is bookkeeping, never a reason to stop.
 
 ---
 
@@ -105,6 +88,13 @@ Then persist: `smriti config set lean <senior|prototype>`, and write `PROJECT.md
 Overview / Users / Lean / Tech Stack / Deploy / Design Priority / Decisions Log. Run
 `smriti principles-install` — if it exits non-zero, **stop and surface it**; the
 fail-loud is by design.
+
+The preamble read `LEAN` before any of this existed, so re-read it now — otherwise the
+rest of this first run works from a value that was never set:
+
+```bash
+LEAN=$(smriti config get lean 2>/dev/null || true); LEAN="${LEAN:-senior}"
+```
 
 If design priority is high and there's no `DESIGN.md`, recommend `/design-consultation`
 once. Then continue into the actual request — do not stop and hand back.
@@ -140,13 +130,23 @@ every comment), or the Linear MCP `get_issue`. Then:
 4. **One change at a time** when testing hypotheses, and when a fix fails, explicitly
    invalidate the hypothesis behind it rather than stacking another attempt on top.
 
-Write the findings to a debug doc alongside the plan (same filename contract, `--type
-debug`) so `smriti latest-doc --type debug` finds it:
+Write the findings to a debug doc (same filename contract as the plan, so
+`smriti latest-doc --type debug` finds it). This runs before Step 3, so it defines its
+own paths:
 
 ```bash
-DEBUG_FILE="$PLAN_DIR/$BRANCH_SLUG-debug-$TS.md"
+TS=$(date -u +%Y-%m-%dT%H-%M-%SZ)
+DEBUG_DIR="${SMRITI_HOME:-$HOME/.smriti}/projects/$SLUG"
+mkdir -p "$DEBUG_DIR"
+DEBUG_FILE="$DEBUG_DIR/$BRANCH_SLUG-debug-$TS.md"
 smriti ticket doc "${TICKET:--}" --type debug --path "$DEBUG_FILE" 2>/dev/null || true
 ```
+
+Give it a fixed shape, so two investigations produce comparable documents rather than
+two shapes of prose: **Problem** (the symptom as reported), **Reproduction** (the exact
+steps, and whether it is reliable), **Root cause** (the causal chain, cause to symptom),
+**Fix** (what changes and why that is the minimal cut), **Tests** (what now fails
+without the fix), **Confidence** and **Open follow-ups**.
 
 Then plan the fix as normal. The plan's **Approach** is the root cause and the minimal
 fix for it — not a redesign, unless the investigation showed the design itself is the
@@ -269,41 +269,78 @@ Summarize and **stop for the human**:
    next (you): test it, then say the word to ship.
 ```
 
-Then stop. The user tests. **Shipping is on their word** — never push or open a PR on
-your own.
+Then **mark the gate and stop** — this is a wait on a human, so it is recorded as one:
+
+```bash
+smriti trace emit verify ok || true
+smriti trace emit ship awaiting || true    # lists the run under "waiting on you"
+```
+
+The user tests. **Shipping is on their word** — never push or open a PR on your own.
+
+If the session ends here without shipping, close the run anyway so it does not sit
+open forever: `smriti trace end || true`. Ending twice is not an error, so shipping
+later in the same session may safely end it again.
 
 ### Shipping, once they say so
 
-Destination comes from config, not a question: `smriti config get ship_target` →
-`pr` (default) or `main`.
+Destination comes from config, defaulted at the read — an unset key prints an empty
+string, so never use the bare value:
+
+```bash
+SHIP_TARGET=$(smriti config get ship_target 2>/dev/null || true)
+case "$SHIP_TARGET" in pr|main) ;; *) SHIP_TARGET=pr ;; esac
+```
 
 {{BASE_BRANCH_DETECT}}
 
-1. **Pre-flight.** `BASE_BRANCH=$(smriti default-branch)`. Stop if there's no diff
-   against `origin/$BASE_BRANCH`, or if the target is a PR while already on the base branch.
+**You are usually in a linked worktree** (`smriti ticket start` cuts one), where the base
+branch is checked out elsewhere. `git checkout "$BASE_BRANCH"` therefore fails with
+*"already checked out at …"*. Nothing below checks out the base branch; that is
+deliberate, not an oversight.
+
+1. **Pre-flight.** `HAS_REMOTE`: does `git remote get-url origin` succeed? If yes,
+   `git fetch --quiet origin "$BASE_BRANCH" || true` first, then compare against
+   `origin/$BASE_BRANCH`; if not, compare against the local `$BASE_BRANCH`. No diff →
+   nothing to ship, stop. Already standing on the base branch → stop; there is no
+   feature branch to land.
 2. **Tests.** Run the project's suite. A failure introduced on this branch → fix or
    abort, the user's call. Pre-existing on base → proceed with a note.
-3. **Sync.** `git fetch origin "$BASE_BRANCH"` then `git merge --no-edit
-   "origin/$BASE_BRANCH"`. On conflict: `git merge --abort`, report, stop.
+3. **Sync.** With a remote: `git merge --no-edit "origin/$BASE_BRANCH"`. On conflict,
+   `git merge --abort`, report, stop. This leaves the branch a descendant of base, which
+   is what makes step 5's `main` path a fast-forward.
 4. **Commit** anything outstanding, with the trailer.
-5. **Land it:**
-   - **`pr`** — push the branch, then `gh pr create` (or `gh pr edit` if one is already
-     open; report and stop if it's closed or merged). Title is the most descriptive
-     non-mechanical commit subject, used as-is. Body is `## Summary` (2–3 sentences
-     synthesized from the diff, not a commit dump), `## Test plan` (checkboxes), then
-     `Ticket: #<id> — <title>` when `$TICKET` is set. Record it:
+5. **Land it** (`HAS_GH` = origin is github.com *and* `gh` is on PATH):
+   - **`pr`** — `git push -u origin "$CURRENT"`. The `-u` matters: without an upstream,
+     the cleanup in step 6 refuses the branch as possibly-unpushed. Then `gh pr create`,
+     or `gh pr edit <n>` if one is already open; if the existing PR is closed or merged,
+     report it and stop rather than guessing. Title is the most descriptive
+     non-mechanical commit subject (skip `WIP`, `fixup`, `Merge`), used as-is. Body is
+     `## Summary` (2–3 sentences synthesized from the diff, not a commit dump),
+     `## Test plan` (checkboxes), then `Ticket: #<id> — <title>` when `$TICKET` is set.
+     Capture the URL `gh` prints and record it:
      `smriti ticket pr "${TICKET:--}" "$PR_URL"` → the ticket moves to `in_review`.
-   - **`main`** — checkout the base branch, merge this one, push. On rejection,
-     `pull --rebase` and retry once.
-   - **No `gh` or no remote** — push the branch if you can and print the title and body
-     for manual use.
-6. **Clean, only if the branch actually merged** — the `main` path, or a `pr` whose PR is
-   already merged. Then `smriti clean --branch "<branch>"`, which switches to the base
-   branch, deletes the branch, removes its worktree, purges its scratch docs and marks
-   the ticket `shipped`. If the PR is still open, stop here and say so — `smriti clean`
-   is available whenever the merge lands.
+   - **`main`** — `git push origin HEAD:"$BASE_BRANCH"`. Step 3 made this a
+     fast-forward; no checkout, so it works from a worktree. If it is rejected, someone
+     pushed in between: re-run step 3 and retry once.
+   - **No `gh`, or no remote** — push the branch if there is somewhere to push it, then
+     print the title and body for manual use, and stop before step 6.
+6. **Clean, only when the branch has actually landed:**
+   - **`main` path** — you just pushed it yourself, so pass `--force`:
+     `smriti clean --branch "$CURRENT" --force`. Without it the merge detection asks
+     GitHub for a *merged PR*, finds none (there never was one), and refuses with exit 4.
+   - **`pr` path** — only if the PR is already merged; check with
+     `gh pr view --json state`. Then `smriti clean --branch "$CURRENT"`. If it is still
+     open, **stop here and say so** — the ticket correctly stays at `in_review`, and
+     `smriti clean` is there whenever the merge lands.
 
-Close the run: `smriti trace end || true`.
+   Cleaning deletes the branch, removes its worktree, purges that branch's scratch docs
+   and marks the ticket `shipped`. Report what its exit code says rather than assuming
+   it worked: `4` not detected as merged, `5` a branch-local refusal (add `--force` if
+   the reason is one you accept), `8` state changed since it planned. A non-zero exit
+   means the branch is still there — say that instead of claiming a clean finish.
+
+Close the run: `smriti trace emit ship ok || true` then `smriti trace end || true`.
 
 ---
 

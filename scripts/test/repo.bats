@@ -9,7 +9,7 @@ setup() {
   WORK=$(mktemp -d)
 
   # Production-shape invocation: symlink the bins into a fake PATH dir so we
-  # exercise the same install shape /ship uses (~/.local/bin/smriti-* symlinks).
+  # exercise the real install shape (~/.local/bin/smriti-* symlinks).
   # The lesson — absolute-path invocation hides path-resolution bugs that
   # symlinked production installs hit. smriti-repo now resolves SMRITI_LIB
   # through the same chain to source lib/factory-db.sh, so a partial resolution
