@@ -42,6 +42,8 @@ const SELF = realpathSync(process.argv[1]);
 const SMRITI_BIN = dirname(SELF);
 const TICKET = join(SMRITI_BIN, 'smriti-ticket');
 const TRACE = join(SMRITI_BIN, 'smriti-trace');
+const REPO = join(SMRITI_BIN, 'smriti-repo');
+const PROJECT = join(SMRITI_BIN, 'smriti-project');
 const SMRITI_HOME = process.env.SMRITI_HOME || join(homedir(), '.smriti');
 const STATE_DIR = join(SMRITI_HOME, '.server', 'factory');
 const IDLE_MS = Number(process.env.SMRITI_BOARD_IDLE_MS || 45 * 60 * 1000);
@@ -338,10 +340,19 @@ async function cmdServer(): Promise<never> {
         const tickets = readJsonCmd(['list', '--all', '--json']);
         const runs = readJsonCmd(['list', '--active', '--json'], TRACE);
         const documents = readJsonCmd(['docs', '--json']);
+        const repositories = readJsonCmd(['list', '--json'], REPO);
+        const projects = readJsonCmd(['list', '--all', '--json'], PROJECT);
         if (tickets === null) {
           return json({ error: 'could not read the ticket store' }, 503);
         }
-        return json({ tickets, runs: runs ?? [], documents: documents ?? [], sessions: herdrSessions() });
+        return json({
+          tickets,
+          runs: runs ?? [],
+          documents: documents ?? [],
+          repositories: repositories ?? [],
+          projects: projects ?? [],
+          sessions: herdrSessions(),
+        });
       }
 
       if (url.pathname.startsWith('/api/doc/') && req.method === 'GET') {
@@ -359,18 +370,115 @@ async function cmdServer(): Promise<never> {
         return json({ html: renderMarkdown(readFileSync(real, 'utf8')) });
       }
 
+      // ── repo-level markdown ────────────────────────────────────────────
+      // The board's SECOND exception to "read nothing outside
+      // $SMRITI_HOME/projects/", and deliberately the narrower of the two: the
+      // filename is not user input at all.
+      //   - the slug shape forbids separators, so it cannot traverse
+      //   - the document name comes from a fixed two-item allowlist
+      //   - the repo root comes from `smriti repo show --json`, never the client
+      //   - realpath must still land under that root, so a symlinked DESIGN.md
+      //     pointing at ~/.ssh/id_rsa is refused
+      const repoDoc = url.pathname.match(/^\/api\/repos\/([^/]+)\/doc\/([A-Z]+)$/);
+      if (repoDoc && req.method === 'GET') {
+        touch();
+        const slug = decodeURIComponent(repoDoc[1]);
+        if (!/^[a-z0-9][a-z0-9._-]*$/i.test(slug)) return json({ error: 'bad slug' }, 400);
+        const NAMES: Record<string, string> = { PROJECT: 'PROJECT.md', DESIGN: 'DESIGN.md' };
+        const name = NAMES[repoDoc[2]];
+        if (!name) return json({ error: 'no such document' }, 404);
+
+        const info = sh(REPO, ['show', slug, '--json']);
+        if (!info.ok) return json({ error: 'no such app' }, 404);
+        let root = '';
+        try { root = JSON.parse(info.out)?.repo_path || ''; } catch {}
+        if (!root) return json({ error: 'this app has no repo on this machine' }, 404);
+
+        let realRoot = '';
+        try { realRoot = realpathSync(root); } catch { return json({ error: 'repo is gone' }, 404); }
+        let real = '';
+        try { real = realpathSync(join(realRoot, name)); } catch { return json({ error: 'no ' + name }, 404); }
+        if (real !== join(realRoot, name) && !real.startsWith(realRoot + sep)) {
+          return json({ error: 'forbidden path' }, 403);
+        }
+        if (statSync(real).size > 2_000_000) return json({ error: 'too large' }, 413);
+        return json({ name, path: real, html: renderMarkdown(readFileSync(real, 'utf8')) });
+      }
+
       if (url.pathname === '/api/tickets' && req.method === 'POST') {
         touch();
-        const body = (await req.json().catch(() => ({}))) as { title?: string; project?: string };
+        const body = (await req.json().catch(() => ({}))) as {
+          title?: string; repo?: string; project?: string;
+        };
         const title = (body.title || '').trim();
         if (!title) return json({ error: 'a title is required' }, 400);
         const args = ['add', title, '--ready'];
+        // No repo and no project is a legitimate capture: an idea. '-' says so
+        // explicitly — omitting --repo would let smriti-ticket derive one from
+        // the SERVER's cwd, which is wherever `smriti` happened to be started.
         if (body.project) args.push('--project', body.project);
+        args.push('--repo', body.repo || '-');
         const r = sh(TICKET, args);
         if (!r.ok) return json({ error: r.errOut || 'could not add' }, 500);
         const id = Number(r.out.match(/#(\d+)/)?.[1] || 0);
         broadcast();
         return json({ id });
+      }
+
+      // ── apps and projects ──────────────────────────────────────────────
+      const repoEdit = url.pathname.match(/^\/api\/repos\/([^/]+)$/);
+      if (repoEdit && req.method === 'PATCH') {
+        touch();
+        const b = (await req.json().catch(() => ({}))) as { name?: string; description?: string };
+        const args = ['edit', decodeURIComponent(repoEdit[1])];
+        if (typeof b.name === 'string') args.push('--name', b.name);
+        if (typeof b.description === 'string') args.push('--description', b.description);
+        if (args.length === 2) return json({ error: 'nothing to change' }, 400);
+        const r = sh(REPO, args);
+        if (!r.ok) return json({ error: r.errOut || 'could not edit' }, 500);
+        broadcast();
+        return json({ ok: true });
+      }
+
+      if (url.pathname === '/api/projects' && req.method === 'POST') {
+        touch();
+        const b = (await req.json().catch(() => ({}))) as {
+          name?: string; repo?: string; description?: string;
+        };
+        const name = (b.name || '').trim();
+        if (!name) return json({ error: 'a name is required' }, 400);
+        // '-' is smriti-project's explicit "no app yet", which is not the same
+        // as "derive one from the cwd" — and the server's cwd is meaningless.
+        const args = ['add', name, '--repo', b.repo || '-'];
+        if (b.description) args.push('--description', b.description);
+        const r = sh(PROJECT, args);
+        if (!r.ok) return json({ error: r.errOut || 'could not add' }, 500);
+        broadcast();
+        return json({ id: Number(r.out.match(/#(\d+)/)?.[1] || 0) });
+      }
+
+      const projEdit = url.pathname.match(/^\/api\/projects\/(\d+)$/);
+      if (projEdit && req.method === 'PATCH') {
+        touch();
+        const b = (await req.json().catch(() => ({}))) as {
+          name?: string; description?: string; repo?: string;
+        };
+        const args = ['edit', projEdit[1]];
+        if (typeof b.name === 'string') args.push('--name', b.name);
+        if (typeof b.description === 'string') args.push('--description', b.description);
+        if (typeof b.repo === 'string') args.push('--repo', b.repo || '-');
+        if (args.length === 2) return json({ error: 'nothing to change' }, 400);
+        const r = sh(PROJECT, args);
+        if (!r.ok) return json({ error: r.errOut || 'could not edit' }, 500);
+        broadcast();
+        return json({ ok: true });
+      }
+      if (projEdit && req.method === 'DELETE') {
+        touch();
+        const r = sh(PROJECT, ['rm', projEdit[1], '--yes']);
+        if (!r.ok) return json({ error: r.errOut || 'could not delete' }, 500);
+        broadcast();
+        return json({ ok: true });
       }
 
       const start = url.pathname.match(/^\/api\/tickets\/(\d+)\/start$/);
@@ -415,10 +523,16 @@ async function cmdServer(): Promise<never> {
       const edit = url.pathname.match(/^\/api\/tickets\/(\d+)$/);
       if (edit && req.method === 'PATCH') {
         touch();
-        const b = (await req.json().catch(() => ({}))) as { title?: string; body?: string };
+        const b = (await req.json().catch(() => ({}))) as {
+          title?: string; body?: string; repo?: string; project?: string | null;
+        };
         const args = ['edit', edit[1]];
         if (typeof b.title === 'string') args.push('--title', b.title);
         if (typeof b.body === 'string') args.push('--body', b.body);
+        if (typeof b.repo === 'string') args.push('--repo', b.repo || '-');
+        // null means "take it out of its project"; a value files it into one.
+        if (b.project === null) args.push('--no-project');
+        else if (typeof b.project === 'string' && b.project) args.push('--project', b.project);
         if (args.length === 2) return json({ error: 'nothing to change' }, 400);
         const r = sh(TICKET, args);
         if (!r.ok) return json({ error: r.errOut || 'could not edit' }, 500);

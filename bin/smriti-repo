@@ -1,0 +1,588 @@
+#!/usr/bin/env bash
+# smriti repo — the app: one codebase, and everything smriti knows about it.
+# State: $SMRITI_HOME/projects/<slug>/, $SMRITI_HOME/slug-cache/<path-hash>,
+#        and the `repositories` table in $SMRITI_HOME/factory.db
+#
+# Subcommands:
+#   smriti repo new <name>                    scaffold a new repo dir + git init
+#   smriti repo list [--json]                 every app smriti tracks
+#   smriti repo show [<slug>] [--json]        one app: docs, projects, tickets
+#   smriti repo edit <slug> [--name N] [--description T]
+#   smriti repo current                       slug for the repo you are in
+#   smriti repo forget <slug> [--yes]         delete app state + slug-cache
+#   smriti repo rename <old> <new>            move state, cache AND db rows
+#
+# This was `smriti project` until projects became a real entity of their own.
+# The rename is the honest one: every verb here has always operated on a
+# repository. `smriti project` now manages the groupings that live inside one.
+#
+# An app needs no `repositories` row to exist. It exists if it has a row, OR a
+# ticket, OR a $SMRITI_HOME/projects/<slug>/ directory — the table only carries
+# the attributes (name, description) that have nowhere else to live. That is
+# what lets this be added without backfilling anything.
+set -e
+
+SMRITI_TOOL=smriti-repo
+
+# Resolve our own dir through the FULL symlink chain before dirname: the install
+# puts a symlink on PATH, and a one-hop resolution lands SMRITI_LIB in the wrong
+# directory, making every db call here exit with "schema not found". Same loop
+# as bin/smriti.
+_self="$0"
+while [ -L "$_self" ]; do
+  _target=$(readlink "$_self")
+  case "$_target" in
+    /*) _self="$_target" ;;
+    *)  _self="$(cd "$(dirname "$_self")" && pwd -P)/$_target" ;;
+  esac
+done
+SMRITI_BIN="$(cd "$(dirname "$_self")" && pwd -P)"
+SMRITI_LIB="$(cd "$SMRITI_BIN/../lib" && pwd -P)"
+unset _self
+
+# shellcheck source=../lib/factory-db.sh
+. "$SMRITI_LIB/factory-db.sh"
+
+SMRITI_HOME="${SMRITI_HOME:-$HOME/.smriti}"
+PROJECTS_DIR="$SMRITI_HOME/projects"
+SLUG_CACHE_DIR="$SMRITI_HOME/slug-cache"
+
+usage() {
+  cat <<'USAGE' >&2
+usage:
+  smriti repo new <name>                    # scaffold a new repo directory + git init
+  smriti repo list [--json]                 # list every app smriti tracks
+  smriti repo show [<slug>] [--json]        # one app: docs, projects, tickets
+  smriti repo edit <slug> [--name N] [--description T]
+  smriti repo current                       # print slug for the current repo
+  smriti repo forget <slug> [--yes]         # delete app state + slug-cache (destructive)
+  smriti repo rename <old> <new>            # rename an app (moves state, cache and db rows)
+USAGE
+  exit 2
+}
+
+count_designs() {
+  find "$1" -maxdepth 1 -type f -name '*-design-*.md' 2>/dev/null | wc -l | tr -d ' '
+}
+count_plans() {
+  find "$1" -maxdepth 1 -type f -name '*-plan-*.md' 2>/dev/null | wc -l | tr -d ' '
+}
+
+last_used() {
+  date -r "$1" +%Y-%m-%d 2>/dev/null || echo "-"
+}
+
+# Read the SLUG value from a cache file. Handles both new KV format
+# (SLUG=value on its own line) and old single-line format (entire file is the slug).
+read_slug_from_cache() {
+  local file="$1"
+  local first_line
+  first_line=$(head -1 "$file")
+  if printf '%s' "$first_line" | grep -q '='; then
+    grep '^SLUG=' "$file" | cut -d= -f2-
+  else
+    printf '%s' "$first_line"
+  fi
+}
+
+# Read SOURCE_PATH from a KV-format cache file. Returns empty for old single-line files.
+read_source_path_from_cache() {
+  local file="$1"
+  grep '^SOURCE_PATH=' "$file" 2>/dev/null | cut -d= -f2- || true
+}
+
+# Reverse-lookup: every cache file whose SLUG matches <target>.
+cache_files_for_slug() {
+  local target="$1"
+  [ -d "$SLUG_CACHE_DIR" ] || return 0
+  for f in "$SLUG_CACHE_DIR"/*; do
+    [ -f "$f" ] || continue
+    local slug
+    slug=$(read_slug_from_cache "$f" 2>/dev/null) || continue
+    if [ "$slug" = "$target" ]; then
+      printf '%s\n' "$f"
+    fi
+  done
+}
+
+# Build an associative-style lookup: for each slug, collect all source paths
+# from cache files. Outputs lines of "slug<TAB>path" for consumption by list.
+build_slug_path_map() {
+  [ -d "$SLUG_CACHE_DIR" ] || return 0
+  for f in "$SLUG_CACHE_DIR"/*; do
+    [ -f "$f" ] || continue
+    local slug source_path
+    slug=$(read_slug_from_cache "$f" 2>/dev/null) || continue
+    source_path=$(read_source_path_from_cache "$f")
+    [ -n "$slug" ] && printf '%s\t%s\n' "$slug" "$source_path"
+  done
+}
+
+validate_slug() { validate_slug_shape "$1" "${2:-slug}"; }
+
+# The current repo's slug, via our sibling smriti-slug.
+cmd_current() {
+  if [ -x "$SMRITI_BIN/smriti-slug" ]; then
+    "$SMRITI_BIN/smriti-slug" --print
+  elif command -v smriti-slug >/dev/null 2>&1; then
+    smriti-slug --print
+  else
+    echo "smriti-repo: smriti-slug not found (looked in $SMRITI_BIN and \$PATH)" >&2
+    exit 1
+  fi
+}
+
+# Every slug smriti knows about, from all three sources of existence: a
+# repositories row, a ticket, or a state directory on disk.
+all_slugs() {
+  {
+    if [ -d "$PROJECTS_DIR" ]; then
+      for dir in "$PROJECTS_DIR"/*/; do
+        [ -d "$dir" ] || continue
+        local s; s=$(basename "$dir")
+        [ "$s" = "_archive" ] || printf '%s\n' "$s"
+      done
+    fi
+    if factory_db_exists; then
+      db "SELECT slug FROM repositories;
+          SELECT DISTINCT repo_slug FROM tickets WHERE repo_slug IS NOT NULL;
+          SELECT DISTINCT repo_slug FROM projects WHERE repo_slug IS NOT NULL;"
+    fi
+  } | sort -u | grep -v '^$' || true
+}
+
+# ─── list ───────────────────────────────────────────────────────────────────
+
+cmd_list() {
+  local json=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json) json=1; shift ;;
+      *) die "unknown flag: $1" ;;
+    esac
+  done
+
+  local slugs; slugs=$(all_slugs)
+
+  if [ "$json" -eq 1 ]; then
+    printf '%s\n' "$slugs" | repos_json
+    return 0
+  fi
+
+  if [ -z "$slugs" ]; then
+    echo "no apps tracked yet — run /bootstrap in a repo, or: smriti ticket add \"<what you want>\""
+    return 0
+  fi
+
+  local slug_paths; slug_paths=$(build_slug_path_map)
+
+  printf '%-34s  %-10s  %6s  %6s  %5s  %s\n' "SLUG" "LAST-USED" "TICKET" "PROJ" "PLANS" "PATH"
+  while IFS= read -r slug; do
+    [ -z "$slug" ] && continue
+    local dir="$PROJECTS_DIR/$slug"
+    local paths path_display path_count
+    paths=$(printf '%s' "$slug_paths" | grep "^${slug}	" | cut -f2- || true)
+    path_count=$(printf '%s' "$paths" | grep -c . || true)
+
+    if [ "$path_count" -eq 0 ] || { [ "$path_count" -eq 1 ] && [ -z "$paths" ]; }; then
+      path_display="(unknown)"
+    elif [ "$path_count" -eq 1 ]; then
+      if [ -d "$paths" ]; then path_display="$paths"; else path_display="(stale: $paths)"; fi
+    else
+      local first_path; first_path=$(printf '%s' "$paths" | head -1)
+      if [ -d "$first_path" ]; then
+        path_display="$first_path ($path_count paths)"
+      else
+        path_display="(stale: $first_path) ($path_count paths)"
+      fi
+    fi
+
+    local tickets=0 projects=0
+    if factory_db_exists; then
+      local row
+      row=$(db "SELECT (SELECT count(*) FROM tickets  WHERE repo_slug = $(sql_quote "$slug")
+                          AND status NOT IN ('shipped','cancelled')) || char(9) ||
+                       (SELECT count(*) FROM projects WHERE repo_slug = $(sql_quote "$slug"));")
+      IFS=$'\t' read -r tickets projects <<< "$row"
+    fi
+
+    printf '%-34s  %-10s  %6s  %6s  %5s  %s\n' \
+      "$slug" \
+      "$([ -d "$dir" ] && last_used "$dir" || echo '-')" \
+      "$tickets" "$projects" \
+      "$([ -d "$dir" ] && count_plans "$dir" || echo 0)" \
+      "$path_display"
+  done <<< "$slugs"
+}
+
+# ─── show ───────────────────────────────────────────────────────────────────
+
+# Apps as JSON, for the board — which needs each repo path (to render
+# PROJECT.md / DESIGN.md) and the counts, and holds no SQL of its own.
+#
+# ONE sqlite3 process for any number of apps. The filesystem facts (where the
+# repo is, whether those two files exist) are not SQL, so they are resolved in
+# shell and handed to the query as a VALUES table to join against. The board
+# re-reads /api/state on every db change — roughly once a second while an agent
+# runs — so a process per app here was N spawns a second, each re-applying the
+# whole schema file.
+#
+# json_object() rather than hand-assembled JSON: a description containing a
+# quote or a newline has to come back out correctly, and this is the only way
+# that is true without shelling out to jq.
+
+# The `(slug, repo_path, project_md, design_md)` rows, already resolved.
+# Returns 1 when there is nothing at all, so callers can emit [] and stop.
+_app_values() {
+  local first=1 slug path pmd dmd
+  while IFS= read -r slug; do
+    [ -z "$slug" ] && continue
+    path=$(repo_path_for_slug "$slug")
+    pmd=""; dmd=""
+    if [ -n "$path" ]; then
+      if [ -f "$path/PROJECT.md" ]; then pmd="$path/PROJECT.md"; fi
+      if [ -f "$path/DESIGN.md" ];  then dmd="$path/DESIGN.md";  fi
+    fi
+    [ "$first" -eq 1 ] || printf ','
+    first=0
+    printf '(%s,%s,%s,%s)' \
+      "$(sql_quote "$slug")" "$(sql_quote_or_null "$path")" \
+      "$(sql_quote_or_null "$pmd")" "$(sql_quote_or_null "$dmd")"
+  done
+  [ "$first" -eq 1 ] && return 1
+  return 0
+}
+
+# The per-app object, shared by `list --json` and `show --json` so the two can
+# never describe an app differently.
+_app_object_sql='json_object(
+  '"'"'slug'"'"', app.slug,
+  '"'"'name'"'"', coalesce((SELECT nullif(r.name,'"''"') FROM repositories r WHERE r.slug = app.slug), app.slug),
+  '"'"'description'"'"', (SELECT nullif(r.description,'"''"') FROM repositories r WHERE r.slug = app.slug),
+  '"'"'repo_path'"'"', app.repo_path,
+  '"'"'project_md'"'"', app.project_md,
+  '"'"'design_md'"'"', app.design_md,
+  '"'"'counts'"'"', json_object(
+    '"'"'tickets'"'"',   (SELECT count(*) FROM tickets t  WHERE t.repo_slug = app.slug),
+    '"'"'open'"'"',      (SELECT count(*) FROM tickets t  WHERE t.repo_slug = app.slug
+                                            AND t.status NOT IN ('"'"'shipped'"'"','"'"'cancelled'"'"')),
+    '"'"'building'"'"',  (SELECT count(*) FROM tickets t  WHERE t.repo_slug = app.slug
+                                            AND t.status = '"'"'in_progress'"'"'),
+    '"'"'projects'"'"',  (SELECT count(*) FROM projects p WHERE p.repo_slug = app.slug),
+    '"'"'documents'"'"', (SELECT count(*) FROM documents d WHERE d.repo_slug = app.slug)))'
+
+# The same shape with every count zero, for a machine that has state
+# directories but has never created a factory.db. `:memory:` is a real database
+# argument — passing the SQL as the filename instead makes sqlite3 open the
+# statement as a file, print a parse error, and then read the caller's stdin.
+_app_object_sql_empty="json_object(
+  'slug', app.slug, 'name', app.slug, 'description', NULL,
+  'repo_path', app.repo_path, 'project_md', app.project_md, 'design_md', app.design_md,
+  'counts', json_object('tickets',0,'open',0,'building',0,'projects',0,'documents',0))"
+
+# All apps, as a JSON array. Reads newline-separated slugs on stdin.
+repos_json() {
+  local values
+  values=$(_app_values) || { echo '[]'; return 0; }
+  local cte="WITH app(slug, repo_path, project_md, design_md) AS (VALUES $values)"
+  if factory_db_exists; then
+    db "$cte SELECT json_group_array($_app_object_sql) FROM app;"
+  else
+    sqlite3 :memory: "$cte SELECT json_group_array($_app_object_sql_empty) FROM app;"
+  fi
+}
+
+# One app, as a JSON object.
+repo_json() {
+  local values
+  values=$(printf '%s\n' "$1" | _app_values) || { echo 'null'; return 0; }
+  local cte="WITH app(slug, repo_path, project_md, design_md) AS (VALUES $values)"
+  if factory_db_exists; then
+    db "$cte SELECT $_app_object_sql FROM app;"
+  else
+    sqlite3 :memory: "$cte SELECT $_app_object_sql_empty FROM app;"
+  fi
+}
+
+cmd_show() {
+  local slug="" json=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json) json=1; shift ;;
+      -*) die "unknown flag: $1" ;;
+      *) slug="$1"; shift ;;
+    esac
+  done
+  [ -n "$slug" ] || slug=$(current_slug)
+  [ -n "$slug" ] || die "not in a git repo — name an app: smriti repo show <slug>"
+  validate_slug "$slug"
+
+  if [ "$json" -eq 1 ]; then
+    repo_json "$slug"
+    return 0
+  fi
+
+  local path; path=$(repo_path_for_slug "$slug")
+  echo "$slug"
+  echo "path:     ${path:-—}"
+  if [ -n "$path" ]; then
+    echo "PROJECT:  $([ -f "$path/PROJECT.md" ] && echo present || echo '— (run /bootstrap)')"
+    echo "DESIGN:   $([ -f "$path/DESIGN.md" ]  && echo present || echo '— (run /design-consultation)')"
+  fi
+
+  factory_db_exists || return 0
+
+  local name desc
+  name=$(db "SELECT coalesce(name,'') FROM repositories WHERE slug = $(sql_quote "$slug");")
+  desc=$(db "SELECT coalesce(description,'') FROM repositories WHERE slug = $(sql_quote "$slug");")
+  if [ -n "$name" ] && [ "$name" != "$slug" ]; then echo "name:     $name"; fi
+  if [ -n "$desc" ]; then
+    echo
+    printf '%s\n' "$desc"
+  fi
+
+  local projects
+  projects=$(db "SELECT '  ' || slug || '  ' || name ||
+                        '  (' || (SELECT count(*) FROM tickets t WHERE t.project_id = p.id) || ' tickets)'
+                 FROM projects p WHERE repo_slug = $(sql_quote "$slug") ORDER BY id;")
+  if [ -n "$projects" ]; then
+    echo
+    echo "projects:"
+    printf '%s\n' "$projects"
+  fi
+
+  local tickets
+  tickets=$(db "SELECT '  #' || id || '  ' || status || '  ' || title
+                FROM tickets WHERE repo_slug = $(sql_quote "$slug")
+                  AND status NOT IN ('shipped','cancelled')
+                ORDER BY priority DESC, id;")
+  if [ -n "$tickets" ]; then
+    echo
+    echo "open tickets:"
+    printf '%s\n' "$tickets"
+  fi
+}
+
+# ─── edit ───────────────────────────────────────────────────────────────────
+
+cmd_edit() {
+  [ $# -ge 1 ] || usage
+  local slug="$1"; shift
+  validate_slug "$slug"
+
+  local name="" desc="" have=0 clear_desc=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --name)        [ $# -ge 2 ] || die "--name requires a value"; name="$2"; have=1; shift 2 ;;
+      --description) [ $# -ge 2 ] || die "--description requires a value"; desc="$2"; have=1; shift 2
+                     [ -z "$desc" ] && clear_desc=1 ;;
+      *) die "unknown flag: $1" ;;
+    esac
+  done
+  [ "$have" -eq 1 ] || die "nothing to change — pass --name or --description"
+
+  local ts; ts=$(now_utc)
+  # Upsert: an app that has never been described has no row yet, and asking to
+  # describe it is exactly the moment to create one.
+  db_write "INSERT INTO repositories (slug, name, description, created_at, updated_at)
+            VALUES ($(sql_quote "$slug"), $(sql_quote_or_null "$name"),
+                    $(sql_quote_or_null "$desc"), $(sql_quote "$ts"), $(sql_quote "$ts"))
+            ON CONFLICT(slug) DO UPDATE SET
+              name        = $([ -n "$name" ] && sql_quote "$name" || echo 'name'),
+              description = $([ "$clear_desc" -eq 1 ] && echo 'NULL' || { [ -n "$desc" ] && sql_quote "$desc" || echo 'description'; }),
+              updated_at  = $(sql_quote "$ts");"
+  echo "$slug updated"
+}
+
+# ─── new ────────────────────────────────────────────────────────────────────
+
+cmd_new() {
+  local name="${1:-}"
+  [ -z "$name" ] && { echo "usage: smriti repo new <name>" >&2; exit 2; }
+
+  if [ -d "$name" ]; then
+    echo "smriti-repo: directory '$name' already exists" >&2
+    exit 1
+  fi
+
+  mkdir -p "$name"
+  git -C "$name" init -q
+
+  echo "Created: $name/"
+  echo ""
+  echo "Next steps:"
+  echo "  cd $name"
+  echo "  claude                    # open Claude Code"
+  echo "  /bootstrap                # set up PROJECT.md + coding principles"
+  echo "  /begin                    # build your first feature end to end"
+}
+
+# ─── forget ─────────────────────────────────────────────────────────────────
+
+cmd_forget() {
+  local slug="${1:-}"
+  [ -z "$slug" ] && { echo "usage: smriti repo forget <slug> [--yes]" >&2; exit 2; }
+  shift
+  local yes=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --yes|-y) yes=1; shift ;;
+      *) echo "smriti-repo: unknown flag '$1'" >&2; exit 2 ;;
+    esac
+  done
+
+  validate_slug "$slug"
+
+  local dir="$PROJECTS_DIR/$slug"
+  if [ ! -d "$dir" ]; then
+    echo "smriti-repo: no app named '$slug' under $PROJECTS_DIR" >&2
+    exit 1
+  fi
+
+  local plans designs
+  plans=$(count_plans "$dir")
+  designs=$(count_designs "$dir")
+
+  local cache_files cache_count
+  cache_files=$(cache_files_for_slug "$slug")
+  cache_count=$(printf '%s' "$cache_files" | grep -c . || true)
+
+  local tickets=0 projects=0 docs=0
+  if factory_db_exists; then
+    local row
+    row=$(db "SELECT (SELECT count(*) FROM tickets   WHERE repo_slug = $(sql_quote "$slug")) || char(9) ||
+                     (SELECT count(*) FROM projects  WHERE repo_slug = $(sql_quote "$slug")) || char(9) ||
+                     (SELECT count(*) FROM documents WHERE repo_slug = $(sql_quote "$slug"));")
+    IFS=$'\t' read -r tickets projects docs <<< "$row"
+  fi
+
+  if [ "$yes" -ne 1 ]; then
+    if [ ! -t 0 ]; then
+      echo "smriti-repo: refusing to forget without --yes in non-interactive shell" >&2
+      exit 1
+    fi
+    echo "About to delete:"
+    echo "  $dir"
+    echo "    $plans plans, $designs designs"
+    echo "  $cache_count slug-cache file(s)"
+    echo "  the '$slug' row in factory.db"
+    if [ "$tickets" != "0" ] || [ "$projects" != "0" ]; then
+      echo ""
+      echo "  KEPT: $tickets ticket(s), $projects project(s), $docs document row(s)."
+      echo "  Work history is not app state — those stay, filed under '$slug'."
+    fi
+    printf "Delete? [y/N] "
+    read -r ans || ans=""
+    case "$ans" in
+      y|Y|yes|YES) ;;
+      *) echo "aborted."; exit 1 ;;
+    esac
+  fi
+
+  rm -rf "$dir"
+  while IFS= read -r f; do
+    [ -z "$f" ] && continue
+    rm -f "$f"
+  done <<< "$cache_files"
+  factory_db_exists && db_write "DELETE FROM repositories WHERE slug = $(sql_quote "$slug");"
+
+  echo "forgot: $slug"
+  echo "  removed $dir"
+  echo "  removed $cache_count slug-cache file(s)"
+  if [ "$tickets" != "0" ] || [ "$projects" != "0" ]; then
+    echo "  kept $tickets ticket(s), $projects project(s), $docs document row(s)"
+  fi
+  echo ""
+  echo "Note: smriti's runtime state for this app is gone."
+  echo "PROJECT.md and DESIGN.md (if any) are still in your repo and tracked by git."
+  echo "Run 'git rm PROJECT.md DESIGN.md' if you want them gone too."
+}
+
+# ─── rename ─────────────────────────────────────────────────────────────────
+
+cmd_rename() {
+  local old="${1:-}"
+  local new="${2:-}"
+  [ -z "$old" ] || [ -z "$new" ] && { echo "usage: smriti repo rename <old-slug> <new-slug>" >&2; exit 2; }
+
+  validate_slug "$old" "old slug"
+  validate_slug "$new" "new slug"
+
+  if [ "$old" = "$new" ]; then
+    echo "smriti-repo: old and new slugs are the same ('$old')" >&2
+    exit 1
+  fi
+
+  local old_dir="$PROJECTS_DIR/$old"
+  local new_dir="$PROJECTS_DIR/$new"
+
+  if [ ! -d "$old_dir" ]; then
+    echo "smriti-repo: no app named '$old' under $PROJECTS_DIR" >&2
+    exit 1
+  fi
+
+  if [ -d "$new_dir" ]; then
+    echo "smriti-repo: target '$new' already exists. Run 'smriti repo forget $new --yes' first if you want to overwrite." >&2
+    exit 1
+  fi
+
+  # The db first: it is the part that can fail on a constraint, and failing
+  # before anything has moved on disk leaves nothing half-renamed. Every table
+  # that carries a repo_slug moves together — leaving any behind is exactly the
+  # orphaning this rename used to cause.
+  local moved="0	0	0	0"
+  if factory_db_exists; then
+    moved=$(db "SELECT (SELECT count(*) FROM tickets   WHERE repo_slug = $(sql_quote "$old")) || char(9) ||
+                       (SELECT count(*) FROM projects  WHERE repo_slug = $(sql_quote "$old")) || char(9) ||
+                       (SELECT count(*) FROM documents WHERE repo_slug = $(sql_quote "$old")) || char(9) ||
+                       (SELECT count(*) FROM runs      WHERE repo_slug = $(sql_quote "$old"));")
+    db_write "INSERT INTO repositories (slug, name, description, created_at, updated_at)
+                SELECT $(sql_quote "$new"), name, description, created_at, $(sql_quote "$(now_utc)")
+                FROM repositories WHERE slug = $(sql_quote "$old");
+              DELETE FROM repositories WHERE slug = $(sql_quote "$old");
+              UPDATE tickets   SET repo_slug = $(sql_quote "$new") WHERE repo_slug = $(sql_quote "$old");
+              UPDATE projects  SET repo_slug = $(sql_quote "$new") WHERE repo_slug = $(sql_quote "$old");
+              UPDATE documents SET repo_slug = $(sql_quote "$new") WHERE repo_slug = $(sql_quote "$old");
+              UPDATE runs      SET repo_slug = $(sql_quote "$new") WHERE repo_slug = $(sql_quote "$old");"
+  fi
+  local m_tickets m_projects m_docs m_runs
+  IFS=$'\t' read -r m_tickets m_projects m_docs m_runs <<< "$moved"
+
+  mv "$old_dir" "$new_dir"
+
+  local cache_updated=0
+  if [ -d "$SLUG_CACHE_DIR" ]; then
+    for f in "$SLUG_CACHE_DIR"/*; do
+      [ -f "$f" ] || continue
+      local slug
+      slug=$(read_slug_from_cache "$f" 2>/dev/null) || continue
+      if [ "$slug" = "$old" ]; then
+        local source_path
+        source_path=$(read_source_path_from_cache "$f")
+        local tmp="$f.tmp.$$"
+        printf 'SLUG=%s\nSOURCE_PATH=%s\n' "$new" "$source_path" > "$tmp"
+        mv "$tmp" "$f"
+        cache_updated=$((cache_updated + 1))
+      fi
+    done
+  fi
+
+  echo "renamed: $old -> $new"
+  echo "  moved $old_dir -> $new_dir"
+  echo "  updated $cache_updated slug-cache file(s)"
+  echo "  moved ${m_tickets:-0} ticket(s), ${m_projects:-0} project(s), ${m_docs:-0} document(s), ${m_runs:-0} run(s)"
+}
+
+CMD="${1:-}"
+shift || true
+case "$CMD" in
+  new)          cmd_new "$@" ;;
+  list)         cmd_list "$@" ;;
+  show)         cmd_show "$@" ;;
+  edit)         cmd_edit "$@" ;;
+  current)      cmd_current "$@" ;;
+  forget)       cmd_forget "$@" ;;
+  rename)       cmd_rename "$@" ;;
+  ""|-h|--help) usage ;;
+  *) echo "smriti-repo: unknown command '$CMD'" >&2; usage ;;
+esac

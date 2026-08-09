@@ -49,9 +49,9 @@ teardown() {
   [[ "$output" == *"no open tickets"* ]]
 }
 
-@test "lists tickets grouped under their project" {
+@test "lists tickets grouped under their app" {
   "$TICKET" add "Export to CSV" >/dev/null
-  "$TICKET" add "Dark mode" --project portfolio >/dev/null
+  "$TICKET" add "Dark mode" --repo portfolio >/dev/null
 
   run bun "$CLI" --list
   [ "$status" -eq 0 ]

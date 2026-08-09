@@ -54,7 +54,10 @@ function usage(): never {
 
 type Ticket = {
   id: number;
-  project_slug: string;
+  // null for an idea with no app yet; null project_id for a one-off.
+  repo_slug: string | null;
+  project_id: number | null;
+  project_name: string | null;
   title: string;
   status: string;
   priority: number;
@@ -66,12 +69,20 @@ type Ticket = {
 type Run = {
   run_uid: string;
   ticket_id: number | null;
-  project_slug: string;
+  repo_slug: string | null;
+  project_id: number | null;
   skill: string;
   branch: string | null;
   status: string;
   last_phase: string | null;
 };
+
+// The bucket an app-less ticket groups under. Parentheses are rejected by
+// smriti-repo's validate_slug_shape, so no real app can ever produce this key —
+// which matters because `ideas` on its own IS a legal slug
+// (github.com/you/ideas), and using it here merged that app with every idea.
+const NO_APP = '(ideas)';
+const NO_APP_LABEL = 'ideas';
 
 function readJson<T>(bin: string, args: string[]): T[] {
   const r = spawnSync(bin, args, { encoding: 'utf8' });
@@ -98,6 +109,7 @@ function loadRuns(): Run[] {
 const STATUS_ORDER = ['in_review', 'in_progress', 'ready', 'idea', 'shipped', 'cancelled'];
 
 type Row =
+  | { kind: 'app'; label: string }
   | { kind: 'project'; label: string }
   | { kind: 'ticket'; ticket: Ticket; run?: Run }
   // A run with no ticket behind it — /debug on a hand-cut branch, say. Without
@@ -106,14 +118,18 @@ type Row =
   | { kind: 'run'; run: Run }
   | { kind: 'blank' };
 
+// Three levels now: app → project → ticket, with app-less ideas last and
+// project-less tickets sitting loose under their app.
 function buildRows(tickets: Ticket[], runs: Run[], filter: string): Row[] {
   const q = filter.trim().toLowerCase();
+  const appOf = (v: { repo_slug: string | null }) => v.repo_slug ?? NO_APP;
   const visible = tickets.filter((t) => {
     if (t.status === 'shipped' || t.status === 'cancelled') return false;
     if (!q) return true;
     return (
       t.title.toLowerCase().includes(q) ||
-      t.project_slug.toLowerCase().includes(q) ||
+      appOf(t).toLowerCase().includes(q) ||
+      (t.project_name ?? '').toLowerCase().includes(q) ||
       String(t.id) === q
     );
   });
@@ -125,40 +141,69 @@ function buildRows(tickets: Ticket[], runs: Run[], filter: string): Row[] {
     else loose.push(r);
   }
 
-  const byProject = new Map<string, Ticket[]>();
+  const byApp = new Map<string, Ticket[]>();
   for (const t of visible) {
-    if (!byProject.has(t.project_slug)) byProject.set(t.project_slug, []);
-    byProject.get(t.project_slug)!.push(t);
+    const a = appOf(t);
+    if (!byApp.has(a)) byApp.set(a, []);
+    byApp.get(a)!.push(t);
   }
-  // A project with only ticketless runs still needs a heading to hang them on.
-  for (const r of loose) if (!byProject.has(r.project_slug)) byProject.set(r.project_slug, []);
+  // An app with only ticketless runs still needs a heading to hang them on.
+  for (const r of loose) if (!byApp.has(appOf(r))) byApp.set(appOf(r), []);
+
+  // Ideas last: they are the least actionable thing on the page.
+  const apps = [...byApp.keys()].sort((a, b) =>
+    a === NO_APP ? 1 : b === NO_APP ? -1 : a.localeCompare(b),
+  );
+
+  const byStatus = (a: Ticket, b: Ticket) => {
+    const s = STATUS_ORDER.indexOf(a.status) - STATUS_ORDER.indexOf(b.status);
+    if (s !== 0) return s;
+    if (a.priority !== b.priority) return b.priority - a.priority;
+    return a.id - b.id;
+  };
 
   const rows: Row[] = [];
-  for (const project of [...byProject.keys()].sort()) {
-    const items = byProject.get(project)!.sort((a, b) => {
-      const s = STATUS_ORDER.indexOf(a.status) - STATUS_ORDER.indexOf(b.status);
-      if (s !== 0) return s;
-      if (a.priority !== b.priority) return b.priority - a.priority;
-      return a.id - b.id;
-    });
-    rows.push({ kind: 'project', label: project });
+  for (const app of apps) {
+    const items = byApp.get(app)!;
+    rows.push({ kind: 'app', label: app });
     // Ticketless runs sit above the tickets — an awaiting one needs attention
     // more than a backlog entry does.
-    for (const r of loose.filter((x) => x.project_slug === project)) {
+    for (const r of loose.filter((x) => appOf(x) === app)) {
       if (!q || r.skill.toLowerCase().includes(q) || (r.branch ?? '').toLowerCase().includes(q)) {
         rows.push({ kind: 'run', run: r });
       }
     }
-    for (const t of items) rows.push({ kind: 'ticket', ticket: t, run: runFor.get(t.id) });
+
+    // Grouped by project, in first-appearance order of the sorted tickets, so
+    // the project holding the most urgent work comes first.
+    const groups = new Map<number, Ticket[]>();
+    const looseTickets: Ticket[] = [];
+    for (const t of items.slice().sort(byStatus)) {
+      if (t.project_id == null) looseTickets.push(t);
+      else {
+        if (!groups.has(t.project_id)) groups.set(t.project_id, []);
+        groups.get(t.project_id)!.push(t);
+      }
+    }
+    for (const [, group] of groups) {
+      rows.push({ kind: 'project', label: group[0].project_name ?? `project ${group[0].project_id}` });
+      for (const t of group) rows.push({ kind: 'ticket', ticket: t, run: runFor.get(t.id) });
+    }
+    // Loose tickets go last and unlabelled when they are all there is — a
+    // "loose" heading over the only group is noise.
+    if (looseTickets.length && groups.size) rows.push({ kind: 'project', label: 'loose in this app' });
+    for (const t of looseTickets) rows.push({ kind: 'ticket', ticket: t, run: runFor.get(t.id) });
+
     rows.push({ kind: 'blank' });
   }
-  // A project heading with nothing under it is noise.
+
+  // An app heading with nothing under it is noise.
   for (let i = rows.length - 1; i > 0; i--) {
-    if (rows[i - 1].kind === 'project' && (rows[i].kind === 'blank' || i === rows.length - 1 && rows[i].kind === 'project')) {
+    if (rows[i - 1].kind === 'app' && (rows[i].kind === 'blank' || (i === rows.length - 1 && rows[i].kind === 'app'))) {
       rows.splice(i - 1, rows[i].kind === 'blank' ? 2 : 1);
     }
   }
-  if (rows.length && rows[rows.length - 1].kind === 'project') rows.pop();
+  if (rows.length && rows[rows.length - 1].kind === 'app') rows.pop();
   if (rows.length && rows[rows.length - 1].kind === 'blank') rows.pop();
   return rows;
 }
@@ -213,7 +258,8 @@ function plainListing(): number {
   }
   const width = Math.max(60, process.stdout.columns || 80);
   for (const row of rows) {
-    if (row.kind === 'project') process.stdout.write(`${row.label}\n`);
+    if (row.kind === 'app') process.stdout.write(`${row.label === NO_APP ? NO_APP_LABEL : row.label}\n`);
+    else if (row.kind === 'project') process.stdout.write(`  ▸ ${row.label}\n`);
     else if (row.kind === 'blank') process.stdout.write('\n');
     else if (row.kind === 'run') process.stdout.write(`${runLine(row.run, width)}\n`);
     else process.stdout.write(`${ticketLine(row.ticket, row.run, width)}\n`);

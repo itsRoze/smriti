@@ -163,7 +163,7 @@ Claude: /ship → PR opened.
 ## The factory
 
 `smriti` on its own opens the board — a locally served page showing every
-project, every ticket, what is running, and what is waiting on you:
+app, every project, every ticket, what is running, and what is waiting on you:
 
 ```bash
 smriti
@@ -173,8 +173,33 @@ The look is a planning sketchbook in two grounds: **light** is marker on warm
 grid paper, **dark** is chalk on slate (a dark evergreen read through Nord).
 It follows your OS by default; `t` overrides and the choice sticks.
 Everything is keyboard-first — `↑↓` move, `⏎` open, `s` start, `c` capture,
-`d` done, `⌘K` for anything — and every action lands in under a
-keystroke-and-a-half.
+`p` open its project or app, `d` done, `⌘K` for anything — and every action
+lands in under a keystroke-and-a-half.
+
+### Apps, projects, tickets
+
+Work is organised the way you actually think about it:
+
+- an **app** is a codebase — the slug smriti derives from your git remote
+- a **project** is a named body of work inside one app: "search v2", "the run
+  trace". An app holds as many as you like, and a project never spans two
+- a **ticket** belongs to a project, **or** to an app directly (a one-off bug),
+  **or** to neither — an idea, which you can capture from anywhere at all,
+  including outside a git repo
+
+Both of those edges being optional is the point. `smriti ticket add "a writing
+app that fights the blank page"` works from your home directory; it lands in an
+**ideas** band at the bottom of the board until you give it somewhere to live.
+
+Clicking an app heading opens its **app page** (`#/r/<slug>`): description,
+`PROJECT.md` and `DESIGN.md` rendered from the repo, its projects, its loose
+tickets and its whole paper trail. Clicking a project opens its **project
+page** (`#/p/<id>`) — the same shape, minus the document tabs, because
+`DESIGN.md` describes the codebase rather than one body of work inside it.
+Both are real URLs: reload, deep-link, and the browser back button all work.
+
+The repo documents are read from disk when you open the page. Nothing watches
+your editor, so `↻` on the pane re-reads them.
 
 A ticket opens with its description inline — click to edit, `⌘⏎` to save.
 Work you have decided against gets **cancelled** (reversible, keeps its paper
@@ -200,11 +225,25 @@ them — it holds no SQL of its own:
 
 ```bash
 smriti ticket add "users should be able to export to CSV"   # capture, anywhere
-smriti ticket list                                          # this project
-smriti ticket list --all                                    # every project
+smriti ticket add "a writing app" # no repo needed — an idea
+smriti ticket list                                          # this app
+smriti ticket list --all                                    # everywhere
+smriti ticket list --repo -                                 # the ideas with no app yet
 smriti ticket start 7                                       # worktree + branch; prints the path
 smriti ticket show 7                                        # detail + its documents
+
+smriti project add "Search v2"                              # a body of work in this app
+smriti ticket edit 7 --project search-v2                    # file a ticket into it
+smriti ticket edit 7 --no-project                           # ...or back out again
+
+smriti repo show                                            # this app: docs, projects, tickets
+smriti repo edit itsroze-smriti --description "the meta-tool"
 ```
+
+Re-filing moves the whole record — a ticket's documents and run history follow
+it, because each carries its own copy of where it belongs. Changing a *started*
+ticket's app is refused: its worktree was cut in the old repo, and `start` would
+otherwise reattach that tree under the new slug.
 
 The board shows what a live session is **actually doing** — herdr reports whether
 an agent is working, done, or **blocked waiting on you**, and a blocked session
@@ -253,17 +292,32 @@ smriti trace tail --after 0    # the cursor query — live tail and history in o
 | `proactive` | `true` / `false` | `true` | reserved (proactive skill suggestions) |
 | `explain_level` | `default` / `terse` | `default` | reserved (output verbosity) |
 
-## Managing tracked projects
+## Managing apps
 
-`smriti project` owns the *set* of projects under `~/.smriti/projects/` — per-project content (plans, debug docs, designs) is managed by the skills themselves.
+`smriti repo` owns the *set* of apps smriti tracks under `~/.smriti/projects/` — per-app content (plans, debug docs, designs) is managed by the skills themselves. (This was `smriti project` before v1.3; every verb here has always operated on a repository, and the old name is now the entity that lives *inside* one.)
+
+An app needs no database row to exist: it exists if it has a row, **or** a ticket, **or** a state directory. The row only carries the name and description.
 
 | Command | Purpose |
 |---------|---------|
-| `smriti project new <name>` | scaffold a new project directory with `git init`; print next-step guidance |
-| `smriti project list` | every tracked project: slug, last-used, designs count, source path |
-| `smriti project current` | slug for `$PWD` (same value the preamble exposes as `SLUG`) |
-| `smriti project forget <slug> [--yes]` | delete the project dir AND every slug-cache file pointing at it — interactive confirm unless `--yes`. In-repo `PROJECT.md` / `DESIGN.md` are git-tracked and not touched. |
-| `smriti project rename <old> <new>` | rename a project slug — moves state dir + updates all slug-cache entries pointing at the old slug |
+| `smriti repo new <name>` | scaffold a new repo directory with `git init`; print next-step guidance |
+| `smriti repo list [--json]` | every tracked app: slug, last-used, ticket and project counts, source path |
+| `smriti repo show [<slug>] [--json]` | one app: repo path, `PROJECT.md`/`DESIGN.md` presence, its projects and open tickets |
+| `smriti repo edit <slug> [--name N] [--description T]` | the app's name and description (what the app page shows) |
+| `smriti repo current` | slug for `$PWD` (same value the preamble exposes as `SLUG`) |
+| `smriti repo forget <slug> [--yes]` | delete the state dir AND every slug-cache file pointing at it — interactive confirm unless `--yes`. Tickets and projects are **kept** (work history is not app state), and in-repo `PROJECT.md` / `DESIGN.md` are git-tracked and untouched. |
+| `smriti repo rename <old> <new>` | rename an app — moves the state dir, every slug-cache entry, **and every ticket, project, document and run row** |
+
+And `smriti project` owns the bodies of work inside an app:
+
+| Command | What it does |
+|---|---|
+| `smriti project add <name> [--repo S] [--description T]` | a new project; no `--repo` means an idea with no app yet |
+| `smriti project list [--repo S] [--all] [--json]` | active projects, or all of them |
+| `smriti project show <id\|slug> [--json]` | one project: its tickets and documents |
+| `smriti project edit <id\|slug> [--name N] [--description T] [--repo S]` | rename, describe, or move it to another app (its tickets follow) |
+| `smriti project done <id\|slug>` | mark it finished |
+| `smriti project rm <id\|slug> [--yes]` | delete the grouping; its tickets stay and go loose in the app |
 
 `forget` deletes both the project dir and the slug-cache entry; without the second step the next `cd` into the repo resurrects the same slug.
 

@@ -1,5 +1,44 @@
 # Changelog
 
+## 1.3.0 — 2026-08-08
+
+Projects become real. A "project" in smriti was a string — the slug derived from your git remote — with no entity behind it. That conflated two different things: the **app** you are working on, and the **body of work** you are doing inside it. This release separates them, and makes both edges of the relationship optional.
+
+### Added
+- **Apps, projects and tickets are three levels, not one.** An app is a codebase. A project is a named body of work inside one app ("search v2", "the run trace"), and never spans two. A ticket belongs to a project, **or** to an app directly (a one-off bug), **or** to neither — an idea.
+- **`smriti ticket add` works anywhere.** It used to refuse outside a git repo, which made a stray thought impossible to capture at the moment you had it. Ideas with no app land in their own band at the bottom of the board.
+- **`smriti project`** — the new entity: `add`, `list`, `show`, `edit`, `done`, `rm`. Deleting a project keeps its tickets and leaves them loose in the app; a grouping going away is not a reason to destroy what it grouped.
+- **App pages and project pages on the board.** Clicking an app heading opens `#/r/<slug>`: description, `PROJECT.md` and `DESIGN.md` rendered from the repo, its projects, its loose tickets, its paper trail. A project opens `#/p/<id>` — the same shape without the document tabs, since `DESIGN.md` describes the codebase rather than one body of work in it. Both are real URLs, so reload, deep-link and browser-back all work.
+- **Re-filing.** `smriti ticket edit --project P` / `--no-project` / `--repo S`, and a project picker on the board. A move carries the ticket's documents and run history with it, because each row holds its own copy of where it belongs.
+- **`smriti repo show` / `edit`** — an app's name and description, and the JSON the board's page reads.
+
+### Changed
+- **`smriti project` is now `smriti repo`.** Every verb it had — `new`, `list`, `current`, `forget`, `rename` — has always operated on a repository. The old name was freed for the entity that lives inside one.
+- **`smriti repo rename` no longer orphans your work.** It moved the state directory and the slug-cache and left every ticket, document and run behind under a slug that no longer existed. It now moves all of them in one transaction and reports what it moved.
+- **`smriti repo forget` keeps tickets and projects**, and says so — work history is not app state.
+- **`ticket current` emits `TICKET_PROJECT`** alongside the id, title and status.
+
+### Fixed
+- **`smriti repo show` exited 1, silently, for any app without a `PROJECT.md`.** `repo_path_for_slug` ended on a bare `[ -n "$fallback" ] && printf ...`, so "no path known" returned 1 — and under `set -e` the caller's assignment aborted the command with no output. "No path" is an answer, not a failure.
+- **Multi-column reads dropped a leading empty field.** They joined columns with a tab and split with `IFS=$'\t' read`, but tab is IFS *whitespace*: bash collapses runs of it and strips a leading one, so a ticket with no app shifted every field left and `ticket start` read the ticket's title as its app slug. A non-printable separator does not fix it either — the sqlite3 CLI renders `char(31)` as the printable bytes `^_` on output. Reads are now one statement per field, one line per value.
+
+### Fixed (found by review, before release)
+- **`smriti repo list --json` was broken on a machine with no `factory.db`** — the empty-store branch passed its SQL as sqlite3's *database filename*, so sqlite3 opened the statement as a file, printed a parse error, read the caller's stdin as SQL, and left a file in the working directory named after the query. `repo show --json` returned nothing, which made the board's repo-doc route 404 forever.
+- **`ticket edit <id> --project ""` silently detached the ticket from its app.** An empty value read as "no project" and, through the project's own app lookup, as "no app" — the ticket vanished from its app's board section, `repo show`, and `ticket list`. Both `--project` and `--repo` now reject an empty value; `--no-project` is how you detach.
+- **The board could file a captured ticket under the server's working directory.** `POST /api/tickets` omitted `--repo` when the body had none, so `smriti-ticket` derived one from wherever `smriti` happened to be started. It now passes `-` explicitly.
+- **Live updates wiped the keyboard selection.** `refresh()` drives the router, which reset selection unconditionally — and the board broadcasts about once a second while an agent runs, so pressing `j` then `s` a moment later did nothing at all. Selection is now cleared when the *view* changes and kept when the same view re-renders.
+- **A live update destroyed an in-progress description edit.** Re-rendering replaced the textarea without firing its blur handler, so the typed text was lost unsaved. Re-renders are now deferred while an editor is focused, and the document pane keeps its scroll position.
+- **The app and project pages shared three element ids with the ticket overlay** (`#desc`, `#descedit`, `#docview`). Because `querySelector` returns the first match and the page precedes the overlay in the DOM, editing a ticket body on an app page saved the *app's* description into the ticket, and a document opened from the overlay rendered behind it. The pages now use their own ids.
+- **The app page listed done and archived projects** as though they were live, contradicting the board and the re-file picker.
+- **`smriti factory --list` merged an app named `ideas` with every app-less ticket** — `ideas` is a legal slug, so the bucket key is now `(ideas)`, which slug validation makes unrepresentable.
+- **The migration guard was racy and swallowed its own errors.** It ran in a separate process from the migration, so two worktrees hitting a cold store at once both proceeded and the loser died claiming the migration failed; and any read failure was treated as "already current", permanently recording a migration that never happened. It is now serialised with a lock and distinguishes "current" from "could not tell".
+- **`ticket list --json` no longer reuses the `project_slug` key**, which meant the *repository* in v1.2. The project's handle is `project_ref`, so a stale reader breaks loudly instead of silently reading a different entity.
+
+### Migration
+The schema version lives in the database as `PRAGMA user_version`, not in a marker file beside it — restoring a pre-upgrade backup of `factory.db`, or syncing it between machines, would otherwise leave the marker claiming a shape the data does not have.
+
+`factory.db` is migrated in place, once, the first time any command touches it: `project_slug` becomes a nullable `repo_slug` on `tickets`, `documents` and `runs`, and a nullable `project_id` joins it. SQLite can do neither in place, so this is a table rebuild — guarded so it cannot run twice, wrapped in one transaction so it lands whole or not at all, and it invents no projects (existing tickets become one-off tickets in their app, which is a legitimate state). This is the first migration smriti has needed; `lib/factory-schema.sql` still only ever CREATEs, and the reshaping lives in `_db_migrate_v2` in `lib/factory-db.sh`.
+
 ## 1.2.0 — 2026-08-08
 
 The work layer. smriti had no concept of *work*: the flow started at a free-text `/begin` prompt, with no backlog, no ticket, and no view across projects. Ideas lived in a separate tracker, disconnected from the system that does the work.

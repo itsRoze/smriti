@@ -3,11 +3,12 @@
 # State: $SMRITI_HOME/factory.db   (schema: lib/factory-schema.sql)
 #
 # Subcommands:
-#   smriti ticket add <title> [--project S] [--body T] [--priority N] [--ready]
-#   smriti ticket list [--project S] [--status S] [--all] [--json]
+#   smriti ticket add <title> [--repo S] [--project P] [--body T] [--priority N] [--ready]
+#   smriti ticket list [--repo S] [--project P] [--status S] [--all] [--json]
 #   smriti ticket show <id> [--json]
 #   smriti ticket start <id>                  cut/attach a worktree; prints its path
-#   smriti ticket edit <id> [--title T] [--body T] [--priority N]
+#   smriti ticket edit <id> [--title T] [--body T] [--priority N] [--repo S]
+#                           [--project P | --no-project]
 #   smriti ticket cancel <id>                 park it out of the way, reversibly
 #   smriti ticket rm <id> [--yes]             delete it and its document rows
 #   smriti ticket pr <id> <url>               record the PR and move to in_review
@@ -23,6 +24,10 @@
 #   3  sqlite3 or schema missing
 #   4  no such ticket
 #   5  could not create or attach the worktree
+#
+# A ticket belongs to a project, or to an app directly (a one-off bug), or to
+# neither — an idea, capturable from anywhere, including outside a git repo.
+# Both edges are optional on purpose; see lib/factory-schema.sql.
 #
 # Documents are *indexed*, never stored: `doc` records where a markdown file
 # lives so a ticket can carry its paper trail, while the file on disk under
@@ -58,11 +63,12 @@ VALID_DOC_TYPES="plan debug design audit"
 usage() {
   cat <<'USAGE' >&2
 usage:
-  smriti ticket add <title> [--project S] [--body T] [--priority N] [--ready]
-  smriti ticket list [--project S] [--status S] [--all] [--json]
+  smriti ticket add <title> [--repo S] [--project P] [--body T] [--priority N] [--ready]
+  smriti ticket list [--repo S] [--project P] [--status S] [--all] [--json]
   smriti ticket show <id> [--json]
   smriti ticket start <id>
-  smriti ticket edit <id> [--title T] [--body T] [--priority N]
+  smriti ticket edit <id> [--title T] [--body T] [--priority N] [--repo S]
+                          [--project P | --no-project]
   smriti ticket cancel <id>
   smriti ticket rm <id> [--yes]
   smriti ticket pr <id> <url>
@@ -98,34 +104,64 @@ validate_doc_type() {
   esac
 }
 
-# Resolve the project for a write. Explicit --project wins; otherwise derive
-# from the repo we're standing in. Refusing beats silently filing work under
-# the wrong project.
-resolve_project() {
-  local explicit="$1" slug
+# Resolve the app for a write. Explicit --repo wins; otherwise derive from the
+# repo we're standing in. An empty result is FINE and means "no app yet" — an
+# idea. This used to refuse outside a git repo, which made a stray thought
+# impossible to capture at the moment you had it.
+resolve_repo() {
+  local explicit="$1"
+  if [ "$explicit" = "-" ]; then printf ''; return 0; fi
   if [ -n "$explicit" ]; then
-    case "$explicit" in
-      */*|.*) die "invalid project '$explicit' (must not contain '/' or start with '.')" ;;
-    esac
+    validate_slug_shape "$explicit" "--repo"
     printf '%s' "$explicit"
     return 0
   fi
-  slug=$(current_slug)
-  [ -n "$slug" ] || die "not in a git repo — pass --project <slug>"
-  printf '%s' "$slug"
+  current_slug
+}
+
+# Resolve a project reference (id or slug) to an id, scoped to an app when one
+# is known. A slug is only unique within an app, so an ambiguous one is an
+# error rather than a guess.
+resolve_project_ref() {
+  local ref="$1" repo="${2:-}"
+  [ -n "$ref" ] || { printf ''; return 0; }
+  case "$ref" in
+    ''|*[!0-9]*) ;;
+    *) local hit; hit=$(db "SELECT id FROM projects WHERE id = $ref;")
+       [ -n "$hit" ] || die "no project #$ref" 4
+       printf '%s' "$hit"; return 0 ;;
+  esac
+  validate_slug_shape "$ref" "--project"
+  local where="WHERE slug = $(sql_quote "$ref")"
+  [ -n "$repo" ] && where="$where AND repo_slug IS $(sql_quote_or_null "$repo")"
+  local hits; hits=$(db "SELECT count(*) FROM projects $where;")
+  if [ "$hits" = "0" ]; then
+    die "no project '$ref'${repo:+ in $repo}" 4
+  elif [ "$hits" != "1" ]; then
+    die "'$ref' names $hits projects across apps — pass --repo <slug> to say which"
+  fi
+  db "SELECT id FROM projects $where;"
+}
+
+# The app a project lives in. A ticket filed into a project inherits it, so
+# `--project` alone is enough and cannot disagree with the project's own app.
+repo_of_project() {
+  [ -n "$1" ] || { printf ''; return 0; }
+  db "SELECT coalesce(repo_slug,'') FROM projects WHERE id = $1;"
 }
 
 # ─── add ────────────────────────────────────────────────────────────────────
 
 cmd_add() {
-  local title="" body="" project="" priority=0 status="idea"
+  local title="" body="" repo="" project="" priority=0 status="idea"
   [ $# -gt 0 ] || usage
   title="$1"; shift
   case "$title" in -*) usage ;; esac
 
   while [ $# -gt 0 ]; do
     case "$1" in
-      --project)  [ $# -ge 2 ] || die "--project requires a value"; project="$2"; shift 2 ;;
+      --repo)     [ $# -ge 2 ] && [ -n "$2" ] || die "--repo requires a value (use '-' for no app)";    repo="$2";    shift 2 ;;
+      --project)  [ $# -ge 2 ] && [ -n "$2" ] || die "--project requires a value (use --no-project to detach)"; project="$2"; shift 2 ;;
       --body)     [ $# -ge 2 ] || die "--body requires a value";    body="$2";    shift 2 ;;
       --priority) [ $# -ge 2 ] || die "--priority requires a value"; priority="$2"; shift 2 ;;
       --ready)    status="ready"; shift ;;
@@ -143,27 +179,36 @@ cmd_add() {
     *$'\n'*) die "title must be a single line — put detail in --body" ;;
   esac
 
-  local slug ts
-  slug=$(resolve_project "$project")
+  local slug ts project_id
+  slug=$(resolve_repo "$repo")
+  project_id=$(resolve_project_ref "$project" "$slug")
+  # A project knows its own app; filing into one settles the question.
+  if [ -n "$project_id" ]; then
+    slug=$(repo_of_project "$project_id")
+  fi
   ts=$(now_utc)
 
   # last_insert_rowid() is per-connection, so it has to ride along inside the
   # same db_write rather than being fetched by a second invocation.
   local id
-  id=$(db_write "INSERT INTO tickets (project_slug, title, body, status, priority, created_at, updated_at)
-            VALUES ($(sql_quote "$slug"), $(sql_quote "$title"), $(sql_quote_or_null "$body"),
+  id=$(db_write "INSERT INTO tickets (repo_slug, project_id, title, body, status, priority, created_at, updated_at)
+            VALUES ($(sql_quote_or_null "$slug"), ${project_id:-NULL}, $(sql_quote "$title"), $(sql_quote_or_null "$body"),
                     $(sql_quote "$status"), $priority, $(sql_quote "$ts"), $(sql_quote "$ts"));
             SELECT last_insert_rowid();")
-  echo "added: #$id  $title  ($slug, $status)"
+
+  local where="${slug:-no app yet}"
+  [ -n "$project_id" ] && where="$where / $(db "SELECT name FROM projects WHERE id = $project_id;")"
+  echo "added: #$id  $title  ($where, $status)"
 }
 
 # ─── list ───────────────────────────────────────────────────────────────────
 
 cmd_list() {
-  local project="" status="" all=0 json=0
+  local repo="" project="" status="" all=0 json=0 repo_given=0
   while [ $# -gt 0 ]; do
     case "$1" in
-      --project) [ $# -ge 2 ] || die "--project requires a value"; project="$2"; shift 2 ;;
+      --repo)    [ $# -ge 2 ] && [ -n "$2" ] || die "--repo requires a value (use '-' for no app)"; repo="$2"; repo_given=1; shift 2 ;;
+      --project) [ $# -ge 2 ] && [ -n "$2" ] || die "--project requires a value"; project="$2"; shift 2 ;;
       --status)  [ $# -ge 2 ] || die "--status requires a value";  status="$2";  shift 2 ;;
       --all)  all=1; shift ;;
       --json) json=1; shift ;;
@@ -179,10 +224,17 @@ cmd_list() {
 
   local where="WHERE 1=1"
   if [ -n "$project" ]; then
-    where="$where AND project_slug = $(sql_quote "$project")"
+    local pid; pid=$(resolve_project_ref "$project" "$([ "$repo_given" -eq 1 ] && printf '%s' "$repo" || current_slug)")
+    where="$where AND project_id = $pid"
+  elif [ "$repo_given" -eq 1 ]; then
+    if [ "$repo" = "-" ]; then
+      where="$where AND repo_slug IS NULL"
+    else
+      where="$where AND repo_slug = $(sql_quote "$repo")"
+    fi
   elif [ "$all" -eq 0 ]; then
     local slug; slug=$(current_slug)
-    [ -n "$slug" ] && where="$where AND project_slug = $(sql_quote "$slug")"
+    [ -n "$slug" ] && where="$where AND repo_slug = $(sql_quote "$slug")"
   fi
   if [ -n "$status" ]; then
     validate_status "$status"
@@ -195,7 +247,13 @@ cmd_list() {
   local order="ORDER BY priority DESC, id ASC"
 
   if [ "$json" -eq 1 ]; then
-    db_json "SELECT id, project_slug, title, body, status, priority, branch,
+    # Deliberately NOT called project_slug: that key existed in v1.2 and held
+    # the REPOSITORY. Reusing the name for a different entity would break every
+    # existing reader silently, one wrong value at a time.
+    db_json "SELECT id, repo_slug, project_id,
+                    (SELECT slug FROM projects p WHERE p.id = tickets.project_id) AS project_ref,
+                    (SELECT name FROM projects p WHERE p.id = tickets.project_id) AS project_name,
+                    title, body, status, priority, branch,
                     worktree_path, pr_url, origin, created_at, updated_at
              FROM tickets $where $order;"
     return 0
@@ -204,7 +262,7 @@ cmd_list() {
   # char(9), not '\t' — SQLite string literals have no backslash escapes, so
   # '\t' would be a literal backslash-t and the awk split below would never fire.
   local rows
-  rows=$(db "SELECT id || char(9) || status || char(9) || project_slug || char(9) || title
+  rows=$(db "SELECT id || char(9) || status || char(9) || coalesce(repo_slug,'—') || char(9) || title
              FROM tickets $where $order;")
   if [ -z "$rows" ]; then
     echo "no tickets yet — add one with: smriti ticket add \"<what you want>\""
@@ -237,7 +295,9 @@ cmd_show() {
   fi
 
   db "SELECT '#' || id || '  ' || title || char(10) ||
-             'project:  ' || project_slug || char(10) ||
+             'app:      ' || coalesce(repo_slug, '— (an idea, no app yet)') || char(10) ||
+             'project:  ' || coalesce((SELECT name FROM projects p WHERE p.id = tickets.project_id),
+                                      '— (loose in the app)') || char(10) ||
              'status:   ' || status || char(10) ||
              'priority: ' || priority || char(10) ||
              'branch:   ' || coalesce(branch, '—') || char(10) ||
@@ -258,36 +318,8 @@ cmd_show() {
 
 # ─── start ──────────────────────────────────────────────────────────────────
 
-# Branch/dir-safe form of a title: "Export to CSV!" -> "export-to-csv".
-slugify() {
-  printf '%s' "$1" \
-    | tr 'A-Z' 'a-z' \
-    | tr -cs 'a-z0-9' '-' \
-    | sed -E 's/^-+//; s/-+$//' \
-    | cut -c1-40 \
-    | sed -E 's/-+$//'
-}
-
-# Where does this project live on disk? The slug-cache already maps repo paths
-# to slugs, so it is reused in reverse rather than adding a second registry.
-# Prefer a path that still exists and is a primary worktree.
-repo_path_for_slug() {
-  local want="$1" cache_dir="${SMRITI_HOME:-$HOME/.smriti}/slug-cache" f slug path fallback=""
-  [ -d "$cache_dir" ] || return 0
-  for f in "$cache_dir"/*; do
-    [ -f "$f" ] || continue
-    slug=$(grep -E '^SLUG=' "$f" 2>/dev/null | tail -1 | cut -d= -f2-)
-    [ "$slug" = "$want" ] || continue
-    # Written by smriti-slug with plain %s — no shell quoting to undo. An
-    # earlier `eval printf` here silently ate spaces in repo paths.
-    path=$(grep -E '^SOURCE_PATH=' "$f" 2>/dev/null | tail -1 | cut -d= -f2-)
-    [ -d "$path" ] || continue
-    # A primary worktree has .git as a directory; linked ones have a .git file.
-    if [ -d "$path/.git" ]; then printf '%s' "$path"; return 0; fi
-    [ -z "$fallback" ] && fallback="$path"
-  done
-  [ -n "$fallback" ] && printf '%s' "$fallback"
-}
+# slugify() and repo_path_for_slug() live in lib/factory-db.sh: smriti-repo
+# needs both identically, and one copy is what stops the two from drifting.
 
 # The primary worktree of a repo — the one branch-lifecycle commands must run
 # against. `git worktree list --porcelain` lists it first.
@@ -323,12 +355,15 @@ cmd_start() {
     esac
   done
 
-  # One read, four columns — each `db` call is a separate sqlite3 process.
-  local slug title branch existing_wt existing_branch row
-  row=$(db "SELECT project_slug || char(9) || title || char(9) ||
-                   coalesce(worktree_path,'') || char(9) || coalesce(branch,'')
-            FROM tickets WHERE id = $id;")
-  IFS=$'\t' read -r slug title existing_wt existing_branch <<< "$row"
+  # One sqlite3 process for all four columns; see db_fields for why this is a
+  # statement per field rather than a separator-split row.
+  local slug title branch existing_wt existing_branch
+  db_fields "SELECT coalesce(repo_slug,'') FROM tickets WHERE id = $id;
+             SELECT title                  FROM tickets WHERE id = $id;
+             SELECT coalesce(worktree_path,'') FROM tickets WHERE id = $id;
+             SELECT coalesce(branch,'')    FROM tickets WHERE id = $id;"
+  slug="${DB_FIELDS[0]}"; title="${DB_FIELDS[1]}"
+  existing_wt="${DB_FIELDS[2]}"; existing_branch="${DB_FIELDS[3]}"
 
   # Already started and the worktree is still there — attach, don't re-cut.
   if [ -n "$existing_wt" ] && [ -d "$existing_wt" ]; then
@@ -336,6 +371,10 @@ cmd_start() {
     echo "smriti-ticket: #$id already in progress on '$existing_branch'" >&2
     return 0
   fi
+
+  # An idea has no code to cut a branch in. Say what to do rather than failing
+  # with a confusing "don't know where project '' lives".
+  [ -n "$slug" ] || die "#$id is an idea with no app yet — give it one first: smriti ticket edit $id --repo <slug>" 5
 
   local repo primary
   repo=$(repo_path_for_slug "$slug")
@@ -346,7 +385,7 @@ cmd_start() {
     if [ "$(current_slug)" = "$slug" ]; then
       repo=$(git rev-parse --show-toplevel 2>/dev/null || true)
     fi
-    [ -n "$repo" ] || die "don't know where project '$slug' lives — run this from inside that repo once" 5
+    [ -n "$repo" ] || die "don't know where app '$slug' lives — run this from inside that repo once" 5
   fi
   primary=$(primary_worktree "$repo")
   [ -n "$primary" ] || primary="$repo"
@@ -413,16 +452,21 @@ cmd_edit() {
   ticket_exists "$id" || die "no ticket #$id" 4
 
   local sets="" title="" body="" priority="" have=0 clear_body=0
+  local repo="" project="" repo_given=0 project_given=0 no_project=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --title)    [ $# -ge 2 ] || die "--title requires a value";    title="$2";    have=1; shift 2 ;;
       --body)     [ $# -ge 2 ] || die "--body requires a value";     body="$2";     have=1; shift 2
                   [ -z "$body" ] && clear_body=1 ;;
       --priority) [ $# -ge 2 ] || die "--priority requires a value"; priority="$2"; have=1; shift 2 ;;
+      --repo)     [ $# -ge 2 ] && [ -n "$2" ] || die "--repo requires a value (use '-' for no app)";     repo="$2";     have=1; repo_given=1; shift 2 ;;
+      --project)  [ $# -ge 2 ] && [ -n "$2" ] || die "--project requires a value (use --no-project to detach)";  project="$2";  have=1; project_given=1; shift 2 ;;
+      --no-project) no_project=1; have=1; shift ;;
       *) die "unknown flag: $1" ;;
     esac
   done
-  [ "$have" -eq 1 ] || die "nothing to change — pass --title, --body or --priority"
+  [ "$have" -eq 1 ] || die "nothing to change — pass --title, --body, --priority, --repo or --project"
+  [ "$project_given" -eq 1 ] && [ "$no_project" -eq 1 ] && die "--project and --no-project contradict each other"
 
   if [ -n "$title" ]; then
     case "$title" in
@@ -441,7 +485,52 @@ cmd_edit() {
     sets="$sets priority = $priority,"
   fi
 
-  db_write "UPDATE tickets SET $sets updated_at = $(sql_quote "$(now_utc)") WHERE id = $id;"
+  # ── re-filing ─────────────────────────────────────────────────────────────
+  # The app is the part that cannot move under a started ticket: worktree_path
+  # points into the OLD app's repo, and `start` would happily reattach that
+  # tree under the new slug. Refuse, and say which branch is in the way.
+  local move_repo=0 new_repo="" project_sql=""
+  if [ "$project_given" -eq 1 ]; then
+    local pid; pid=$(resolve_project_ref "$project" "$([ "$repo_given" -eq 1 ] && printf '%s' "$repo" || current_slug)")
+    project_sql="$pid"
+    # Filing into a project settles the app too — a ticket cannot sit in a
+    # project belonging to a different app than its own.
+    if [ "$repo_given" -eq 0 ]; then
+      new_repo=$(repo_of_project "$pid"); move_repo=1
+    fi
+  elif [ "$no_project" -eq 1 ]; then
+    project_sql="NULL"
+  fi
+  if [ "$repo_given" -eq 1 ]; then
+    if [ "$repo" = "-" ]; then new_repo=""; else new_repo=$(resolve_repo "$repo"); fi
+    move_repo=1
+  fi
+
+  if [ "$move_repo" -eq 1 ]; then
+    local cur_repo cur_wt cur_branch
+    db_fields "SELECT coalesce(repo_slug,'')     FROM tickets WHERE id = $id;
+               SELECT coalesce(worktree_path,'') FROM tickets WHERE id = $id;
+               SELECT coalesce(branch,'')        FROM tickets WHERE id = $id;"
+    cur_repo="${DB_FIELDS[0]}"; cur_wt="${DB_FIELDS[1]}"; cur_branch="${DB_FIELDS[2]}"
+    if [ "$cur_repo" != "$new_repo" ] && { [ -n "$cur_wt" ] || [ -n "$cur_branch" ]; }; then
+      die "#$id is started on '$cur_branch' in ${cur_repo:-no app} — its worktree lives there. Finish or cancel it before moving it to another app"
+    fi
+    sets="$sets repo_slug = $(sql_quote_or_null "$new_repo"),"
+  fi
+  [ -n "$project_sql" ] && sets="$sets project_id = $project_sql,"
+
+  # documents and runs carry their own copy of repo_slug/project_id, so a move
+  # that touched only the ticket would leave its paper trail and run history
+  # filed under the app it just left.
+  local follow=""
+  [ "$move_repo" -eq 1 ] && follow="$follow
+    UPDATE documents SET repo_slug = $(sql_quote_or_null "$new_repo") WHERE ticket_id = $id;
+    UPDATE runs      SET repo_slug = $(sql_quote_or_null "$new_repo") WHERE ticket_id = $id;"
+  [ -n "$project_sql" ] && follow="$follow
+    UPDATE documents SET project_id = $project_sql WHERE ticket_id = $id;
+    UPDATE runs      SET project_id = $project_sql WHERE ticket_id = $id;"
+
+  db_write "UPDATE tickets SET $sets updated_at = $(sql_quote "$(now_utc)") WHERE id = $id;$follow"
   echo "#$id updated"
 }
 
@@ -535,7 +624,7 @@ cmd_doc() {
   [ -n "$path" ] || die "--path is required"
   validate_doc_type "$type"
 
-  local ticket_sql slug
+  local ticket_sql slug project_sql="NULL"
   if [ "$id" = "-" ]; then
     ticket_sql="NULL"
   else
@@ -545,18 +634,24 @@ cmd_doc() {
   fi
 
   [ -z "$branch" ] && branch=$(current_branch)
-  slug=$(current_slug)
-  if [ -z "$slug" ] && [ "$ticket_sql" != "NULL" ]; then
-    slug=$(db "SELECT project_slug FROM tickets WHERE id = $id;")
+  # The ticket is the better authority than the cwd: a doc registered from a
+  # worktree still belongs to the app and project the ticket is filed under.
+  if [ "$ticket_sql" != "NULL" ]; then
+    db_fields "SELECT coalesce(repo_slug,'')      FROM tickets WHERE id = $id;
+               SELECT coalesce(project_id,'NULL') FROM tickets WHERE id = $id;"
+    slug="${DB_FIELDS[0]}"; project_sql="${DB_FIELDS[1]}"
   fi
-  [ -n "$slug" ] || die "not in a git repo and no ticket to infer the project from"
+  [ -n "$slug" ] || slug=$(current_slug)
+  [ -n "$slug" ] || die "not in a git repo and no ticket to infer the app from"
 
-  db_write "INSERT INTO documents (ticket_id, project_slug, type, path, branch, created_at)
-            VALUES ($ticket_sql, $(sql_quote "$slug"), $(sql_quote "$type"),
+  db_write "INSERT INTO documents (ticket_id, repo_slug, project_id, type, path, branch, created_at)
+            VALUES ($ticket_sql, $(sql_quote "$slug"), ${project_sql:-NULL}, $(sql_quote "$type"),
                     $(sql_quote "$path"), $(sql_quote_or_null "$branch"), $(sql_quote "$(now_utc)"))
             ON CONFLICT(path) DO UPDATE SET
-              ticket_id = excluded.ticket_id,
-              branch    = excluded.branch;"
+              ticket_id  = excluded.ticket_id,
+              repo_slug  = excluded.repo_slug,
+              project_id = excluded.project_id,
+              branch     = excluded.branch;"
   echo "registered: $type → $path${ticket_sql:+ (#$id)}"
 }
 
@@ -575,7 +670,7 @@ cmd_docs() {
     echo "no documents yet"; return 0
   fi
   if [ "$json" -eq 1 ]; then
-    db_json "SELECT id, ticket_id, project_slug, type, path, branch, created_at
+    db_json "SELECT id, ticket_id, repo_slug, project_id, type, path, branch, created_at
              FROM documents ORDER BY id;"
   else
     db "SELECT type || char(9) || coalesce('#' || ticket_id,'—') || char(9) || path
@@ -599,7 +694,7 @@ cmd_doc_forget() {
 
   local slug; slug=$(current_slug)
   local where="WHERE branch = $(sql_quote "$branch")"
-  [ -n "$slug" ] && where="$where AND project_slug = $(sql_quote "$slug")"
+  [ -n "$slug" ] && where="$where AND repo_slug = $(sql_quote "$slug")"
 
   local n; n=$(db "SELECT count(*) FROM documents $where;")
   db_write "DELETE FROM documents $where;"
@@ -620,7 +715,9 @@ cmd_current() {
       --branch)  [ $# -ge 2 ] || die "--branch requires a value";  want_branch="$2";  shift 2 ;;
       # The preamble already has SLUG and BRANCH; passing them avoids
       # re-spawning smriti-slug and git on every skill invocation.
-      --project) [ $# -ge 2 ] || die "--project requires a value"; want_project="$2"; shift 2 ;;
+      # --project is the old spelling of --repo: this flag has always taken a
+      # repository slug. Accepted so an older installed skill keeps working.
+      --repo|--project) [ $# -ge 2 ] || die "$1 requires a value"; want_project="$2"; shift 2 ;;
       *) die "unknown flag: $1" ;;
     esac
   done
@@ -646,24 +743,30 @@ cmd_current() {
     return 0
   fi
 
-  local where="WHERE project_slug = $(sql_quote "$slug") AND branch = $(sql_quote "$branch")"
+  local where="WHERE repo_slug = $(sql_quote "$slug") AND branch = $(sql_quote "$branch")"
 
   if [ "$json" -eq 1 ]; then
     db_json "SELECT * FROM tickets $where LIMIT 1;"
     return 0
   fi
 
-  # One query for all three fields.
-  local row id title status
-  row=$(db "SELECT id || char(9) || title || char(9) || status FROM tickets $where LIMIT 1;")
-  if [ -z "$row" ]; then
+  # One sqlite3 process for all four fields.
+  local id title status project
+  db_fields "SELECT id     FROM tickets $where LIMIT 1;
+             SELECT title  FROM tickets $where LIMIT 1;
+             SELECT status FROM tickets $where LIMIT 1;
+             SELECT coalesce((SELECT name FROM projects p WHERE p.id = tickets.project_id),'')
+               FROM tickets $where LIMIT 1;"
+  if [ "${#DB_FIELDS[@]}" -lt 3 ] || [ -z "${DB_FIELDS[0]}" ]; then
     printf 'TICKET=\n'
     return 0
   fi
-  IFS=$'\t' read -r id title status <<< "$row"
+  id="${DB_FIELDS[0]}"; title="${DB_FIELDS[1]}"
+  status="${DB_FIELDS[2]}"; project="${DB_FIELDS[3]}"
   printf 'TICKET=%s\n' "$id"
   printf 'TICKET_TITLE=%q\n' "$title"
   printf 'TICKET_STATUS=%s\n' "$status"
+  printf 'TICKET_PROJECT=%q\n' "$project"
 }
 
 # ─── dispatch ───────────────────────────────────────────────────────────────
