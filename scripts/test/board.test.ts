@@ -122,6 +122,91 @@ test('doc reads are confined to $SMRITI_HOME/projects', async () => {
   expect(bad.status).toBe(403);
 });
 
+// ── /api/render ────────────────────────────────────────────────────────────
+// The seam that lets descriptions render at all: lib/md.ts is a Bun module and
+// the browser client is one template string with no build step, so the
+// renderer is reachable only over the wire.
+
+const render = (body: unknown, headers: Record<string, string> = {}) =>
+  fetch(`${base()}/api/render`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', cookie: jar, ...headers },
+    body: typeof body === 'string' ? body : JSON.stringify(body),
+  });
+
+test('render turns markdown into real markup', async () => {
+  const r = await render({ md: '# title\n\n- one\n- two\n\n| a | b |\n|---|---|\n| 1 | 2 |' });
+  expect(r.status).toBe(200);
+  const { html } = (await r.json()) as { html: string };
+  expect(html).toContain('<h1>title</h1>');
+  expect(html).toContain('<li>one</li>');
+  expect(html).toContain('<div class="tablewrap">');
+  expect(html).toContain('<th>a</th>');
+});
+
+test('render is refused without the cookie', async () => {
+  const r = await fetch(`${base()}/api/render`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ md: '# nope' }),
+  });
+  expect(r.status).toBe(403);
+});
+
+test('render refuses an oversized body before parsing it', async () => {
+  // fetch sets content-length itself, so this exercises the EARLY check — the
+  // one that refuses on the declared length, before req.json() has parsed
+  // anything. A cap paid for after parsing is a cap that has already cost you.
+  const r = await render({ md: 'x'.repeat(250_000) });
+  expect(r.status).toBe(413);
+});
+
+test('render refuses an oversized body that declared no length at all', async () => {
+  // A streamed body is sent chunked, with no content-length for the early
+  // check to read. That is exactly the hole the second, post-parse check
+  // exists to close, and the only way to reach it.
+  const payload = new TextEncoder().encode(JSON.stringify({ md: 'x'.repeat(250_000) }));
+  const stream = new ReadableStream({
+    start(c) { c.enqueue(payload); c.close(); },
+  });
+  const r = await fetch(`${base()}/api/render`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', cookie: jar },
+    body: stream,
+    duplex: 'half',
+  } as RequestInit & { duplex: string });
+  expect(r.status).toBe(413);
+});
+
+test('a hostile description renders inert', async () => {
+  // Descriptions are the first USER-EDITED content to go through innerHTML, so
+  // the renderer's escape-first guarantee is pinned here rather than asserted
+  // in a comment. Two separate claims: the markup never becomes elements, and
+  // no live href survives the scheme allowlist.
+  const md = [
+    '<script>window.pwned = 1</script>',
+    '',
+    '<img src=x onerror="window.pwned=1">',
+    '',
+    '[click me](javascript:window.pwned=1)',
+    '',
+    '[fine](https://example.com)',
+  ].join('\n');
+  const { html } = (await (await render({ md })).json()) as { html: string };
+
+  // No element is ever created — the angle brackets arrive escaped, so the
+  // markup lands as text. (`onerror=` DOES appear, inside &lt;img …&gt;, and
+  // that is fine: it is characters in a paragraph, not an attribute.)
+  expect(html).not.toContain('<script');
+  expect(html).not.toContain('<img');
+  expect(html).toContain('&lt;script&gt;');
+  expect(html).toContain('&lt;img src=x onerror=');
+  // And no live href survives the scheme allowlist, while a real one does.
+  expect(html).not.toContain('javascript:');
+  expect(html).toContain('click me');
+  expect(html).toContain('<a href="https://example.com"');
+});
+
 test('tickets can be added through the board', async () => {
   const r = await fetch(`${base()}/api/tickets`, {
     method: 'POST',

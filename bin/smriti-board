@@ -47,6 +47,10 @@ const PROJECT = join(SMRITI_BIN, 'smriti-project');
 const SMRITI_HOME = process.env.SMRITI_HOME || join(homedir(), '.smriti');
 const STATE_DIR = join(SMRITI_HOME, '.server', 'factory');
 const IDLE_MS = Number(process.env.SMRITI_BOARD_IDLE_MS || 45 * 60 * 1000);
+// Ceiling for /api/render. Descriptions are prose typed by one person; two
+// orders of magnitude of headroom over the longest ticket in this backlog is
+// plenty, and well under the 2 MB the document routes allow for whole files.
+const MAX_RENDER_BYTES = 200_000;
 
 function err(msg: string): never {
   process.stderr.write(`smriti-board: ${msg}\n`);
@@ -440,6 +444,28 @@ async function cmdServer(): Promise<never> {
         if (!real.startsWith(projectsRoot + sep)) return json({ error: 'forbidden path' }, 403);
         if (statSync(real).size > 2_000_000) return json({ error: 'too large' }, 413);
         return json({ html: renderMarkdown(readFileSync(real, 'utf8')) });
+      }
+
+      // Markdown for the three DESCRIPTION surfaces — a ticket body, an app
+      // description, a project description.
+      //
+      // A function over the wire rather than a resource, and deliberately so:
+      // the client already holds all three sources (they ride along in
+      // /api/state), it just cannot reach the renderer, because the whole
+      // browser client is one template string with no build step. Per-entity
+      // GET routes would shell out three times to fetch what the caller
+      // already had. /api/doc/:id has to be per-entity for a different reason
+      // — the server owns file access there, and nothing here touches a file.
+      if (url.pathname === '/api/render' && req.method === 'POST') {
+        touch();
+        // The cap bites twice. A length checked only after req.json() has
+        // already parsed the body is a cap that has been paid for.
+        const declared = Number(req.headers.get('content-length') || 0);
+        if (declared > MAX_RENDER_BYTES) return json({ error: 'too large' }, 413);
+        const b = (await req.json().catch(() => ({}))) as { md?: string };
+        const md = typeof b.md === 'string' ? b.md : '';
+        if (md.length > MAX_RENDER_BYTES) return json({ error: 'too large' }, 413);
+        return json({ html: renderMarkdown(md) });
       }
 
       // ── repo-level markdown ────────────────────────────────────────────
