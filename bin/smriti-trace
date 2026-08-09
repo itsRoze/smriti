@@ -6,9 +6,10 @@
 #   smriti trace start <skill> [--ticket N]   begin a run; prints RUN_UID=…
 #   smriti trace emit <phase> <status> [--run UID] [--note TEXT]
 #   smriti trace end [--run UID] [--status done|failed]
-#   smriti trace list [--active] [--json]
+#   smriti trace list [--active] [--ticket N] [--limit N] [--json]
 #   smriti trace show <run-uid> [--json]
 #   smriti trace tail [--run UID] [--after ID] [--json]
+#   smriti trace stats [--days N] [--skill S] [--repo SLUG] [--json]
 #
 # Exit codes:
 #   0  ok
@@ -19,6 +20,12 @@
 # `events.id` is the cursor. Readers poll `WHERE id > <last>`, and that one
 # query serves both a live tail and full history — there is no second replay
 # path to keep in sync.
+#
+# Durations are computed HERE, in SQL, and every consumer (the board,
+# smriti-factory) reads them as JSON. That is the same rule the rest of the
+# factory follows — the board holds no SQL, and smriti-factory deliberately
+# holds none either — because duration arithmetic is knowledge about the
+# schema, and the schema must not exist in two languages. See `segments_cte`.
 #
 # Every write here is best-effort by contract: skills call this for
 # observability, so a trace failure must never be able to fail the work being
@@ -55,14 +62,142 @@ usage:
   smriti trace start <skill> [--ticket N]
   smriti trace emit <phase> <start|ok|fail|awaiting> [--run UID] [--note TEXT]
   smriti trace end [--run UID] [--status done|failed]
-  smriti trace list [--active] [--json]
+  smriti trace list [--active] [--ticket N] [--limit N] [--json]
   smriti trace show <run-uid> [--json]
   smriti trace tail [--run UID] [--after ID] [--json]
+  smriti trace stats [--days N] [--skill S] [--repo SLUG] [--json]
 USAGE
   exit 2
 }
 
 # die, require_num, current_slug and current_branch come from factory-db.sh.
+
+# require_num only proves a string is digits, which is not enough for values
+# that reach `[ -gt ]` or a SQL LIMIT: a 20-digit number is not an integer to
+# either. Bash's comparison fails with "integer expression expected" and — as
+# the left arm of an && list — does NOT trip set -e, so the window filter was
+# silently dropped and stats answered over all time under a bogus label.
+require_count() {
+  require_num "$1" "$2"
+  [ "${#1}" -le 9 ] || die "$2 is out of range: $1"
+}
+
+# ─── segments: where the time went ──────────────────────────────────────────
+#
+# Skills emit COMPLETION MARKS — `emit plan ok` runs *after* the plan is
+# written — so the trace is a list of instants and every duration is a gap
+# between two of them. A run decomposes into segments: segment i spans
+# event[i-1].at -> event[i].at, the first spans runs.started_at -> event[0].at,
+# and a TERMINAL segment spans the last event to ended_at (or to now, while the
+# run is still open). Together they tile the run exactly, with no gap and no
+# overlap, which is what lets the agent/you split account for the whole thing.
+#
+# Each segment is labelled twice:
+#
+#   kind   'you' when the event that OPENED it was `awaiting`, else 'agent'.
+#          Time inside a gate is a human deciding; everything else is work.
+#
+#   phase  opened by `awaiting`  -> the OPENING event's phase.
+#          otherwise             -> the CLOSING event's phase.
+#          terminal segment      -> the last seen phase (`end` writes only
+#                                   runs.ended_at and emits no event, so a run
+#                                   is still in its last phase until it stops).
+#
+# The awaiting rule is the one that earns its keep. /begin brackets Gate 2 as
+# `approve awaiting` then `approve ok`, but a skill may equally follow the gate
+# with `implement start` — and attributing that wait to the CLOSING event would
+# file six minutes of a human thinking under `implement`, blaming the agent for
+# a gate. Human time belongs to the gate that caused it.
+#
+# `start` is a first-class status whose gap can be arbitrarily long. That is
+# harmless here: the segment closed by `plan start` and the one closed by
+# `plan ok` both land on `plan`, so the pair sums correctly either way.
+#
+# duration_s is DEFINED as agent_s + you_s — the sum of segments, each clamped
+# at zero. With a sane clock that equals ended_at - started_at exactly; with a
+# clock that jumped backwards it stays non-negative and still adds up. Wall
+# clock and clamped segments cannot both be the definition, and the property a
+# reader leans on is that the parts account for the whole.
+#
+# Window functions need sqlite >= 3.25 (2018), already implied by the
+# `sqlite3 -json` that factory-db.sh depends on (3.33).
+#
+# Takes an OPTIONAL already-quoted run_uid. Pass it whenever the caller wants
+# one run: the window function blocks predicate pushdown, so without a scope
+# every read re-derives the segments of the entire history — `show` on a single
+# run was scanning every event in the database, three times over.
+segments_cte() {
+  local scope_e="" scope_r="" scope_m=""
+  if [ -n "$1" ]; then
+    scope_e="WHERE e.run_uid = $1"
+    scope_r="WHERE r.run_uid = $1"
+    scope_m="WHERE run_uid = $1"
+  fi
+  cat <<SQL
+WITH last_ev AS (
+  SELECT e.run_uid, e.id, e.at, e.status, e.phase
+  FROM events e
+  JOIN (SELECT run_uid, MAX(id) AS mid FROM events $scope_m GROUP BY run_uid) m
+    ON m.run_uid = e.run_uid AND m.mid = e.id
+),
+raw_seg AS (
+  SELECT e.run_uid                                AS run_uid,
+         e.id                                     AS close_id,
+         e.id                                     AS ord,
+         COALESCE(LAG(e.at) OVER w, r.started_at) AS open_at,
+         LAG(e.status) OVER w                     AS open_status,
+         LAG(e.phase)  OVER w                     AS open_phase,
+         -- An event recorded AFTER the run was ended (every trace verb is
+         -- best-effort and \`end\` is its own step, so a late emit happens) would
+         -- otherwise push a segment past ended_at and make the parts sum to
+         -- more than the whole. Clamped, the segments still tile the run.
+         MIN(e.at, COALESCE(r.ended_at, e.at))    AS close_at,
+         e.phase                                  AS close_phase
+  FROM events e JOIN runs r ON r.run_uid = e.run_uid
+  $scope_e
+  WINDOW w AS (PARTITION BY e.run_uid ORDER BY e.id)
+  UNION ALL
+  -- The terminal segment. Every run has one, so a run with no events at all
+  -- still reports its full duration rather than vanishing from the totals.
+  SELECT r.run_uid, NULL, COALESCE(l.id, 0) + 1,
+         COALESCE(l.at, r.started_at), l.status, l.phase,
+         COALESCE(r.ended_at, strftime('%Y-%m-%dT%H:%M:%SZ','now')), l.phase
+  FROM runs r LEFT JOIN last_ev l ON l.run_uid = r.run_uid
+  $scope_r
+),
+segs AS (
+  SELECT run_uid, close_id, ord,
+         CASE WHEN open_status = 'awaiting' THEN 'you' ELSE 'agent' END AS kind,
+         CASE WHEN open_status = 'awaiting' THEN open_phase ELSE close_phase END AS phase,
+         MAX(0, CAST(strftime('%s', close_at) AS INTEGER)
+              - CAST(strftime('%s', open_at)  AS INTEGER)) AS secs
+  FROM raw_seg
+),
+run_tot AS (
+  SELECT run_uid,
+         SUM(CASE WHEN kind = 'agent' THEN secs ELSE 0 END) AS agent_s,
+         SUM(CASE WHEN kind = 'you'   THEN secs ELSE 0 END) AS you_s,
+         SUM(secs)                                          AS duration_s
+  FROM segs GROUP BY run_uid
+)
+SQL
+}
+
+# Median without sqlite's median() — that builtin is too recent to lean on.
+# The portable form: rank rows within their group, then average the middle one
+# (odd n) or middle two (even n). AVG skips the NULLs the CASE produces, so it
+# averages exactly the rows the IN test selects.
+#
+# Everything is ranked ONCE, by duration, and the agent/you figures are taken
+# from those same middle rows. Ranking each column separately would give three
+# medians of three different runs, and median(total) is not
+# median(agent) + median(you) — so the table would print three numbers that do
+# not reconcile, against the invariant this file states above. Sharing one
+# ranking keeps `agent + you = total` true of the reported figures too.
+MEDIAN_PICK='rn IN ((n+1)/2,(n+2)/2)'
+median_expr() {
+  printf 'CAST(ROUND(AVG(CASE WHEN %s THEN %s END)) AS INTEGER)' "$MEDIAN_PICK" "$1"
+}
 
 # The run a bare `emit`/`end` applies to: the newest still-running run on this
 # branch. Skills are a sequential flow, so "the run I am inside" is
@@ -190,14 +325,18 @@ cmd_end() {
 # ─── list / show / tail ─────────────────────────────────────────────────────
 
 cmd_list() {
-  local active=0 json=0
+  local active=0 json=0 limit=100 ticket=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --active) active=1; shift ;;
       --json)   json=1;   shift ;;
+      --limit)  [ $# -ge 2 ] || die "--limit requires a value";  limit="$2";  shift 2 ;;
+      --ticket) [ $# -ge 2 ] || die "--ticket requires a value"; ticket="$2"; shift 2 ;;
       *) die "unknown flag: $1" ;;
     esac
   done
+  require_count "$limit" "--limit"
+  [ -n "$ticket" ] && require_count "$ticket" "--ticket"
 
   if ! factory_db_exists; then
     [ "$json" -eq 1 ] && { echo '[]'; return 0; }
@@ -205,22 +344,52 @@ cmd_list() {
   fi
 
   local where="WHERE 1=1"
-  [ "$active" -eq 1 ] && where="$where AND status IN ('running','awaiting')"
+  [ "$active" -eq 1 ] && where="$where AND r.status IN ('running','awaiting')"
+  [ -n "$ticket" ] && where="$where AND r.ticket_id = $ticket"
 
   if [ "$json" -eq 1 ]; then
-    db_json "SELECT run_uid, ticket_id, repo_slug, project_id, skill, branch, status, started_at, ended_at,
-                    (SELECT phase FROM events e WHERE e.run_uid = runs.run_uid
-                     ORDER BY e.id DESC LIMIT 1) AS last_phase
-             FROM runs $where ORDER BY id DESC LIMIT 100;"
+    db_json "$(segments_cte)
+             SELECT r.run_uid, r.ticket_id, r.repo_slug, r.project_id, r.skill, r.branch, r.status,
+                    r.started_at, r.ended_at,
+                    (SELECT phase FROM events e WHERE e.run_uid = r.run_uid
+                     ORDER BY e.id DESC LIMIT 1) AS last_phase,
+                    (SELECT at FROM events e WHERE e.run_uid = r.run_uid
+                     ORDER BY e.id DESC LIMIT 1) AS last_event_at,
+                    COALESCE(t.duration_s, 0) AS duration_s,
+                    COALESCE(t.agent_s, 0)    AS agent_s,
+                    COALESCE(t.you_s, 0)      AS you_s
+             FROM runs r LEFT JOIN run_tot t ON t.run_uid = r.run_uid
+             $where ORDER BY r.id DESC LIMIT $limit;"
     return 0
   fi
 
   local rows
-  rows=$(db "SELECT run_uid || char(9) || status || char(9) || skill || char(9) ||
-                    coalesce(repo_slug,'—') || char(9) || coalesce(branch,'—')
-             FROM runs $where ORDER BY id DESC LIMIT 100;")
+  rows=$(db "$(segments_cte)
+             SELECT r.run_uid || char(9) || r.status || char(9) || r.skill || char(9) ||
+                    coalesce(r.repo_slug,'—') || char(9) || coalesce(r.branch,'—') || char(9) ||
+                    COALESCE(t.duration_s, 0) || char(9) || COALESCE(t.you_s, 0)
+             FROM runs r LEFT JOIN run_tot t ON t.run_uid = r.run_uid
+             $where ORDER BY r.id DESC LIMIT $limit;")
   if [ -z "$rows" ]; then echo "no runs recorded yet"; return 0; fi
-  printf '%s\n' "$rows" | awk -F'\t' '{ printf "%-10s %-10s %-8s %-20s %s\n", $1, $2, $3, $4, $5 }'
+  printf '%s\n' "$rows" | awk -F'\t' "$(fmt_dur_awk)"'
+    { d = fmt_dur($6); if ($7 > 0) d = d " (you " fmt_dur($7) ")";
+      printf "%-10s %-10s %-8s %-20s %-24s %s\n", $1, $2, $3, $4, $5, d }'
+}
+
+# One duration formatter, shared by every plain-text read here. Seconds under a
+# minute, m/s while the number is small enough for the seconds to matter, then
+# whole minutes, then h/m.
+fmt_dur_awk() {
+  cat <<'AWK'
+function fmt_dur(s,   m, h) {
+  s = int(s + 0)
+  if (s < 60)   return s "s"
+  if (s < 600)  { m = int(s / 60); s = s % 60; return s ? m "m " s "s" : m "m" }
+  if (s < 3600) return int(s / 60) "m"
+  h = int(s / 3600); m = int((s % 3600) / 60)
+  return m ? h "h " m "m" : h "h"
+}
+AWK
 }
 
 cmd_show() {
@@ -235,12 +404,43 @@ cmd_show() {
   [ -n "$uid" ] || usage
   run_exists "$uid" || die "no run '$uid'" 4
 
+  # The phase rollup: one row per phase name, in first-appearance order, with
+  # the segments that phase owns summed. A phase that appears, drops away and
+  # comes back merges into a single row rather than two — it is one phase of
+  # the work, however many times the skill reported it.
+  local q_uid; q_uid=$(sql_quote "$uid")
+  # Scoped to this run: without it every one of the queries below re-derives the
+  # segments of the whole database.
+  local cte; cte=$(segments_cte "$q_uid")
+  local phases_body="
+      FROM segs WHERE run_uid = $q_uid AND phase IS NOT NULL
+      GROUP BY phase ORDER BY MIN(ord)"
+  local phases_sql="$cte
+      SELECT phase,
+             SUM(CASE WHEN kind = 'agent' THEN secs ELSE 0 END) AS agent_s,
+             SUM(CASE WHEN kind = 'you'   THEN secs ELSE 0 END) AS you_s,
+             SUM(secs) AS total_s
+      $phases_body"
+
   if [ "$json" -eq 1 ]; then
-    local r e
-    r=$(db_json_one "SELECT * FROM runs WHERE run_uid = $(sql_quote "$uid");")
-    e=$(db_json "SELECT id, phase, status, note, at FROM events
-                 WHERE run_uid = $(sql_quote "$uid") ORDER BY id;")
-    printf '{"run":%s,"events":%s}\n' "$r" "$e"
+    local r e p t
+    r=$(db_json_one "SELECT * FROM runs WHERE run_uid = $q_uid;")
+    # Each event carries the segment it CLOSED: how long that step took, and
+    # whether those seconds were the agent's or yours.
+    e=$(db_json "$cte
+                 SELECT e.id, e.phase, e.status, e.note, e.at,
+                        COALESCE(s.secs, 0) AS elapsed_s,
+                        COALESCE(s.kind, 'agent') AS kind
+                 FROM events e LEFT JOIN segs s ON s.close_id = e.id
+                 WHERE e.run_uid = $q_uid ORDER BY e.id;")
+    p=$(db_json "$phases_sql;")
+    t=$(db_json_one "$cte
+                     SELECT COALESCE(duration_s,0) AS duration_s,
+                            COALESCE(agent_s,0)    AS agent_s,
+                            COALESCE(you_s,0)      AS you_s
+                     FROM run_tot WHERE run_uid = $q_uid;")
+    [ -n "$t" ] && [ "$t" != "null" ] || t='{"duration_s":0,"agent_s":0,"you_s":0}'
+    printf '{"run":%s,"totals":%s,"phases":%s,"events":%s}\n' "$r" "$t" "$p" "$e"
     return 0
   fi
 
@@ -249,10 +449,147 @@ cmd_show() {
              'branch:  ' || coalesce(branch,'—') || char(10) ||
              'ticket:  ' || coalesce('#' || ticket_id, '—') || char(10) ||
              'started: ' || started_at
-      FROM runs WHERE run_uid = $(sql_quote "$uid");"
+      FROM runs WHERE run_uid = $q_uid;"
+  db "$cte
+      SELECT duration_s || char(9) || agent_s || char(9) || you_s
+      FROM run_tot WHERE run_uid = $q_uid;" \
+    | awk -F'\t' "$(fmt_dur_awk)"'
+      { printf "took:    %s  (agent %s · you %s)\n", fmt_dur($1), fmt_dur($2), fmt_dur($3) }'
   echo
   db "SELECT '  ' || at || '  ' || phase || '  ' || status || coalesce('  — ' || note, '')
-      FROM events WHERE run_uid = $(sql_quote "$uid") ORDER BY id;"
+      FROM events WHERE run_uid = $q_uid ORDER BY id;"
+
+  # char(9), never the default '|': a phase name is free text, and one
+  # containing a pipe would split into the wrong columns — reporting not just a
+  # truncated label but the wrong seconds against it.
+  local breakdown
+  breakdown=$(db "$cte
+      SELECT phase || char(9) ||
+             SUM(CASE WHEN kind = 'you' THEN secs ELSE 0 END) || char(9) ||
+             SUM(secs)
+      $phases_body;")
+  if [ -n "$breakdown" ]; then
+    echo
+    echo "where the time went"
+    printf '%s\n' "$breakdown" | awk -F'\t' "$(fmt_dur_awk)"'
+      { d = fmt_dur($3); if ($2 > 0) d = d "  (you " fmt_dur($2) ")";
+        printf "  %-14s %s\n", $1, d }'
+  fi
+}
+
+# ─── stats ──────────────────────────────────────────────────────────────────
+#
+# "Am I actually accelerating?" — median duration per skill and per phase, so a
+# regression in how long /begin takes is visible rather than merely felt.
+#
+# Medians, not means: one run that sat at a gate over lunch would drag a mean
+# somewhere useless, and the interesting number is the typical run.
+#
+# Only COMPLETED runs count. An in-flight run's duration is however far it has
+# got so far, so including it would pull every median down and make the number
+# a lie that gets worse the more work is open.
+#
+# One sample is one RUN's rolled-up total for a phase, not one segment. A phase
+# emitted three times in a run contributes a single number — otherwise a chatty
+# phase would dominate its own median with its own repetitions.
+cmd_stats() {
+  local json=0 days=30 skill="" repo=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json)    json=1; shift ;;
+      --days)    [ $# -ge 2 ] || die "--days requires a value";    days="$2";    shift 2 ;;
+      --skill)   [ $# -ge 2 ] || die "--skill requires a value";   skill="$2";   shift 2 ;;
+      --repo)    [ $# -ge 2 ] || die "--repo requires a value";    repo="$2";    shift 2 ;;
+      *) die "unknown flag: $1" ;;
+    esac
+  done
+  require_count "$days" "--days"
+
+  if ! factory_db_exists; then
+    [ "$json" -eq 1 ] && { printf '{"runs":0,"window_days":%s,"by_skill":[],"by_phase":[]}\n' "$days"; return 0; }
+    echo "no completed runs yet"; return 0
+  fi
+
+  # Completed only, plus the window and any filters. --days 0 means all time.
+  local scope="r.status IN ('done','failed')"
+  [ "$days" -gt 0 ] && scope="$scope AND CAST(strftime('%s', r.started_at) AS INTEGER)
+                                        >= CAST(strftime('%s','now','-$days days') AS INTEGER)"
+  [ -n "$skill" ]   && scope="$scope AND r.skill = $(sql_quote "$skill")"
+  [ -n "$repo" ]    && scope="$scope AND r.repo_slug = $(sql_quote "$repo")"
+
+  # The CTE chain and the final SELECT are kept apart so the plain-text read can
+  # append its own tab-joining SELECT to the same chain. `median_you_s` is the
+  # remainder rather than its own average, so the three printed figures add up
+  # exactly even after rounding.
+  local by_skill_cte="$(segments_cte)
+    , scoped AS (SELECT r.run_uid, r.skill, t.duration_s, t.agent_s, t.you_s
+                 FROM runs r JOIN run_tot t ON t.run_uid = r.run_uid WHERE $scope),
+      ranked AS (SELECT skill, duration_s, agent_s, you_s,
+                        ROW_NUMBER() OVER (PARTITION BY skill ORDER BY duration_s, run_uid) rn,
+                        COUNT(*)     OVER (PARTITION BY skill)                              n
+                 FROM scoped),
+      final AS (
+        SELECT skill AS grp, MAX(n) AS samples,
+               $(median_expr duration_s) AS median_s,
+               $(median_expr agent_s)    AS median_agent_s,
+               MAX(0, $(median_expr duration_s) - $(median_expr agent_s)) AS median_you_s
+        FROM ranked GROUP BY skill)"
+
+  local by_phase_cte="$(segments_cte)
+    , per_run AS (SELECT s.run_uid, s.phase,
+                         SUM(s.secs) AS total_s,
+                         SUM(CASE WHEN s.kind = 'agent' THEN s.secs ELSE 0 END) AS agent_s,
+                         SUM(CASE WHEN s.kind = 'you'   THEN s.secs ELSE 0 END) AS you_s
+                  FROM segs s JOIN runs r ON r.run_uid = s.run_uid
+                  WHERE s.phase IS NOT NULL AND $scope
+                  GROUP BY s.run_uid, s.phase),
+      ranked AS (SELECT phase, total_s, agent_s, you_s,
+                        ROW_NUMBER() OVER (PARTITION BY phase ORDER BY total_s, run_uid) rn,
+                        COUNT(*)     OVER (PARTITION BY phase)                           n
+                 FROM per_run),
+      final AS (
+        SELECT phase AS grp, MAX(n) AS samples,
+               $(median_expr total_s) AS median_s,
+               $(median_expr agent_s) AS median_agent_s,
+               MAX(0, $(median_expr total_s) - $(median_expr agent_s)) AS median_you_s
+        FROM ranked GROUP BY phase)"
+
+  # `grp` is renamed back for the JSON contract; the two differ because a run is
+  # counted once per skill but a phase is sampled once per run.
+  local as_skill_json='SELECT grp AS skill, samples AS runs, median_s, median_agent_s, median_you_s
+                       FROM final ORDER BY median_s DESC'
+  local as_phase_json='SELECT grp AS phase, samples, median_s, median_agent_s, median_you_s
+                       FROM final ORDER BY median_s DESC'
+  # Tab-separated, never sqlite's default '|': skill and phase are free text and
+  # a pipe in either would shift every number one column left.
+  local as_text='SELECT grp || char(9) || samples || char(9) || median_s || char(9) ||
+                        median_agent_s || char(9) || median_you_s
+                 FROM final ORDER BY median_s DESC'
+
+  local total
+  total=$(db "$(segments_cte)
+              SELECT COUNT(*) FROM runs r JOIN run_tot t ON t.run_uid = r.run_uid WHERE $scope;")
+
+  if [ "$json" -eq 1 ]; then
+    printf '{"runs":%s,"window_days":%s,"by_skill":%s,"by_phase":%s}\n' \
+      "${total:-0}" "$days" \
+      "$(db_json "$by_skill_cte $as_skill_json;")" \
+      "$(db_json "$by_phase_cte $as_phase_json;")"
+    return 0
+  fi
+
+  if [ "${total:-0}" -eq 0 ]; then echo "no completed runs yet"; return 0; fi
+
+  local window="all time"
+  [ "$days" -gt 0 ] && window="last $days days"
+  echo "$total completed run$([ "$total" = 1 ] || echo s) · $window"
+  echo
+  local fmt='{ printf "  %-16s %-8s %-10s %s\n", $1 " (" $2 ")", fmt_dur($3), fmt_dur($4), fmt_dur($5) }'
+  echo "by skill            median   agent      you"
+  db "$by_skill_cte $as_text;" | awk -F'\t' "$(fmt_dur_awk)$fmt"
+  echo
+  echo "by phase            median   agent      you"
+  db "$by_phase_cte $as_text;" | awk -F'\t' "$(fmt_dur_awk)$fmt"
 }
 
 # The cursor query. --after makes it a live tail; without it, full history.
@@ -290,6 +627,7 @@ case "$CMD" in
   list)         cmd_list "$@" ;;
   show)         cmd_show "$@" ;;
   tail)         cmd_tail "$@" ;;
+  stats)        cmd_stats "$@" ;;
   ""|-h|--help) usage ;;
   *) echo "$SMRITI_TOOL: unknown command '$CMD'" >&2; usage ;;
 esac

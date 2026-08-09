@@ -20,6 +20,7 @@
 import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { realpathSync } from 'node:fs';
+import { fmtDur, sinceSecs } from '../lib/duration.ts';
 
 const TOOL_VERSION = '0.1.0';
 
@@ -75,7 +76,20 @@ type Run = {
   branch: string | null;
   status: string;
   last_phase: string | null;
+  // Computed by smriti-trace, never here — durations are schema knowledge and
+  // this file deliberately holds no SQL.
+  duration_s?: number;
+  you_s?: number;
+  last_event_at?: string | null;
 };
+
+// How long this gate has been sitting on you. The trace records the instant it
+// was reached; the elapsed part has to be measured now.
+function waitingFor(r: Run): string {
+  if (!r.last_event_at) return '';
+  const held = sinceSecs(r.last_event_at);
+  return held ? `, ${fmtDur(held)}` : '';
+}
 
 // The bucket an app-less ticket groups under. Parentheses are rejected by
 // smriti-repo's validate_slug_shape, so no real app can ever produce this key —
@@ -231,8 +245,8 @@ function ticketLine(t: Ticket, run: Run | undefined, width: number): string {
   const id = pad(`#${t.id}`, 5);
   const status = pad(STATUS_LABEL[t.status] ?? t.status, 10);
   let tail = '';
-  if (awaiting) tail = `  ← waiting on you (${run!.last_phase ?? 'gate'})`;
-  else if (run) tail = `  running ${run.skill}`;
+  if (awaiting) tail = `  ← waiting on you (${run!.last_phase ?? 'gate'}${waitingFor(run!)})`;
+  else if (run) tail = `  running ${run.skill} ${fmtDur(run.duration_s ?? 0)}`;
   const title = t.title.replace(/\s+/g, ' ');
   const room = Math.max(10, width - 4 - 5 - 10 - tail.length);
   return ` ${marker} ${id}${status}${pad(title, room)}${tail}`;
@@ -242,7 +256,9 @@ function runLine(r: Run, width: number): string {
   const awaiting = r.status === 'awaiting';
   const marker = awaiting ? '●' : '▸';
   const label = `${r.skill} on ${r.branch ?? '—'}`;
-  const tail = awaiting ? `  ← waiting on you (${r.last_phase ?? 'gate'})` : `  running`;
+  const tail = awaiting
+    ? `  ← waiting on you (${r.last_phase ?? 'gate'}${waitingFor(r)})`
+    : `  running ${fmtDur(r.duration_s ?? 0)}`;
   const room = Math.max(10, width - 4 - 5 - 10 - tail.length);
   return ` ${marker} ${pad('—', 5)}${pad('run', 10)}${pad(label, room)}${tail}`;
 }

@@ -35,7 +35,7 @@ Commands:
   ticket              Work items: add, list, show, start, edit, cancel, rm, done
   project             Bodies of work inside an app: add, list, show, edit, done, rm
   repo                Apps smriti tracks: list, show, edit, current, new, forget, rename
-  trace               Run trace: start, emit, end, list, show, tail
+  trace               Run trace: start, emit, end, list, show, tail, stats
   factory             Scriptable listing of tickets and runs (--list)
   clean               Post-merge tidy: delete merged branches and their worktrees
   browse              Browser audit CLI (install, login, audit, update)

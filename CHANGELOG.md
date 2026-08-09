@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- **Run durations, phase timing, and your-time vs agent-time.** The trace already recorded when everything happened; nothing did the subtraction. `smriti trace` now computes it — `list --json` carries `duration_s`/`agent_s`/`you_s`, `show` gains a per-phase breakdown, and a new `smriti trace stats` reports median duration per skill and per phase so a regression in how long `/begin` takes is visible rather than merely felt. All of it in SQL, so the board and `smriti factory` read the same numbers instead of computing their own.
+- **The distinction that makes a slow run diagnosable: time at a gate is *yours*, not the agent's.** A run decomposes into segments between recorded instants; a segment opened by an `awaiting` event is time a human spent deciding, and it is attributed to the gate's phase rather than to whatever ran next. `duration_s` is defined as `agent_s + you_s`, so the split always accounts for the whole run — including when a clock jumps backwards. If a gate reliably costs twenty idle minutes a run, that is now a number you can read, and it is a finding about the workflow rather than about the agent.
+- **The board shows time.** Live elapsed on anything running, relative time on everything else, how long a gate has been sitting on you, and a per-run phase breakdown in the ticket detail — a stacked bar plus the numbers, pine ink for agent time and highlighter for yours. `p` opens **pace**: medians per skill and per phase across the last 30 days. A blocked herdr session deliberately gets no duration — herdr reports status without a timestamp and keeps no history.
+
 ## 1.3.0 — 2026-08-08
 
 Projects become real. A "project" in smriti was a string — the slug derived from your git remote — with no entity behind it. That conflated two different things: the **app** you are working on, and the **body of work** you are doing inside it. This release separates them, and makes both edges of the relationship optional.
