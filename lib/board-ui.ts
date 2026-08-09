@@ -579,7 +579,7 @@ export function boardPage(): string {
   // wrong one's link. The predicate is the whole answer: awaiting, and with a
   // URL the server already proved is live.
   function gateFor(t){
-    return S.runs.find((r) => r.ticket_id === t.id && r.status === 'awaiting' && r.html_url);
+    return S.runs.find((r) => r.ticket_id === t.id && r.status === 'awaiting' && httpUrl(r.html_url));
   }
 
   // esc() escapes HTML; it does not validate a scheme. The board builds this URL
@@ -1213,8 +1213,8 @@ export function boardPage(): string {
     // escapes HTML but does not validate a scheme, and without the allowlist
     // md.ts applies to document links a stored javascript: url would run
     // against this page's own authenticated API when clicked.
-    const gate = gateFor(t);
-    if (gate && httpUrl(gate.html_url))
+    const gate = gateFor(t);   // already scheme-checked
+    if (gate)
       h += '<a class="btn go" href="' + esc(gate.html_url) + '" target="_blank" rel="noopener">open the plan ↗</a>';
     if (t.pr_url && httpUrl(t.pr_url))
       h += '<a class="btn" href="' + esc(t.pr_url) + '" target="_blank" rel="noopener">open PR ↗</a>';

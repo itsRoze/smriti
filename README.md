@@ -408,9 +408,10 @@ grep-ability is preserved and nothing in-repo gains markup noise.
 - **Revision-scoped.** Each run gets a `session_id`, each render a `revision_id`.
   A submit is accepted only when both match the latest open revision — an old
   browser tab can't cross streams (`stale_revision` / `unknown_session`).
-- **Self-cleaning.** An idle server self-terminates, and stale state is swept
-  both on the next `serve` and whenever `url` finds a session it cannot prove is
-  alive — so a skill that dies mid-loop never orphans a process.
+- **Self-cleaning.** An idle server self-terminates — closing its gate on the
+  way out, since a loop nobody returns to is exactly the one no `stop` runs for
+  — and stale state is swept on the next `serve`. `url` is a read: it reports
+  what it finds and deletes nothing, because the board calls it constantly.
 - **Mockups render as pictures.** A card's optional `mockup_html` — a complete
   self-contained HTML document — is shown in an iframe sandboxed with
   `allow-scripts` and deliberately *without* `allow-same-origin`, so a UI change

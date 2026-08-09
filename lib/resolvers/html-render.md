@@ -59,7 +59,7 @@ the code ever disagree, the code wins** — this is a mirror for convenience.
 | `cards[]` | array | `{ id, title, body_md, status?, default_decision?, mockup_html? }` |
 | `card.status` | `open` \| `resolved` \| `new` | optional, default `open` |
 | `card.default_decision` | `accept` \| `reject` \| `edit` | optional pre-selection |
-| `card.mockup_html` | string | optional; a complete self-contained HTML document, shown as a rendered picture under the body (max 2 MB) |
+| `card.mockup_html` | string | optional; a complete self-contained HTML document, shown as a rendered picture under the body (max 2,097,152 characters) |
 | `global_notes_prompt` | string | optional; placeholder for the overall-notes box |
 
 <!-- example:spec -->

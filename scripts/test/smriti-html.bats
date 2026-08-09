@@ -310,10 +310,14 @@ JSON
   [ "$status" -eq 6 ]
 }
 
-@test "url: a portfile outliving its server exits 6 and sweeps the statedir" {
+@test "url: a portfile outliving its server exits 6, and does NOT delete state" {
   # A crashed server leaves its portfile behind. Answering from the file alone
   # is what would put a dead link on the board — the whole reason `url` proves
   # pid, port AND session identity rather than trusting the file.
+  #
+  # And it answers WITHOUT mutating: the board probes this on every state read,
+  # so sweeping here deleted the trace.json `stop` needs to close the gate —
+  # the board's own read is what made the phantom "waiting on you" permanent.
   local out; out=$(bun "$HTML" serve "$SPEC" --no-open --no-trace)
   local sid; sid=$(echo "$out" | jq -r .session_id)
   local dir="$SMRITI_HOME/html-sessions/$sid"
@@ -325,7 +329,11 @@ JSON
 
   run bun "$HTML" url --session "$sid"
   [ "$status" -eq 6 ]
-  [ ! -d "$dir" ]                 # ...and it healed what it found
+  # ...and left the statedir alone. On a traced session that directory holds
+  # the trace.json `stop` needs to close the gate, so deleting it here is what
+  # made the phantom "waiting on you" permanent.
+  [ -d "$dir" ]
+  [ -f "$dir/portfile" ]
 }
 
 @test "url: session state is keyed by the id alone, not by repo" {
@@ -421,7 +429,7 @@ run_session() { "$TRACE" list --json | jq -r ".[] | select(.run_uid==\"$RUN\") |
   bun "$HTML" stop --session "$sid"
 }
 
-@test "gate: --no-trace touches the trace at all" {
+@test "gate: --no-trace does not touch the trace at all" {
   setup_run
   local sid; sid=$(bun "$HTML" serve "$SPEC" --no-open --no-trace | jq -r .session_id)
   [ "$(run_status)" = "running" ]
@@ -474,4 +482,85 @@ run_session() { "$TRACE" list --json | jq -r ".[] | select(.run_uid==\"$RUN\") |
   run bun "$HTML" stop --session '../evil'
   [ "$status" -eq 0 ]
   [ -f "$SMRITI_HOME/evil/portfile" ]   # and it did not delete what it found
+}
+
+# ─── regressions the review caught ──────────────────────────────────────────
+
+@test "gate: an ABANDONED loop closes when the server idles out" {
+  # The case the bracketing exists for, and the one it originally missed. The
+  # reaper deletes the statedir and exits; `stop` then finds no pidfile and
+  # returns "already stopped" without ever closing the gate, so the run stays
+  # awaiting forever with all of it booked as your-time.
+  setup_run
+  local sid; sid=$(bun "$HTML" serve "$SPEC" --no-open --idle 1200 | jq -r .session_id)
+  [ "$(run_status)" = "awaiting" ]
+
+  # Wait for the reaper (1.2s idle, polled every second).
+  local waited=0
+  while [ -d "$SMRITI_HOME/html-sessions/$sid" ] && [ "$waited" -lt 100 ]; do
+    sleep 0.1; waited=$((waited + 1))
+  done
+  [ ! -d "$SMRITI_HOME/html-sessions/$sid" ]   # it really did reap
+
+  [ "$(run_status)" = "running" ]
+  [ "$(run_session)" = "none" ]
+}
+
+@test "gate: a run in another repo on the same branch is never adopted" {
+  # factory.db is global. Matching on branch alone put the wrong ticket into
+  # "waiting on you" with a link to this repo's plan.
+  setup_run                                   # repo `demo`, branch main, run $RUN
+  local other="$WORK/other"
+  mkdir -p "$other"
+  ( cd "$other"
+    git init -q -b main .
+    git config user.email t@t.local; git config user.name t
+    git remote add origin https://github.com/test/somewhere-else.git )
+
+  local sid
+  sid=$(cd "$other" && bun "$HTML" serve "$SPEC" --no-open | jq -r .session_id)
+  # demo's run is on `main` too, and is the only active run — neither is a
+  # reason to hang another repo's gate on it.
+  [ "$(run_status)" = "running" ]
+  [ "$(run_session)" = "none" ]
+  bun "$HTML" stop --session "$sid"
+}
+
+@test "alive: probing does not keep an idle server alive" {
+  # The board probes /__alive for every awaiting run on every state read. If
+  # that counted as activity the idle reaper would never fire, and a skill that
+  # died mid-loop would orphan its server for good.
+  setup_run
+  local out; out=$(bun "$HTML" serve "$SPEC" --no-open --idle 1500 --no-trace)
+  local sid; sid=$(echo "$out" | jq -r .session_id)
+  local port; port=$(echo "$out" | jq -r .port)
+
+  # Probe steadily across the whole idle window.
+  local i=0
+  while [ "$i" -lt 25 ]; do
+    curl -sf "http://127.0.0.1:$port/__alive" >/dev/null 2>&1 || true
+    sleep 0.1; i=$((i + 1))
+  done
+
+  local waited=0
+  while [ -d "$SMRITI_HOME/html-sessions/$sid" ] && [ "$waited" -lt 60 ]; do
+    sleep 0.1; waited=$((waited + 1))
+  done
+  [ ! -d "$SMRITI_HOME/html-sessions/$sid" ]
+}
+
+@test "serve: a concurrent serve does not sweep a starting session's state" {
+  # The sweep is global now — one namespace for every repo — so a serve that
+  # walks the directory during another's startup window used to see no pidfile,
+  # call it an orphan, and delete the spec.json out from under a live child.
+  local a b
+  a=$(bun "$HTML" serve "$SPEC" --no-open --no-trace | jq -r .session_id)
+  b=$(bun "$HTML" serve "$SPEC" --no-open --no-trace | jq -r .session_id)
+  [ -n "$a" ] && [ -n "$b" ] && [ "$a" != "$b" ]
+  run bun "$HTML" url --session "$a"
+  [ "$status" -eq 0 ]
+  run bun "$HTML" url --session "$b"
+  [ "$status" -eq 0 ]
+  bun "$HTML" stop --session "$a"
+  bun "$HTML" stop --session "$b"
 }

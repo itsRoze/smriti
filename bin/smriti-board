@@ -143,13 +143,31 @@ type Run = { run_uid: string; status: string; html_session?: string | null; html
 //
 // The answer is treated as DATA, not gospel: only a plausible numeric port is
 // accepted, and the URL is synthesized here rather than taken from the JSON.
+// Memoized, because /api/state is not a once-a-minute route: the db-mtime
+// watcher broadcasts a change roughly every second while a run is writing, and
+// each one drives a refresh. Without this, a gated run means booting a whole
+// bun process per second just to ask whether a port is answering. A gate that
+// opens or closes within the window is a second late to the board and no more.
+const htmlUrlCache = new Map<string, { url: string | null; at: number }>();
+const HTML_URL_TTL_MS = 3000;
+
 async function resolveHtmlUrls(runs: Run[]): Promise<void> {
   const gated = runs.filter((r) => r.status === 'awaiting' && r.html_session);
-  if (!gated.length) return;
+  if (!gated.length) { htmlUrlCache.clear(); return; }
+  const now = Date.now();
+  // Bounded by the live gates; a session that stops being one is not kept.
+  for (const [k, v] of htmlUrlCache) {
+    if (now - v.at > HTML_URL_TTL_MS || !gated.some((r) => r.html_session === k)) htmlUrlCache.delete(k);
+  }
   await Promise.all(gated.map(async (r) => {
-    const out = await readJsonAsync<{ port?: unknown }>(['url', '--session', String(r.html_session)], HTML);
+    const key = String(r.html_session);
+    const hit = htmlUrlCache.get(key);
+    if (hit) { if (hit.url) r.html_url = hit.url; return; }
+    const out = await readJsonAsync<{ port?: unknown }>(['url', '--session', key], HTML);
     const port = Number(out?.port);
-    if (Number.isInteger(port) && port > 0 && port < 65536) r.html_url = `http://127.0.0.1:${port}/`;
+    const url = Number.isInteger(port) && port > 0 && port < 65536 ? `http://127.0.0.1:${port}/` : null;
+    htmlUrlCache.set(key, { url, at: now });
+    if (url) r.html_url = url;
   }));
 }
 

@@ -145,17 +145,26 @@ _db_migrate() {
   # database while we are here, and a table rebuild under concurrent writers can
   # lose rows or orphan events. ADD COLUMN is metadata-only: it takes a brief
   # write lock and touches no row.
-  local has_html
+  #
+  # Guarded on the TABLE as well as the column. A stamped-but-tableless
+  # factory.db is reachable — the version is stamped at file creation while the
+  # tables are only applied on the first query — and ALTERing a table that is
+  # not there would exit 3 on every command forever, with the real error hidden
+  # by the 2>/dev/null. Nothing to alter is not a failure: factory-schema.sql
+  # creates `runs` WITH the column a moment later.
+  local has_runs has_html
+  has_runs=$(sqlite3 "$FACTORY_DB" ".timeout 10000" \
+    "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='runs';" 2>/dev/null) || {
+      rmdir "$lock" 2>/dev/null || true; return 1; }
   has_html=$(sqlite3 "$FACTORY_DB" ".timeout 10000" \
     "SELECT count(*) FROM pragma_table_info('runs') WHERE name='html_session';" 2>/dev/null) || {
       rmdir "$lock" 2>/dev/null || true; return 1; }
-  if [ "$has_html" != "1" ]; then
+  if [ "$has_runs" = "1" ] && [ "$has_html" != "1" ]; then
+    # `return 1`, not `exit 3`, matching every other failure in this function:
+    # the caller reports it and the store is left exactly as it was.
     sqlite3 "$FACTORY_DB" ".timeout 10000" \
       "ALTER TABLE runs ADD COLUMN html_session TEXT;" >/dev/null 2>&1 || {
-        rmdir "$lock" 2>/dev/null || true
-        echo "${SMRITI_TOOL:-smriti-factory}: could not add runs.html_session; the database is unchanged" >&2
-        exit 3
-      }
+        rmdir "$lock" 2>/dev/null || true; return 1; }
   fi
 
   # Only now, with every step applied, does the version become current.
