@@ -352,14 +352,68 @@ describe('board UI', () => {
       await page.waitForSelector('#descedit.on');
       expect(await page.locator('#descedit').inputValue()).toBe(MD_BODY);
 
-      // Save unchanged, then read the store: a rendered body must not become
-      // the thing that gets written back.
+      // Saving an unchanged body must not write at all. Counting the PATCH is
+      // the only honest way to assert that — reading the store back would pass
+      // whether or not a request was sent, since the value is identical either
+      // way. (The changed-body write-back is covered by the cancel test.)
+      let patches = 0;
+      page.on('request', (req) => {
+        if (req.method() === 'PATCH' && req.url().includes('/api/tickets/')) patches++;
+      });
       await page.locator('#descedit').press('Meta+Enter');
       await page.waitForSelector('#desc.md');
-      const shown = spawnSync(TICKET, ['show', String(MD_TICKET), '--json'], {
-        encoding: 'utf8', env: { ...process.env, SMRITI_HOME: HOME_DIR },
-      });
-      expect(JSON.parse(shown.stdout).ticket.body).toBe(MD_BODY);
+      expect(patches).toBe(0);
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+
+  it('Enter on a focused description edits it and does not start the ticket', async () => {
+    if (!HAS_CHROMIUM) return;
+    const { context, page, errors } = await open();
+    try {
+      // Counted AND blocked: if the guard regresses this fires for real, and
+      // starting a ticket cuts a git worktree and spawns an agent session.
+      let starts = 0;
+      await page.route('**/api/tickets/*/start', (route) => { starts++; route.abort(); });
+
+      // The selection has to come from the keyboard: the global Enter branch
+      // is `if (detailId && selectedTicket())`, so opening the overlay with a
+      // mouse click leaves sel at -1 and the bug cannot show itself.
+      await page.keyboard.press('ArrowDown');
+      await page.waitForSelector('.sel');
+      await page.keyboard.press('Enter');
+      await page.waitForSelector('#detv.on');
+
+      // The description is tabbable now, and Escape from its editor focuses it.
+      // With the overlay open the GLOBAL Enter means "start this ticket", so
+      // the element handler has to stop the event, not merely preventDefault.
+      await page.keyboard.press('e');
+      await page.waitForSelector('#descedit.on');
+      await page.locator('#descedit').press('Escape');
+      await page.waitForSelector('#descedit.on', { state: 'hidden' });
+      expect(await page.evaluate(() => document.activeElement?.id)).toBe('desc');
+
+      await page.keyboard.press('Enter');
+      await page.waitForSelector('#descedit.on');
+      expect(starts).toBe(0);
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+
+  it('an app description renders markdown too, not just a ticket body', async () => {
+    if (!HAS_CHROMIUM) return;
+    const { context, page, errors } = await open();
+    try {
+      // The page surfaces re-derive their source from S rather than from what
+      // descBox was handed, so rendering there is a genuinely separate path
+      // from the ticket body — and it is two of the ticket's three surfaces.
+      run(REPO, ['edit', 'test-demo', '--description', '## the app\n\n- one\n- two'], appDir);
+      await page.goto(url.split('?')[0] + '#/r/test-demo', { waitUntil: 'domcontentloaded' });
+      await page.waitForSelector('#pagedesc.md');
+      expect(await page.locator('#pagedesc h2').innerText()).toBe('the app');
+      expect(await page.locator('#pagedesc li').count()).toBe(2);
+      // The editor still holds the source, not the rendered markup.
+      expect(await page.locator('#pagedescedit').inputValue()).toBe('## the app\n\n- one\n- two');
       expect(errors).toEqual([]);
     } finally { await context.close(); }
   }, T);
@@ -390,6 +444,33 @@ describe('board UI', () => {
 
       // Put it back, so the tests after this one still see the fixture body.
       run(TICKET, ['edit', String(MD_TICKET), '--body', MD_BODY], appDir);
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+
+  it('a render that comes back empty does not blank the description', async () => {
+    if (!HAS_CHROMIUM) return;
+    const { context, page, errors } = await open();
+    try {
+      // renderMarkdown returns '' for a whitespace-only source, which is
+      // reachable via `smriti ticket add --body`. Swapping that in would leave
+      // an empty strip with no text and no ghost — and, with .raw removed, no
+      // pre-wrap either. The box has to keep what it already had.
+      await page.route('**/api/render', (route) =>
+        route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ html: '' }) }));
+      // Armed BEFORE the click: the render fires as the overlay opens, so
+      // registering the wait afterwards races the request and hangs.
+      const rendered = page.waitForResponse((r) => r.url().includes('/api/render'));
+      await page.locator('.card[data-tid="' + MD_TICKET + '"]').click();
+      await page.waitForSelector('#detv.on');
+      await rendered;
+      // A settle only AFTER a confirmed response. The negative assertion below
+      // needs the client's continuation to have run; what it must not do is
+      // bet on the response arriving at all, which is what a bare sleep does.
+      await page.waitForTimeout(100);
+
+      expect(await page.locator('#desc.raw').count()).toBe(1);
+      expect(await page.locator('#desc').innerText()).toContain('the first paragraph.');
       expect(errors).toEqual([]);
     } finally { await context.close(); }
   }, T);
@@ -432,8 +513,15 @@ describe('board UI', () => {
       await page.keyboard.press('e');
       await page.waitForSelector('#descedit.on');
 
+      // Wait on the RESPONSE, not a sleep. A timeout here would let the test
+      // pass because the render never arrived — i.e. it would stay green with
+      // the guard deleted, which is the one thing it exists to catch.
+      const landed = page.waitForResponse((r) => r.url().includes('/api/render'));
       release();
-      await page.waitForTimeout(300);
+      await landed;
+      // Settle only after the response is known to have arrived — see the
+      // empty-render test for why that is not the same as sleeping and hoping.
+      await page.waitForTimeout(100);
 
       expect(await page.locator('#descedit.on').count()).toBe(1);
       expect(await page.locator('#desc.md').count()).toBe(0);

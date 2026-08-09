@@ -153,28 +153,36 @@ test('render is refused without the cookie', async () => {
   expect(r.status).toBe(403);
 });
 
-test('render refuses an oversized body before parsing it', async () => {
-  // fetch sets content-length itself, so this exercises the EARLY check — the
-  // one that refuses on the declared length, before req.json() has parsed
-  // anything. A cap paid for after parsing is a cap that has already cost you.
+test('render refuses an oversized body on its declared length', async () => {
+  // fetch sets content-length itself, so this is the cheap early refusal.
   const r = await render({ md: 'x'.repeat(250_000) });
   expect(r.status).toBe(413);
 });
 
 test('render refuses an oversized body that declared no length at all', async () => {
-  // A streamed body is sent chunked, with no content-length for the early
-  // check to read. That is exactly the hole the second, post-parse check
-  // exists to close, and the only way to reach it.
+  // A streamed body is sent chunked, so there is no content-length to check.
+  // The budget has to be enforced while reading — and it must still be enforced
+  // AFTER the refusal, i.e. the connection has to stay usable, which is what
+  // the follow-up request below proves.
   const payload = new TextEncoder().encode(JSON.stringify({ md: 'x'.repeat(250_000) }));
-  const stream = new ReadableStream({
-    start(c) { c.enqueue(payload); c.close(); },
-  });
+  const stream = new ReadableStream({ start(c) { c.enqueue(payload); c.close(); } });
   const r = await fetch(`${base()}/api/render`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', cookie: jar },
     body: stream,
     duplex: 'half',
   } as RequestInit & { duplex: string });
+  expect(r.status).toBe(413);
+
+  const after = await render({ md: '# still here' });
+  expect(after.status).toBe(200);
+  expect(((await after.json()) as { html: string }).html).toContain('<h1>still here</h1>');
+});
+
+test('render counts the cap in bytes, not characters', async () => {
+  // 60k four-byte emoji is 240 kB but only 60k characters (120k UTF-16 units).
+  // A character budget would wave this straight through the 200 kB limit.
+  const r = await render({ md: '😀'.repeat(60_000) });
   expect(r.status).toBe(413);
 });
 

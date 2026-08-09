@@ -1131,42 +1131,63 @@ export function boardPage(): string {
   // this safe to do on a surface that is polled.
   const mdCache = new Map();
   const MD_CACHE_MAX = 200;
+  // Sources whose render failed. Without this, an app or project page retries
+  // on every SSE tick — about once a second while an agent runs — for as long
+  // as the endpoint is down. Cleared when the tab is re-focused, the same
+  // place docCache is dropped, so a transient failure recovers.
+  const mdFailed = new Set();
   let descSeq = 0;
 
   function mdPut(src, html){
     if (mdCache.size >= MD_CACHE_MAX) mdCache.delete(mdCache.keys().next().value);
     mdCache.set(src, html);
   }
+  // Never blank the box. renderMarkdown returns '' for a whitespace-only
+  // source, and swapping that in would destroy both the raw text and the
+  // ghost placeholder, leaving an empty strip you cannot even see to click.
   function mdApply(el, html){
+    if (!html) return false;
     el.innerHTML = html;
     el.classList.remove('raw');
     el.classList.add('md');
+    return true;
   }
-  // The guards matter more than the cache. The overlay is rebuilt on every SSE
-  // tick, both pages reuse #pagedesc, and a render started before you clicked
+  // The guards matter more than the cache. Pages are re-rendered on every SSE
+  // tick and both reuse #pagedesc, and a render started before you clicked
   // into the editor can land after it opened. So a result is only allowed in
   // while it still belongs where it was sent: same live node, same generation,
   // nothing open over it. Anything late is dropped.
+  //
+  // (The detail overlay is NOT rebuilt by the SSE path — refresh() only calls
+  // route(), which redraws the page behind it. #desc goes stale by being
+  // replaced by a later openDetail, which the same guards cover.)
+  function descLands(el, seq){
+    return el.isConnected                         // the view moved on under us
+      && el.dataset.seq === seq                   // a newer paint owns this node
+      && el.style.display !== 'none';             // an editor is open over it
+  }
   async function paintDesc(el, src){
-    if (!el || !src) return;
-    const hit = mdCache.get(src);
-    if (hit !== undefined){ mdApply(el, hit); return; }
+    if (!el || !src || mdFailed.has(src)) return;
+    // A generation is taken even on the cache path: an older render still in
+    // flight for this same node must not overwrite what the cache just put in.
     const seq = String(++descSeq);
     el.dataset.seq = seq;
+    const hit = mdCache.get(src);
+    if (hit !== undefined){ if (descLands(el, seq)) mdApply(el, hit); return; }
     let html;
     try { html = (await api('/api/render', { method: 'POST', body: JSON.stringify({ md: src }) })).html; }
-    catch { return; }                             // the raw text stands; that IS the fallback
+    catch { mdFailed.add(src); return; }          // the raw text stands; that IS the fallback
     mdPut(src, html);
-    if (!el.isConnected) return;                  // the view moved on under us
-    if (el.dataset.seq !== seq) return;           // a newer paint owns this node
-    if (el.style.display === 'none') return;      // an editor is open over it
-    mdApply(el, html);
+    if (descLands(el, seq)) mdApply(el, html);
   }
 
-  // One description box, however it is reached.
+  // One description box, however it is reached. ghost is escaped even though
+  // every caller passes a literal today: this is the shared entry point for
+  // all three surfaces, and the next caller to pass a stored string should not
+  // have to notice that the parameter was raw.
   function descBox(attrs, src, ghost){
     return '<div class="desc raw" tabindex="0" title="click, or press e, to edit" ' + attrs + '>' +
-      (src ? esc(src) : '<span class="ghost">' + ghost + '</span>') + '</div>';
+      (src ? esc(src) : '<span class="ghost">' + esc(ghost) + '</span>') + '</div>';
   }
   // Once a body is real markup, "click anywhere to edit" is too broad. A link
   // has to open, a selection you just dragged has to survive, and a middle or
@@ -1181,25 +1202,30 @@ export function boardPage(): string {
     return false;
   }
   function startEdit(el, ta){
-    if (!el || !ta) return;
-    // Re-arm the blur save on every open. Escape ABANDONS by clearing onblur,
-    // so an editor opened after a cancelled one would otherwise blur into
-    // nothing and silently drop the edit.
-    if (ta.saveDesc) ta.onblur = ta.saveDesc;
+    if (!el || !ta) return false;
     el.style.display = 'none';
     ta.classList.add('on');
     ta.focus();
+    return true;
   }
   // Save on blur, Escape to abandon, Cmd/Ctrl+Enter to commit. Wired when the
   // surface is built rather than on first click, so the e key and the keyboard
   // can open an editor that has never been clicked.
+  //
+  // Escape abandons by RAISING A FLAG the blur handler checks, not by removing
+  // the handler: clearing it left the next editor with nothing on blur, and an
+  // edit typed into it vanished with no error.
   function wireDescEdit(el, ta, save){
-    ta.saveDesc = save;
-    ta.onblur = save;
+    let abandoned = false;
+    ta.onblur = () => {
+      if (abandoned){ abandoned = false; return; }
+      save();
+    };
     ta.onkeydown = (ev) => {
       if (ev.key === 'Escape'){
         ev.stopPropagation();
-        ta.onblur = null; ta.classList.remove('on'); el.style.display = '';
+        abandoned = true;
+        ta.classList.remove('on'); el.style.display = '';
         el.focus();
       }
       if (ev.key === 'Enter' && (ev.metaKey || ev.ctrlKey)) ta.blur();
@@ -1207,7 +1233,11 @@ export function boardPage(): string {
     el.addEventListener('keydown', (ev) => {
       if (ev.target !== el) return;               // a link inside keeps its own Enter
       if (ev.key !== 'Enter' && ev.key !== ' ') return;
+      // stopPropagation, not just preventDefault: the global handler treats
+      // Enter with the overlay open as "start this ticket", which cuts a
+      // worktree and spawns a session. Opening an editor must not also do that.
       ev.preventDefault();
+      ev.stopPropagation();
       startEdit(el, ta);
     });
   }
@@ -1287,8 +1317,10 @@ export function boardPage(): string {
     // are filled, so the block does not jump about between tickets. The
     // document count is gone on purpose: the paper trail is listed in full a
     // few inches down, and counting it here said the same thing twice.
+    // label is escaped, value is not: value is markup the callers below build
+    // (a jump span, a stamp) and have already escaped the text inside.
     const field = (label, value, cls) =>
-      '<dt>' + label + '</dt><dd' + (cls ? ' class="' + cls + '"' : '') + '>' + value + '</dd>';
+      '<dt>' + esc(label) + '</dt><dd' + (cls ? ' class="' + cls + '"' : '') + '>' + value + '</dd>';
     let h = '<div class="eyebrow">#' + t.id + '</div>' +
       '<h2>' + esc(t.title) + '</h2>' +
       '<dl class="fields">' +
@@ -1349,7 +1381,12 @@ export function boardPage(): string {
       const ta = $('#descedit');
       const next = ta.value.trim();
       ta.classList.remove('on'); $('#desc').style.display = '';
-      if (next === (t.body || '').trim()) return;
+      // Compare against the CURRENT stored body, not the one captured when the
+      // overlay was drawn. The overlay is not rebuilt by the SSE path, so the
+      // captured ticket goes stale the moment an agent rewrites it — and
+      // this decides whether a PATCH is sent at all.
+      const live = (S.tickets.find((x) => x.id === t.id) || t).body || '';
+      if (next === live.trim()) return;
       try {
         await api('/api/tickets/' + t.id, { method: 'PATCH', body: JSON.stringify({ body: next }) });
         toast('description saved'); await refresh(); openDetail(t.id);
@@ -1657,10 +1694,19 @@ export function boardPage(): string {
       // e edits whichever description is in front of you. Until now the only
       // way into an editor was a mouse click, on a board that is otherwise
       // entirely keyboard-driven.
+      //
+      // Only the detail overlay has a description behind it. help and pace do
+      // not, and focusing a textarea underneath one of those puts every
+      // keystroke somewhere invisible AND stops refresh() re-rendering, since
+      // isEditing() then reports true.
       case 'e': {
-        e.preventDefault(); tapKey('e');
-        if ($('#detv').classList.contains('on')) startEdit($('#desc'), $('#descedit'));
-        else startEdit($('#pagedesc'), $('#pagedescedit'));
+        if (['helpv', 'pacev'].some((id) => $('#' + id).classList.contains('on'))) break;
+        const opened = $('#detv').classList.contains('on')
+          ? startEdit($('#desc'), $('#descedit'))
+          : startEdit($('#pagedesc'), $('#pagedescedit'));
+        // Only claim the key when it did something — the footer chip flashing
+        // on a view with no description reads as "that worked".
+        if (opened){ e.preventDefault(); tapKey('e'); }
         break;
       }
       // p opens the app of whatever is selected — the one key that navigates
@@ -1695,7 +1741,7 @@ export function boardPage(): string {
   // cheapest moment to notice the server died while the laptop slept. Repo
   // files are not watched, so this is also when an edited PROJECT.md shows up.
   document.addEventListener('visibilitychange', () => {
-    if (!document.hidden){ docCache.clear(); refresh(); }
+    if (!document.hidden){ docCache.clear(); mdFailed.clear(); refresh(); }
   });
   // Visibility-aware heartbeat: keeps the server alive only while the tab is
   // actually being looked at, so a backgrounded tab lets it idle out.
