@@ -1962,9 +1962,12 @@ export function boardPage(): string {
     // arrived in some other shape is still the run's own words and must not be
     // dropped for failing to match a pattern.
     // (No backticks in here: this whole file is one template literal.)
-    // Escapes are DOUBLED: this file is one template literal, so a lone \n here
-    // becomes a real newline inside the emitted string and the script stops
-    // parsing at that point. Same trap the regex on the route matcher notes.
+    // The split argument is DOUBLE-escaped on purpose. This whole file is one
+    // template literal, so a single backslash-n is consumed there and reaches
+    // the browser as a real line break inside a string literal — which ends the
+    // string, and the script stops parsing at that point. Same trap the regex on
+    // the route matcher notes. (Do not write the sequence in these comments
+    // either: it breaks the comment line and spills the rest into code.)
     const lines = String(rep.body).split('\\n').map((l) => l.trim()).filter(Boolean)
       .filter((l) => !/^✅/.test(l));
     const rows = lines.map((l) => {
