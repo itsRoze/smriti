@@ -280,9 +280,10 @@ describe('board UI', () => {
     const { context, page, errors } = await open();
     try {
       await page.goto(url.split('?')[0] + '#/r/test-demo', { waitUntil: 'domcontentloaded' });
-      // #pagedesc, not #desc: the detail overlay owns #desc/#descedit, and the
-      // two used to collide — the overlay's editor operated on the page's
-      // description and saved the app's text into a ticket body.
+      // One id pair across all three descriptions now. There used to be a
+      // second, because the ticket lived in an overlay, and the two collided —
+      // the overlay's editor operated on the page's description and saved the
+      // app's text into a ticket body.
       await page.locator('#pagedesc').click();
       await page.locator('#pagedescedit').fill('a scratch app for tests');
       await page.locator('#pagedescedit').press('Meta+Enter');
@@ -304,10 +305,13 @@ describe('board UI', () => {
 
   async function openBodyTicket(page: import('playwright').Page) {
     await page.locator('.card[data-tid="' + MD_TICKET + '"]').click();
-    await page.waitForSelector('#detv.on');
+    // .stub is the ticket page's own furniture — it exists on no other view,
+    // so waiting on it proves the route landed rather than merely that
+    // something rendered.
+    await page.waitForSelector('.stub');
     // .raw → .md is the swap landing. Waiting on the class rather than a
     // timeout keeps this honest about what it is testing.
-    await page.waitForSelector('#desc.md');
+    await page.waitForSelector('#pagedesc.md');
   }
 
   it('a ticket body renders as markdown rather than a wall of text', async () => {
@@ -315,34 +319,148 @@ describe('board UI', () => {
     const { context, page, errors } = await open();
     try {
       await openBodyTicket(page);
-      const desc = page.locator('#desc');
+      const desc = page.locator('#pagedesc');
       expect(await desc.locator('h2').innerText()).toBe('why this exists');
       expect(await desc.locator('p').count()).toBeGreaterThanOrEqual(3);
       expect(await desc.locator('li').count()).toBe(2);
       expect(await desc.locator('.tablewrap table th').first().innerText()).toBe('state');
       expect(await desc.locator('a').getAttribute('href')).toBe('https://example.com/docs');
       // The source is still the source: the editor is a textarea over it.
-      expect(await page.locator('#descedit').inputValue()).toBe(MD_BODY);
+      expect(await page.locator('#pagedescedit').inputValue()).toBe(MD_BODY);
       expect(errors).toEqual([]);
     } finally { await context.close(); }
   }, T);
 
-  it('the detail view shows fields, not a dot-separated sentence', async () => {
+  it('the ticket page heads the card with its number and files it in the stub', async () => {
     if (!HAS_CHROMIUM) return;
     const { context, page, errors } = await open();
     try {
       await openBodyTicket(page);
-      expect(await page.locator('#detbody .eyebrow').innerText()).toBe('#' + MD_TICKET);
-      // Rows are emitted whether or not they are filled, so the block does not
-      // reflow between tickets — this one has no project and no branch.
-      // innerText is post-CSS, and the labels are small caps by text-transform.
-      const labels = await page.locator('.fields dt').allInnerTexts();
-      expect(labels).toEqual(['APP', 'PROJECT', 'STATUS', 'BRANCH']);
-      expect(await page.locator('.fields .stamp').innerText()).toBe('READY');
-      expect(await page.locator('.fields dd.empty').count()).toBe(2);
-      // The document count is gone; the paper trail below says it in full.
-      // #detbody, not .detail — the help veil reuses that class for its heading.
-      expect(await page.locator('#detbody').innerText()).not.toContain('document');
+      // The number IS the monogram — the tile the app and project pages give
+      // their initials — which is why there is no separate eyebrow any more.
+      expect(await page.locator('.slab .bigsig').innerText()).toBe('#' + MD_TICKET);
+      expect(await page.locator('.slab h1').innerText()).toBe('a ticket with a real body');
+      // Never started, so the mono line says so rather than showing a branch.
+      expect(await page.locator('.slab .path').innerText()).toContain('not started yet');
+
+      // Status is a struck stamp at the head of the stub, in the class its card
+      // wears on the board. innerText is post-CSS: the label is small caps by
+      // text-transform.
+      const stamp = page.locator('.stub .stamp.big');
+      expect(await stamp.innerText()).toBe('READY');
+      expect(await stamp.getAttribute('class')).toContain('s-ready');
+
+      // Filed under: app and project, both rows emitted whether or not they are
+      // filled. This fixture ticket has an app and no project.
+      const labels = await page.locator('.stub .f .k2').allInnerTexts();
+      expect(labels).toEqual(['APP', 'PROJECT']);
+      expect(await page.locator('.stub .f .v.empty').count()).toBe(1);
+      expect(await page.locator('.stub .f .v').first().innerText()).toBe('test-demo');
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+
+  it('a ticket has an address that survives a reload, and a bad one goes home', async () => {
+    if (!HAS_CHROMIUM) return;
+    const { context, page, errors } = await open();
+    try {
+      // The whole point of the ticket: somewhere to send, bookmark and reopen.
+      await page.goto(url.split('?')[0] + '#/t/' + MD_TICKET, { waitUntil: 'domcontentloaded' });
+      await page.waitForSelector('.stub');
+      expect(await page.locator('.slab h1').innerText()).toBe('a ticket with a real body');
+      await page.reload({ waitUntil: 'domcontentloaded' });
+      await page.waitForSelector('.stub');
+      expect(await page.locator('.slab h1').innerText()).toBe('a ticket with a real body');
+
+      // A link that outlived its ticket lands on the board, not on a blank
+      // page — the same answer a missing project already gives.
+      await page.goto(url.split('?')[0] + '#/t/999999', { waitUntil: 'domcontentloaded' });
+      await page.waitForSelector('.phead');
+      expect(await page.locator('.stub').count()).toBe(0);
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+
+  // No errors assertion in this one: aborting the request is the point, and
+  // the browser logs the failed fetch itself.
+  it('a ticket page is its own selection — d acts on the ticket it drew', async () => {
+    if (!HAS_CHROMIUM) return;
+    const { context, page } = await open();
+    try {
+      const filed = idOf('index the corpus');
+      await page.goto(url.split('?')[0] + '#/t/' + filed, { waitUntil: 'domcontentloaded' });
+      await page.waitForSelector('.stub');
+
+      // There is no list to move within, so the page IS the row. Blocked rather
+      // than allowed to land: marking it done for real would move the fixture
+      // out from under the tests that count what is finished.
+      await page.route('**/api/tickets/*/done', (route) => route.abort());
+      const fired = page.waitForRequest((r) => /\/api\/tickets\/\d+\/done$/.test(r.url()));
+      await page.keyboard.press('d');
+      expect(new URL((await fired).url()).pathname).toBe('/api/tickets/' + filed + '/done');
+    } finally { await context.close(); }
+  }, T);
+
+  it('esc climbs the whole ladder — ticket, project, app, board', async () => {
+    if (!HAS_CHROMIUM) return;
+    const { context, page, errors } = await open();
+    try {
+      // A filed ticket, so every rung is exercised. Waits are DOM-anchored
+      // rather than URL-anchored — .stub exists only on a ticket page, doc tabs
+      // only on an app page, .phead only on the board — so each assert is
+      // pinned to something a render actually produced.
+      await page.goto(url.split('?')[0] + '#/t/' + idOf('index the corpus'), { waitUntil: 'domcontentloaded' });
+      await page.waitForSelector('.stub');
+
+      await page.keyboard.press('Escape');
+      await page.waitForSelector('.stub', { state: 'detached' });
+      expect(page.url()).toContain('#/p/');
+
+      await page.keyboard.press('Escape');
+      await page.waitForSelector('[data-tab]');
+      expect(page.url()).toContain('#/r/test-demo');
+
+      await page.keyboard.press('Escape');
+      await page.waitForSelector('.phead');
+      expect(page.url()).not.toContain('#/r/');
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+
+  it('the margin marks where a ticket lives, not nothing at all', async () => {
+    if (!HAS_CHROMIUM) return;
+    const { context, page, errors } = await open();
+    try {
+      // The index used to know only about the two views that ARE an app or a
+      // project, so it went blank on the one view you are deepest inside.
+      await page.goto(url.split('?')[0] + '#/t/' + idOf('index the corpus'), { waitUntil: 'domcontentloaded' });
+      await page.waitForSelector('.stub');
+      await page.waitForSelector('.rail .ritem.on');
+      expect(await page.locator('.rail .ritem.on .nm').innerText()).toBe('test-demo');
+      expect(await page.locator('.rail .rproj.on .nm').innerText()).toBe('Search v2');
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+
+  it('a redraw of a ticket page costs no trace requests', async () => {
+    if (!HAS_CHROMIUM) return;
+    const { context, page, errors } = await open();
+    try {
+      // The overlay was built once; a page is redrawn on every SSE tick, and
+      // each of these spawns sqlite behind the server. Both rounds are cached
+      // — including the "no runs" answer, or a ticket that has never run would
+      // re-ask forever.
+      await page.goto(url.split('?')[0] + '#/t/' + MD_TICKET, { waitUntil: 'domcontentloaded' });
+      await page.waitForSelector('.runs .nothing');
+      let traceCalls = 0;
+      page.on('request', (req) => {
+        if (/\/api\/runs\?|\/api\/run\//.test(req.url())) traceCalls++;
+      });
+      // Force the redraws the SSE tick would have caused.
+      await page.evaluate(() => { for (let i = 0; i < 5; i++) window.dispatchEvent(new HashChangeEvent('hashchange')); });
+      await page.waitForTimeout(250);
+      expect(traceCalls).toBe(0);
+      expect(await page.locator('.runs .nothing').count()).toBe(1);
       expect(errors).toEqual([]);
     } finally { await context.close(); }
   }, T);
@@ -354,17 +472,17 @@ describe('board UI', () => {
       await openBodyTicket(page);
       // The renderer marks links target="_blank", so a real click would open a
       // tab. What matters here is only that the editor did NOT open.
-      const link = page.locator('#desc a');
+      const link = page.locator('#pagedesc a');
       await link.evaluate((a: HTMLAnchorElement) => a.removeAttribute('target'));
       await page.evaluate(() => {
-        document.querySelector('#desc a')!.addEventListener('click', (e) => e.preventDefault());
+        document.querySelector('#pagedesc a')!.addEventListener('click', (e) => e.preventDefault());
       });
       await link.click();
-      expect(await page.locator('#descedit.on').count()).toBe(0);
+      expect(await page.locator('#pagedescedit.on').count()).toBe(0);
 
       // ...but clicking the prose still edits, which is the other half.
-      await page.locator('#desc p').first().click();
-      await page.waitForSelector('#descedit.on');
+      await page.locator('#pagedesc p').first().click();
+      await page.waitForSelector('#pagedescedit.on');
       expect(errors).toEqual([]);
     } finally { await context.close(); }
   }, T);
@@ -376,8 +494,8 @@ describe('board UI', () => {
       await openBodyTicket(page);
       // The board had no keyboard path into an editor at all before this.
       await page.keyboard.press('e');
-      await page.waitForSelector('#descedit.on');
-      expect(await page.locator('#descedit').inputValue()).toBe(MD_BODY);
+      await page.waitForSelector('#pagedescedit.on');
+      expect(await page.locator('#pagedescedit').inputValue()).toBe(MD_BODY);
 
       // Saving an unchanged body must not write at all. Counting the PATCH is
       // the only honest way to assert that — reading the store back would pass
@@ -387,8 +505,8 @@ describe('board UI', () => {
       page.on('request', (req) => {
         if (req.method() === 'PATCH' && req.url().includes('/api/tickets/')) patches++;
       });
-      await page.locator('#descedit').press('Meta+Enter');
-      await page.waitForSelector('#desc.md');
+      await page.locator('#pagedescedit').press('Meta+Enter');
+      await page.waitForSelector('#pagedesc.md');
       expect(patches).toBe(0);
       expect(errors).toEqual([]);
     } finally { await context.close(); }
@@ -403,25 +521,25 @@ describe('board UI', () => {
       let starts = 0;
       await page.route('**/api/tickets/*/start', (route) => { starts++; route.abort(); });
 
-      // The selection has to come from the keyboard: the global Enter branch
-      // is `if (detailId && selectedTicket())`, so opening the overlay with a
-      // mouse click leaves sel at -1 and the bug cannot show itself.
+      // Reached by keyboard, because that is the shape the guard is about: on
+      // a ticket page the page IS the selection, so the global Enter means
+      // "start this ticket" — and pressing Enter in the body must not also.
       await page.keyboard.press('ArrowDown');
       await page.waitForSelector('.sel');
       await page.keyboard.press('Enter');
-      await page.waitForSelector('#detv.on');
+      await page.waitForSelector('.stub');
 
-      // The description is tabbable now, and Escape from its editor focuses it.
-      // With the overlay open the GLOBAL Enter means "start this ticket", so
-      // the element handler has to stop the event, not merely preventDefault.
+      // The description is tabbable, and Escape from its editor focuses it, so
+      // the element handler has to stop the event rather than merely
+      // preventDefault it.
       await page.keyboard.press('e');
-      await page.waitForSelector('#descedit.on');
-      await page.locator('#descedit').press('Escape');
-      await page.waitForSelector('#descedit.on', { state: 'hidden' });
-      expect(await page.evaluate(() => document.activeElement?.id)).toBe('desc');
+      await page.waitForSelector('#pagedescedit.on');
+      await page.locator('#pagedescedit').press('Escape');
+      await page.waitForSelector('#pagedescedit.on', { state: 'hidden' });
+      expect(await page.evaluate(() => document.activeElement?.id)).toBe('pagedesc');
 
       await page.keyboard.press('Enter');
-      await page.waitForSelector('#descedit.on');
+      await page.waitForSelector('#pagedescedit.on');
       expect(starts).toBe(0);
       expect(errors).toEqual([]);
     } finally { await context.close(); }
@@ -433,12 +551,12 @@ describe('board UI', () => {
     try {
       await openBodyTicket(page);
       await page.keyboard.press('e');
-      await page.waitForSelector('#descedit.on');
+      await page.waitForSelector('#pagedescedit.on');
       // The property worth pinning is not a pixel count, it is "you can see
       // what you are typing": no inner scrollbar, so the whole body is visible
       // without scrolling inside a six-line letterbox.
       const { clientH, scrollH, capped } = await page.evaluate(() => {
-        const ta = document.querySelector('#descedit') as HTMLTextAreaElement;
+        const ta = document.querySelector('#pagedescedit') as HTMLTextAreaElement;
         return { clientH: ta.clientHeight, scrollH: ta.scrollHeight, capped: Math.round(window.innerHeight * 0.6) };
       });
       expect(scrollH).toBeLessThanOrEqual(clientH + 2);
@@ -475,16 +593,16 @@ describe('board UI', () => {
       // has to re-arm it, or the next edit blurs into nothing and is lost with
       // no error — the worst shape a bug can have on a description box.
       await page.keyboard.press('e');
-      await page.waitForSelector('#descedit.on');
-      await page.locator('#descedit').press('Escape');
-      await page.waitForSelector('#descedit.on', { state: 'hidden' });
+      await page.waitForSelector('#pagedescedit.on');
+      await page.locator('#pagedescedit').press('Escape');
+      await page.waitForSelector('#pagedescedit.on', { state: 'hidden' });
 
       await page.keyboard.press('e');
-      await page.waitForSelector('#descedit.on');
-      await page.locator('#descedit').fill('rewritten after a cancel');
-      await page.locator('#descedit').press('Meta+Enter');
+      await page.waitForSelector('#pagedescedit.on');
+      await page.locator('#pagedescedit').fill('rewritten after a cancel');
+      await page.locator('#pagedescedit').press('Meta+Enter');
 
-      await page.waitForSelector('#desc:has-text("rewritten after a cancel")');
+      await page.waitForSelector('#pagedesc:has-text("rewritten after a cancel")');
       const shown = spawnSync(TICKET, ['show', String(MD_TICKET), '--json'], {
         encoding: 'utf8', env: { ...process.env, SMRITI_HOME: HOME_DIR },
       });
@@ -506,19 +624,19 @@ describe('board UI', () => {
       // pre-wrap either. The box has to keep what it already had.
       await page.route('**/api/render', (route) =>
         route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ html: '' }) }));
-      // Armed BEFORE the click: the render fires as the overlay opens, so
+      // Armed BEFORE the click: the render fires as the page draws, so
       // registering the wait afterwards races the request and hangs.
       const rendered = page.waitForResponse((r) => r.url().includes('/api/render'));
       await page.locator('.card[data-tid="' + MD_TICKET + '"]').click();
-      await page.waitForSelector('#detv.on');
+      await page.waitForSelector('.stub');
       await rendered;
       // A settle only AFTER a confirmed response. The negative assertion below
       // needs the client's continuation to have run; what it must not do is
       // bet on the response arriving at all, which is what a bare sleep does.
       await page.waitForTimeout(100);
 
-      expect(await page.locator('#desc.raw').count()).toBe(1);
-      expect(await page.locator('#desc').innerText()).toContain('the first paragraph.');
+      expect(await page.locator('#pagedesc.raw').count()).toBe(1);
+      expect(await page.locator('#pagedesc').innerText()).toContain('the first paragraph.');
       expect(errors).toEqual([]);
     } finally { await context.close(); }
   }, T);
@@ -531,17 +649,17 @@ describe('board UI', () => {
     try {
       await page.route('**/api/render', (route) => route.abort());
       await page.locator('.card[data-tid="' + MD_TICKET + '"]').click();
-      await page.waitForSelector('#detv.on');
+      await page.waitForSelector('.stub');
       // The point of painting raw first: a render that never lands degrades to
       // readable source, not a blank box — and crucially not to the one
       // unbroken run this ticket existed to fix.
-      const desc = page.locator('#desc.raw');
+      const desc = page.locator('#pagedesc.raw');
       await desc.waitFor();
       const text = await desc.innerText();
       expect(text).toContain('the first paragraph.');
       expect(text).toContain('a second one, after a blank line.');
       expect(text.split('\n').length).toBeGreaterThan(5);
-      expect(await page.locator('#desc.md').count()).toBe(0);
+      expect(await page.locator('#pagedesc.md').count()).toBe(0);
     } finally { await context.close(); }
   }, T);
 
@@ -557,9 +675,9 @@ describe('board UI', () => {
       await page.route('**/api/render', async (route) => { await gate; await route.continue(); });
 
       await page.locator('.card[data-tid="' + MD_TICKET + '"]').click();
-      await page.waitForSelector('#desc.raw');
+      await page.waitForSelector('#pagedesc.raw');
       await page.keyboard.press('e');
-      await page.waitForSelector('#descedit.on');
+      await page.waitForSelector('#pagedescedit.on');
 
       // Wait on the RESPONSE, not a sleep. A timeout here would let the test
       // pass because the render never arrived — i.e. it would stay green with
@@ -571,8 +689,8 @@ describe('board UI', () => {
       // empty-render test for why that is not the same as sleeping and hoping.
       await page.waitForTimeout(100);
 
-      expect(await page.locator('#descedit.on').count()).toBe(1);
-      expect(await page.locator('#desc.md').count()).toBe(0);
+      expect(await page.locator('#pagedescedit.on').count()).toBe(1);
+      expect(await page.locator('#pagedesc.md').count()).toBe(0);
       expect(errors).toEqual([]);
     } finally { await context.close(); }
   }, T);
@@ -593,9 +711,9 @@ describe('board UI', () => {
 
   // ── the click-through into a live gate (T8) ────────────────────────────
   // A link inside a row that is itself clickable is the kind of thing that
-  // regresses silently: you click "open the plan" and get the ticket overlay.
+  // regresses silently: you click "open the plan" and land on the ticket.
 
-  it('a waiting row links to the live plan, and the link does not open the overlay', async () => {
+  it('a waiting row links to the live plan, and the link does not open the ticket', async () => {
     if (!HAS_CHROMIUM) return;
     // A real served gate, so the board resolves a real port.
     const specPath = join(HOME_DIR, 'gate.json');
@@ -621,19 +739,20 @@ describe('board UI', () => {
       expect(await link.getAttribute('href')).toBe(`http://127.0.0.1:${port}/`);
       expect(await link.getAttribute('target')).toBe('_blank');
 
-      // The row underneath opens the ticket overlay. The link must not.
+      // The row underneath navigates to the ticket. The link must not.
       await link.click({ modifiers: ['Alt'] }); // Alt-click: no navigation, event still fires
       await page.waitForTimeout(250);
-      expect(await page.locator('#detv.on').count()).toBe(0);
+      expect(await page.locator('.stub').count()).toBe(0);
 
       // ...while clicking the row itself still does open it.
       await page.locator('.wait .item').first().click();
-      await page.waitForSelector('#detv.on');
+      await page.waitForSelector('.stub');
 
-      // The overlay carries the same click-through, chosen by an explicit
+      // The ticket page carries the same click-through, chosen by an explicit
       // "awaiting with a live URL" predicate rather than by whichever run a
-      // bare find() happens to reach first.
-      const btn = page.locator('#detv .acts a:has-text("open the plan")');
+      // bare find() happens to reach first. It ranks with start rather than
+      // with the dispositions, because an open gate IS the primary action.
+      const btn = page.locator('.stub .acts a:has-text("open the plan")');
       await btn.waitFor();
       expect(await btn.getAttribute('href')).toBe(`http://127.0.0.1:${port}/`);
       expect(errors).toEqual([]);
