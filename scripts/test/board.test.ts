@@ -626,3 +626,83 @@ test('captured tickets never inherit the SERVER cwd as their app', async () => {
   };
   expect(s.tickets.find((t) => t.id === id)?.repo_slug).toBeNull();
 });
+
+// ─── the click-through into a live gate (T8) ──────────────────────────────
+// The board already knew a run was parked at a gate; it could not take you
+// there. The join is a session id on the run, and the URL is resolved — never
+// stored — because the port dies with the server.
+
+const HTMLBIN = join(REPO_ROOT, 'bin', 'smriti-html');
+
+function serveSpec(): { sessionId: string; port: number } {
+  const spec = join(HOME_DIR, 'gate-spec.json');
+  writeFileSync(spec, JSON.stringify({
+    title: 'Plan', skill: 'begin', session_id: 'pending', revision_id: 'rev-1', source_hash: 'h',
+    sections: [{ id: 's', title: 'S', cards: [{ id: 'c1', title: 't', body_md: 'b' }] }],
+  }));
+  // --no-trace: this test drives the trace itself, so the transport must not
+  // also be writing gate events underneath the assertions.
+  const out = spawnSync('bun', [HTMLBIN, 'serve', spec, '--no-open', '--no-trace'], {
+    encoding: 'utf8', env: { ...process.env, SMRITI_HOME: HOME_DIR },
+  });
+  const j = JSON.parse(out.stdout) as { session_id: string; port: number };
+  return { sessionId: j.session_id, port: j.port };
+}
+const stopSession = (id: string) =>
+  spawnSync('bun', [HTMLBIN, 'stop', '--session', id], {
+    encoding: 'utf8', env: { ...process.env, SMRITI_HOME: HOME_DIR },
+  });
+
+test('/api/state resolves html_url for an awaiting run whose gate is live', async () => {
+  const { sessionId, port } = serveSpec();
+  const uid = tr(['start', 'begin']).stdout.trim().split('=')[1];
+  tr(['emit', 'approve', 'awaiting', '--run', uid, '--html-session', sessionId]);
+
+  const s = (await (await fetch(`${base()}/api/state`, withCookie())).json()) as {
+    runs: (ApiRun & { html_session?: string; html_url?: string })[];
+  };
+  const run = s.runs.find((r) => r.run_uid === uid)!;
+  expect(run.status).toBe('awaiting');
+  expect(run.html_session).toBe(sessionId);
+  // Synthesized from a validated port, not taken from the resolver's string.
+  expect(run.html_url).toBe(`http://127.0.0.1:${port}/`);
+
+  stopSession(sessionId);
+  tr(['end', '--run', uid]);
+});
+
+test('/api/state omits html_url once that server is gone — never a dead link', async () => {
+  const { sessionId } = serveSpec();
+  const uid = tr(['start', 'begin']).stdout.trim().split('=')[1];
+  tr(['emit', 'approve', 'awaiting', '--run', uid, '--html-session', sessionId]);
+  stopSession(sessionId);
+
+  const s = (await (await fetch(`${base()}/api/state`, withCookie())).json()) as {
+    runs: (ApiRun & { html_session?: string; html_url?: string })[];
+  };
+  const run = s.runs.find((r) => r.run_uid === uid)!;
+  expect(run.status).toBe('awaiting');   // still parked...
+  expect(run.html_session).toBe(sessionId);
+  expect(run.html_url).toBeUndefined();  // ...but nowhere to click
+  tr(['end', '--run', uid]);
+});
+
+test('/api/state does not resolve a URL for a run that is not at a gate', async () => {
+  // A running run is never asked about: the resolution is bounded to the rows
+  // in "waiting on you", which is what keeps it a handful of probes per poll.
+  const { sessionId } = serveSpec();
+  const uid = tr(['start', 'begin']).stdout.trim().split('=')[1];
+  tr(['emit', 'approve', 'awaiting', '--run', uid, '--html-session', sessionId]);
+  tr(['emit', 'implement', 'start', '--run', uid]);   // gate closed, still working
+
+  const s = (await (await fetch(`${base()}/api/state`, withCookie())).json()) as {
+    runs: (ApiRun & { html_session?: string | null; html_url?: string })[];
+  };
+  const run = s.runs.find((r) => r.run_uid === uid)!;
+  expect(run.status).toBe('running');
+  expect(run.html_session).toBeNull();
+  expect(run.html_url).toBeUndefined();
+
+  stopSession(sessionId);
+  tr(['end', '--run', uid]);
+});

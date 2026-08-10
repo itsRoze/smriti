@@ -84,11 +84,14 @@ smriti trace start begin --ticket "${TICKET:--}" >/dev/null 2>&1 || true
 
 There is no run id to carry around: `emit` and `end` find the open run for this
 branch themselves. Then after each step: `smriti trace emit <phase> ok || true`,
-using the step's own name — `ground`, `understand`, `clarify`, `plan`, `codex`, `approve`,
+using the step's own name — `ground`, `understand`, `clarify`, `plan`, `codex`,
 `implement`, `review`, `verify`. Two that carry weight:
 
-- **entering Gate 2** — `smriti trace emit approve awaiting || true`, which is
-  what lists the run under *waiting on you*.
+- **Gate 2 — emit nothing.** `smriti html serve` and `render` open the `approve`
+  gate themselves, and `await` and `stop` close it. That is deliberate: the gate
+  used to be opened by hand here with nothing specified for leaving it, so runs
+  sat in *waiting on you* for the rest of their lives and their agent time was
+  booked against you. Emitting `approve` by hand now only doubles the events.
 - **Step 9** — `smriti trace end || true` (or `--status failed` if you're
   handing back red).
 
@@ -199,9 +202,11 @@ what **Shape** is for.
 
 **Sizable UI change →** build **mockups** so the user *sees* the change at Gate 2
 rather than reading prose. Use the `frontend-design` skill and what Step 1 learned
-about the app's real look, and write a self-contained HTML fragment beside the
-plan for the approval view to embed. Skip mockups for trivial UI (copy, one field,
-a spacing nudge) and backend-only work.
+about the app's real look, then put each mockup in its card's **`mockup_html`** —
+a complete self-contained HTML document, which the approval view renders as a
+picture in a sandboxed frame. Never put the markup in `body_md`: that field is
+escape-first and your mockup will render as a wall of visible source. Skip mockups
+for trivial UI (copy, one field, a spacing nudge) and backend-only work.
 
 ## Step 4 · Codex second opinion on the plan
 
@@ -224,8 +229,8 @@ Map the plan to the spec:
 - Each `body_md` is that section's essence — the approach + why, in brief.
 - `source_hash` over `$PLAN_FILE`; set `global_notes_prompt` to invite overall
   direction ("Approve, or tell me what to change?").
-- If you built UI mockups, include them as a **Design** section/card so the user
-  sees the change.
+- If you built UI mockups, include them as a **Design** section/card, each in its
+  card's `mockup_html`, so the user sees the change rather than reading about it.
 
 **ALWAYS render Gate 2 as HTML.** The plan is a multi-section review, so it goes
 through the interactive HTML loop **every time** — running `smriti html serve` +

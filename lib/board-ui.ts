@@ -121,6 +121,10 @@ export function boardPage(): string {
   }
   .wait .sub2{margin-top:9px;font-family:ui-monospace,Menlo,monospace;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-3)}
   .wait .sub2 b{color:var(--orange);font-weight:400}
+  /* The one thing on a waiting row you can act on, so it reads as an action
+     rather than as more metadata. */
+  .planlink{color:var(--hi);text-decoration:none;border-bottom:1px solid transparent;font-weight:600}
+  .planlink:hover,.planlink:focus-visible{border-bottom-color:currentColor}
   .wait .empty{font-size:19px;color:var(--ink-3);padding:6px}
 
   .trees{display:block;width:100%;height:auto;margin:6px 0 -2px;opacity:.95}
@@ -616,6 +620,28 @@ export function boardPage(): string {
   }
   function docsFor(t){ return S.documents.filter((d) => d.ticket_id === t.id); }
 
+  // The gate this ticket is actually parked at. NOT runFor(): that is a bare
+  // find() over a bounded union of active and recent runs, which is no promise
+  // about which run is current — a ticket with several runs could hand back the
+  // wrong one's link. The predicate is the whole answer: awaiting, and with a
+  // URL the server already proved is live.
+  function gateFor(t){
+    return S.runs.find((r) => r.ticket_id === t.id && r.status === 'awaiting' && httpUrl(r.html_url));
+  }
+
+  // esc() escapes HTML; it does not validate a scheme. The board builds this URL
+  // itself from a validated port, but it renders through the same allowlist as
+  // every other stored link rather than being trusted for its provenance.
+  function httpUrl(u){ const v = String(u || '').toLowerCase(); return v.startsWith('http://') || v.startsWith('https://'); }
+
+  // The click-through into a live review. data-plan marks it for the event
+  // contract in wire(): a link inside a row that is itself clickable has to
+  // stop that row from also firing, or you get the overlay instead of the plan.
+  function planLink(r){
+    if (!r || !httpUrl(r.html_url)) return '';
+    return ' · <a class="planlink" data-plan href="' + esc(r.html_url) + '" target="_blank" rel="noopener">open the plan ↗</a>';
+  }
+
   // ── the model ────────────────────────────────────────────────────────
   // A ticket belongs to an app, or to nothing. NO_APP is the bucket for the
   // second case — a label, never a slug, so it cannot collide with a real app.
@@ -748,7 +774,8 @@ export function boardPage(): string {
         w += '<div class="item" data-tid="' + (t ? t.id : '') + '">' +
           '<div><span class="h">' + esc(title) + '</span></div>' +
           '<div class="sub2">' + esc(appLabel(r.repo_slug || NO_APP)) + (t ? ' · #' + t.id : '') +
-          ' · <b>' + esc(r.last_phase || 'gate') + ' — needs a decision</b>' + held + '</div></div>';
+          ' · <b>' + esc(r.last_phase || 'gate') + ' — needs a decision</b>' + held +
+          planLink(r) + '</div></div>';
       }
     }
     w += '</div>';
@@ -1009,6 +1036,14 @@ export function boardPage(): string {
   // to a page cannot quietly miss its handler.
   function wire(){
     const $$ = (s) => document.querySelectorAll('.sheet ' + s);
+    // A link inside a clickable row needs the row to stay out of its way.
+    // Stopping the click covers the keyboard too: Enter on a focused anchor
+    // dispatches a click that bubbles exactly like a pointer one, so one
+    // handler answers both. Order does not matter here — the stop happens at
+    // the anchor, and the row's listener is an ancestor.
+    $$('[data-plan]').forEach((el) => {
+      el.addEventListener('click', (e) => { e.stopPropagation(); });
+    });
     $$('[data-tid]').forEach((el) => {
       el.addEventListener('click', () => { const id = Number(el.dataset.tid); if (id) openDetail(id); });
     });
@@ -1364,10 +1399,14 @@ export function boardPage(): string {
     if (t.status !== 'cancelled') h += '<button class="btn" data-act="cancel">cancel</button>';
     else h += '<button class="btn" data-act="revive">bring it back</button>';
     h += '<button class="btn danger" data-act="delete">delete</button>';
-    // esc() escapes HTML; it does not validate a scheme. Without the same
-    // allowlist md.ts applies to document links, a stored javascript: url runs
+    // The same click-through as the waiting band, where you land when you open
+    // the ticket instead of the row. httpUrl is shared with planLink: esc()
+    // escapes HTML but does not validate a scheme, and without the allowlist
+    // md.ts applies to document links a stored javascript: url would run
     // against this page's own authenticated API when clicked.
-    const httpUrl = (u) => { const v = String(u || '').toLowerCase(); return v.startsWith('http://') || v.startsWith('https://'); };
+    const gate = gateFor(t);   // already scheme-checked
+    if (gate)
+      h += '<a class="btn go" href="' + esc(gate.html_url) + '" target="_blank" rel="noopener">open the plan ↗</a>';
     if (t.pr_url && httpUrl(t.pr_url))
       h += '<a class="btn" href="' + esc(t.pr_url) + '" target="_blank" rel="noopener">open PR ↗</a>';
     h += '</div>';
@@ -1673,6 +1712,10 @@ export function boardPage(): string {
   document.addEventListener('keydown', (e) => {
     const inPal = $('#palv').classList.contains('on');
     const typing = e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA');
+    // A focused link owns its own Enter. Without this the board's Enter would
+    // also fire — starting or attaching the ticket behind the link you were
+    // actually trying to follow.
+    const onLink = e.target && typeof e.target.closest === 'function' && e.target.closest('a[href]');
 
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k'){ e.preventDefault(); inPal ? closeAll() : palOpen(); return; }
     if (e.key === 'Escape'){
@@ -1694,6 +1737,7 @@ export function boardPage(): string {
       return;
     }
     if (typing) return;
+    if (onLink && (e.key === 'Enter' || e.key === ' ')) return;
 
     const t = selectedTicket();
     switch (e.key){
