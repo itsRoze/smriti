@@ -166,8 +166,8 @@ export function boardPage(): string {
   .rtab{
     position:fixed;left:calc(var(--rail-w) - 11px);top:74px;z-index:9;
     width:21px;height:21px;display:grid;place-items:center;padding:0;
-    font:inherit;font-size:12px;color:var(--ink-3);background:var(--paper);
-    border:2.5px solid var(--ink-4);border-radius:7px 9px 6px 8px/8px 6px 9px 7px;
+    font:inherit;font-size:12px;color:var(--ink-2);background:var(--paper);
+    border:2.5px solid var(--ink-3);border-radius:7px 9px 6px 8px/8px 6px 9px 7px;
     transform:rotate(-3deg);cursor:pointer;
   }
   /* The glyph is CSS, from the same token that sets the width. Deriving it in
@@ -190,22 +190,28 @@ export function boardPage(): string {
      again — so the hint would flicker, or never arrive at all. Marginalia is
      written down anyway. Quiet enough at rest to be annotation rather than
      chrome, and it warms when you approach the control it belongs to. */
-  .kb{
+     A key is drawn as a KEYCAP everywhere in this app, so it is drawn as one
+     here too — a bare letter read as stray pencil rather than as something you
+     could press. Same .k as the bar, a size down, which also inherits its press
+     animation for free. */
+  .k.sm{
+    font-family:ui-monospace,Menlo,monospace;font-size:9px;letter-spacing:.08em;
+    text-transform:uppercase;min-width:0;padding:2px 5px 3px;margin-right:0;
+    border-width:2px;box-shadow:0 1.5px 0 rgba(var(--sh),.4);pointer-events:none;
+  }
+  /* Sits on paper so the margin rule does not run through it — the same thing
+     the tab above it does where it straddles the line. */
+  .rtab .kb{position:absolute;top:calc(100% + 5px);left:50%;transform:translateX(-50%)}
+  .rtab:hover .kb,.rtab:focus-visible .kb{border-color:var(--orange);color:var(--orange)}
+  body:has(.rail:hover) .rtab .kb{border-color:var(--ink)}
+
+  .kh{
+    margin-left:auto;padding-left:14px;display:inline-flex;align-items:center;gap:7px;
     font-family:ui-monospace,Menlo,monospace;font-size:9.5px;letter-spacing:.16em;
     text-transform:uppercase;color:var(--ink-4);pointer-events:none;
-    transition:color .12s ease;
   }
-  /* On paper, so the margin rule does not run through the letter — the same
-     thing the tab itself does where it straddles the line. */
-  .rtab .kb{
-    position:absolute;top:calc(100% + 4px);left:50%;transform:translateX(-50%);
-    background:var(--paper);padding:1px 3px 0;line-height:1.3;
-  }
-  .rtab:hover .kb,.rtab:focus-visible .kb,.rtab .kb.hit{color:var(--orange)}
-  body:has(.rail:hover) .rtab .kb{color:var(--ink-3)}
-
-  .histline .kb{margin-left:auto;padding-left:14px}
-  .histline:hover .kb,.histline:focus-visible .kb,.histline .kb.hit{color:var(--orange)}
+  .histline:hover .kh,.histline:focus-visible .kh{color:var(--ink-2)}
+  .histline:hover .k.sm,.histline:focus-visible .k.sm{border-color:var(--orange);color:var(--orange)}
 
   .box{
     border:2.5px solid var(--ink);background:var(--paper-2);
@@ -570,7 +576,7 @@ export function boardPage(): string {
 </style>
 </head>
 <body>
-<button class="rtab" id="rtab" title="the margin — b" aria-label="show or hide the margin"><span class="kb" data-k="b" aria-hidden="true">b</span></button>
+<button class="rtab" id="rtab" title="the margin — b" aria-label="show or hide the margin"><span class="k sm kb" data-k="b" aria-hidden="true">b</span></button>
 <div class="page">
 <nav class="rail" id="rail" aria-label="apps and projects"></nav>
 <div class="sheet">
@@ -862,7 +868,7 @@ export function boardPage(): string {
       (cancelled ? 'cancelled <b>' + cancelled + '</b>' : '') + '</span>' +
       // "all", because the key is honest about doing more than the button: this
       // line folds THIS group, h folds every one of them.
-      '<span class="kb" data-k="h" aria-hidden="true">h all</span></button>';
+      '<span class="kh" aria-hidden="true"><span class="k sm" data-k="h">h</span>all</span></button>';
     if (on){
       // Its own stagger, from zero. cardHtml stamps animation-delay from a
       // board-wide counter, and .card holds the from-state (opacity:0) for the
