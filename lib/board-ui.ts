@@ -198,20 +198,35 @@ export function boardPage(): string {
   .reload{margin-left:auto;align-self:center;font-size:16px;color:var(--ink-3);cursor:pointer;
     background:none;border:0;padding:4px 8px}
   .reload:hover{color:var(--ink)}
+  /* ── rendered markdown, once ─────────────────────────────────────────
+     Every surface that shows lib/md.ts output wears .md: the doc tabs on an
+     app page, the doc viewer in the overlay, and now the three descriptions.
+     There used to be two near-copies of this block and they had already
+     drifted — the doc pane never got the .tablewrap rule, so a wide table in
+     PROJECT.md scrolled the whole page sideways. A third copy for
+     descriptions is how that keeps happening. Containers keep their own
+     chrome below; this owns the typography and nothing else. */
+  .md h1,.md h2,.md h3,.md h4,.md h5,.md h6{font-size:18px;margin:14px 0 7px;color:var(--ink);line-height:1.3}
+  .md > :first-child{margin-top:0}
+  .md > :last-child{margin-bottom:0}
+  .md p{margin:0 0 10px}
+  .md pre{background:rgba(var(--sh),.09);padding:10px 12px;border-radius:8px;overflow-x:auto;
+    font-size:12.5px;margin:0 0 10px}
+  .md code{font-family:ui-monospace,Menlo,monospace;font-size:.85em}
+  .md .tablewrap{overflow-x:auto;margin:10px 0}
+  .md table{border-collapse:collapse;margin:0;font-size:14px}
+  .md th,.md td{border:1.5px solid var(--ink-4);padding:5px 9px;text-align:left}
+  .md blockquote{border-left:3px solid var(--ink-4);margin:10px 0;padding:2px 14px;color:var(--ink-3)}
+  .md ul,.md ol{padding-left:22px;margin:0 0 10px}
+  .md li{margin:2px 0}
+  .md hr{border:0;border-top:1.5px dashed var(--ink-4);margin:14px 0}
+  .md a{color:var(--pine-b)}
+  .md strong{color:var(--ink)}
   .docpane{
     border:2.5px solid var(--ink);background:var(--paper-2);border-radius:0 14px 16px 14px;
     padding:18px 22px;box-shadow:2px 3px 0 rgba(var(--sh),.3);
     max-height:420px;overflow:auto;font-size:15px;line-height:1.62;color:var(--ink-2);
   }
-  .docpane h1,.docpane h2,.docpane h3{font-size:18px;margin:14px 0 7px;color:var(--ink)}
-  .docpane h1:first-child,.docpane h2:first-child{margin-top:0}
-  .docpane pre{background:rgba(var(--sh),.09);padding:10px 12px;border-radius:8px;overflow-x:auto;font-size:12.5px}
-  .docpane code{font-family:ui-monospace,Menlo,monospace;font-size:.85em}
-  .docpane table{border-collapse:collapse;margin:10px 0;font-size:14px}
-  .docpane th,.docpane td{border:1.5px solid var(--ink-4);padding:5px 9px;text-align:left}
-  .docpane blockquote{border-left:3px solid var(--ink-4);margin:10px 0;padding:2px 14px;color:var(--ink-3)}
-  .docpane ul,.docpane ol{padding-left:22px}
-  .docpane a{color:var(--pine-b)}
   .nothing{padding:34px 24px;text-align:center;color:var(--ink-3);font-size:18px}
   .nothing .cmd{display:inline-block;margin-top:10px;font-family:ui-monospace,Menlo,monospace;
     font-size:12.5px;color:var(--ink);background:rgba(var(--sh),.09);padding:7px 11px;border-radius:8px}
@@ -286,6 +301,12 @@ export function boardPage(): string {
   .veil{position:fixed;inset:0;z-index:20;background:var(--veil);display:none;align-items:flex-start;justify-content:center;padding:9vh 20px 20px}
   .veil.on{display:flex}
   .panel{width:min(760px,94vw);max-height:80vh;overflow:auto;padding:0;animation:pop .22s cubic-bezier(.2,.9,.3,1.3)}
+  /* The ticket overlay alone is a reading-and-writing surface: a rendered body
+     with headings and tables, and an editor over the top of it. It gets more
+     room than the palette or the help sheet, which are lists. (A real ticket
+     PAGE is the better answer and is its own ticket; this is the cheap half.) */
+  #detv{padding-top:6vh}
+  #detv .panel{width:min(1000px,94vw);max-height:86vh}
   @keyframes pop{from{opacity:0;transform:scale(.96) translateY(8px)}}
   .pal .q{padding:16px 20px;font-size:21px;border-bottom:2.5px dashed var(--ink-4);display:flex;gap:8px}
   .pal .q input{
@@ -297,10 +318,29 @@ export function boardPage(): string {
 
   .detail{padding:24px 26px 26px}
   .detail h2{font-size:26px;font-weight:400;margin:0 0 8px;text-wrap:balance}
-  .detail .m{font-family:ui-monospace,Menlo,monospace;font-size:10.5px;letter-spacing:.15em;text-transform:uppercase;color:var(--ink-3);margin-bottom:18px}
-  .detail .m b{color:var(--orange);font-weight:400}
-  .detail .m .jump{color:var(--pine-b);cursor:pointer;border-bottom:1.5px dotted var(--pine-b)}
-  .detail .m .jump:hover{color:var(--ink)}
+  /* ── the ticket's fields, as a pre-printed form ──────────────────────
+     These used to be one dot-separated sentence, which is dense at five
+     fields and has nowhere to put a sixth. A hand-drawn planning board is
+     full of ruled job cards, so: label, rule, value. Rows are emitted even
+     when empty so the block does not reflow between tickets, and #11 and #12
+     can each add one without touching anything else. */
+  .detail .eyebrow{font-family:ui-monospace,Menlo,monospace;font-size:11px;
+    letter-spacing:.22em;color:var(--ink-3);margin-bottom:2px}
+  .fields{display:grid;grid-template-columns:max-content 1fr;gap:0 16px;margin:0 0 20px}
+  .fields dt{font-family:ui-monospace,Menlo,monospace;font-size:9.5px;letter-spacing:.16em;
+    text-transform:uppercase;color:var(--ink-3);align-self:center;
+    padding:6px 0 5px;border-bottom:1px dotted var(--ink-4)}
+  .fields dd{margin:0;font-size:15px;color:var(--ink);line-height:1.35;align-self:center;
+    overflow-wrap:anywhere;padding:6px 0 5px;border-bottom:1px dotted var(--ink-4)}
+  .fields dd.empty{color:var(--ink-3);font-style:italic}
+  .fields dd.wire{font-family:ui-monospace,Menlo,monospace;font-size:12.5px;color:var(--ink-2)}
+  .fields .jump{color:var(--pine-b);cursor:pointer;border-bottom:1.5px dotted var(--pine-b)}
+  .fields .jump:hover{color:var(--ink)}
+  /* Status is a rubber stamp on the card rather than a bold word mid-run. */
+  .stamp{display:inline-block;font-family:ui-monospace,Menlo,monospace;font-size:9.5px;
+    letter-spacing:.14em;text-transform:uppercase;color:var(--orange);
+    border:2px solid var(--orange);padding:2px 9px 3px;
+    border-radius:9px 13px 8px 12px/12px 8px 13px 9px;transform:rotate(-1.2deg)}
   .refile{display:flex;align-items:center;gap:10px;margin-bottom:18px;
     font-family:ui-monospace,Menlo,monospace;font-size:10.5px;letter-spacing:.15em;
     text-transform:uppercase;color:var(--ink-3)}
@@ -311,12 +351,26 @@ export function boardPage(): string {
     padding:5px 10px 6px;
   }
   .refile select:hover{border-color:var(--ink)}
-  .detail .body{font-size:17px;color:var(--ink-2);margin-bottom:18px;cursor:text;
-    border-radius:10px;padding:6px 8px;margin-left:-8px;transition:background .12s ease}
-  .detail .body:hover{background:rgba(var(--hi-rgb),.10)}
-  .detail .body .ghost{color:var(--ink-4);font-style:italic}
+  /* ── a description: one surface, three states ────────────────────────
+     .raw is the source with its line breaks honoured — what you see before
+     the render lands, and what you keep if it never does. .md is the
+     rendered form. Editing swaps the whole box for the textarea below.
+     All three descriptions (ticket, app, project) wear this. */
+  .desc{font-size:17px;color:var(--ink-2);margin-bottom:18px;cursor:text;position:relative;
+    border-radius:10px;padding:6px 8px;margin-left:-8px;transition:background .12s ease;outline:none}
+  .desc:hover,.desc:focus-visible{background:rgba(var(--hi-rgb),.10)}
+  .desc:focus-visible{box-shadow:0 0 0 2.5px var(--hi)}
+  .desc.raw{white-space:pre-wrap}
+  .desc .ghost{color:var(--ink-4);font-style:italic}
+  /* Once the body is real markup, "click me" needs saying out loud — a wash
+     alone reads as decoration next to a table. */
+  .desc:hover::after,.desc:focus-visible::after{
+    content:"e";position:absolute;top:4px;right:6px;
+    font-family:ui-monospace,Menlo,monospace;font-size:9px;letter-spacing:.14em;
+    text-transform:uppercase;color:var(--ink-3)}
+  .desc a{cursor:pointer}
   .descedit{
-    display:none;width:100%;min-height:96px;font:inherit;font-size:17px;color:var(--ink);
+    display:none;width:100%;min-height:160px;font:inherit;font-size:17px;color:var(--ink);
     background:var(--paper);border:2.5px dashed var(--ink-4);border-radius:12px;
     padding:12px 14px;margin-bottom:18px;resize:vertical;outline:none;
   }
@@ -342,16 +396,7 @@ export function boardPage(): string {
     font-size:15px;line-height:1.6;color:var(--ink-2);display:none;
   }
   .docview.on{display:block}
-  .docview h1,.docview h2,.docview h3{font-size:19px;margin:14px 0 8px;color:var(--ink)}
-  .docview h1:first-child,.docview h2:first-child{margin-top:0}
-  .docview pre{background:rgba(var(--sh),.09);padding:10px 12px;border-radius:8px;overflow-x:auto;font-size:12.5px}
-  .docview code{font-family:ui-monospace,Menlo,monospace;font-size:.85em}
-  .docview .tablewrap{overflow-x:auto;margin:10px 0}
-  .docview table{border-collapse:collapse;margin:0;font-size:14px}
-  .docview th,.docview td{border:1.5px solid var(--ink-4);padding:5px 9px;text-align:left}
-  .docview blockquote{border-left:3px solid var(--ink-4);margin:10px 0;padding:2px 14px;color:var(--ink-3)}
-  .docview ul,.docview ol{padding-left:22px}
-  .docview a{color:var(--pine-b)}
+  .docview h1,.docview h2,.docview h3,.docview h4{font-size:19px}
 
   /* Where the time went. Pine ink is the agent's time; highlighter wash is
      yours — the same two meanings the board already gives those colours. */
@@ -458,6 +503,7 @@ export function boardPage(): string {
   <span><span class="k" data-k="nav">↑↓</span>move</span>
   <span><span class="k" data-k="Enter">⏎</span>open</span>
   <span><span class="k" data-k="s">S</span>start</span>
+  <span><span class="k" data-k="e">E</span>edit</span>
   <span><span class="k" data-k="c">C</span>capture</span>
   <span><span class="k" data-k="p">P</span>project</span>
   <span><span class="k" data-k="d">D</span>done</span>
@@ -481,6 +527,7 @@ export function boardPage(): string {
   <div class="helpgrid">
     <div><b>↑↓ / jk</b> — move</div><div><b>⏎</b> — open ticket</div>
     <div><b>s</b> — start work</div><div><b>c</b> — capture (into what you're on)</div>
+    <div><b>e</b> — edit the description</div><div><b>⌘⏎</b> — save it, <b>esc</b> — abandon</div>
     <div><b>d</b> — mark done</div><div><b>⌘K / /</b> — palette, apps & projects too</div>
     <div><b>p</b> — open its project / app</div><div><b>m</b> — pace (medians)</div>
     <div><b>esc</b> — close, then back up a level</div>
@@ -677,7 +724,7 @@ export function boardPage(): string {
     return '<div class="lab">paper trail</div><div class="trail">' + docs.map((d) =>
       '<div class="doc" data-doc="' + d.id + '"><span class="tag">' + esc(d.type) + '</span>' +
       '<span>' + esc(d.path.split('/').pop()) + '</span></div>'
-    ).join('') + '</div><div class="docview" id="pagedoc"></div>';
+    ).join('') + '</div><div class="docview md" id="pagedoc"></div>';
   }
 
   function historyHtml(list){
@@ -830,8 +877,7 @@ export function boardPage(): string {
       '</div></div></div>';
 
     h += '<div class="lab">what this app is</div>' +
-      '<div class="body" id="pagedesc" data-edit="repo" title="click to edit">' +
-      (repo.description ? esc(repo.description) : '<span class="ghost">what this app is, and why…</span>') + '</div>' +
+      descBox('id="pagedesc" data-edit="repo"', repo.description, 'what this app is, and why…') +
       '<textarea class="descedit" id="pagedescedit" placeholder="what this app is, and why">' + esc(repo.description || '') + '</textarea>';
 
     // The two repo-level documents. Rendered from disk, so all three states are
@@ -843,7 +889,7 @@ export function boardPage(): string {
           (repo.repo_path && !has ? ' <span class="absent">— none</span>' : '') + '</button>';
       }).join('') +
       '<button class="reload" data-reload title="re-read from disk">↻</button></div>' +
-      '<div class="docpane" id="docpane"></div>';
+      '<div class="docpane md" id="docpane"></div>';
 
     if (projs.length){
       h += '<div class="lab">projects</div><div class="plist">' + projs.map((p) => {
@@ -898,8 +944,7 @@ export function boardPage(): string {
       '</div></div></div>';
 
     h += '<div class="lab">what this project is</div>' +
-      '<div class="body" id="pagedesc" data-edit="project" data-pid="' + p.id + '" title="click to edit">' +
-      (p.description ? esc(p.description) : '<span class="ghost">what this project is, and why…</span>') + '</div>' +
+      descBox('id="pagedesc" data-edit="project" data-pid="' + p.id + '"', p.description, 'what this project is, and why…') +
       '<textarea class="descedit" id="pagedescedit" placeholder="what this project is, and why">' + esc(p.description || '') + '</textarea>';
 
     const open = items.filter(isOpen).sort(byStatus);
@@ -1044,13 +1089,13 @@ export function boardPage(): string {
   function wireDescEditor(){
     const d = $('#pagedesc'), ta = $('#pagedescedit');
     if (!d || !ta) return;
+    const current = () => (d.dataset.edit === 'repo'
+      ? ((repoBySlug(view.slug) || {}).description || '')
+      : ((projectById(Number(d.dataset.pid)) || {}).description || ''));
     const save = async () => {
       const next = ta.value.trim();
       ta.classList.remove('on'); d.style.display = '';
-      const current = d.dataset.edit === 'repo'
-        ? ((repoBySlug(view.slug) || {}).description || '')
-        : ((projectById(Number(d.dataset.pid)) || {}).description || '');
-      if (next === current.trim()) return;
+      if (next === current().trim()) return;
       const url = d.dataset.edit === 'repo'
         ? '/api/repos/' + encodeURIComponent(view.slug)
         : '/api/projects/' + d.dataset.pid;
@@ -1059,14 +1104,12 @@ export function boardPage(): string {
         toast('description saved'); await refresh();
       } catch (e) { toast('could not save: ' + esc(e.message)); }
     };
-    d.addEventListener('click', () => {
-      d.style.display = 'none'; ta.classList.add('on'); ta.focus();
-      ta.onblur = save;
-      ta.onkeydown = (ev) => {
-        if (ev.key === 'Escape'){ ev.stopPropagation(); ta.onblur = null; ta.classList.remove('on'); d.style.display = ''; }
-        if (ev.key === 'Enter' && (ev.metaKey || ev.ctrlKey)) ta.blur();
-      };
+    wireDescEdit(d, ta, save);
+    d.addEventListener('click', (ev) => {
+      if (editBlocked(ev, d)) return;
+      startEdit(d, ta);
     });
+    paintDesc(d, current());
   }
 
   function recentlyShipped(t){
@@ -1114,6 +1157,140 @@ export function boardPage(): string {
   function isEditing(){
     const ta = document.querySelector('.descedit.on');
     return Boolean(ta) && document.activeElement === ta;
+  }
+
+  // ── descriptions ─────────────────────────────────────────────────────
+  // lib/md.ts is a Bun module and this whole client is one template string
+  // with no build step, so the renderer cannot be imported here. The SOURCE
+  // is not the problem — ticket bodies and both description columns already
+  // ride along in /api/state — so the server exposes the renderer as a plain
+  // function and we post it text we are already holding.
+  //
+  // Painted in two beats: the raw source first, with its line breaks kept,
+  // then the rendered form over the top. A render that never arrives leaves
+  // readable text behind instead of a blank box, which is also what makes
+  // this safe to do on a surface that is polled.
+  const mdCache = new Map();
+  const MD_CACHE_MAX = 200;
+  // Sources whose render failed. Without this, an app or project page retries
+  // on every SSE tick — about once a second while an agent runs — for as long
+  // as the endpoint is down. Cleared when the tab is re-focused, the same
+  // place docCache is dropped, so a transient failure recovers.
+  const mdFailed = new Set();
+  let descSeq = 0;
+
+  function mdPut(src, html){
+    if (mdCache.size >= MD_CACHE_MAX) mdCache.delete(mdCache.keys().next().value);
+    mdCache.set(src, html);
+  }
+  // Never blank the box. renderMarkdown returns '' for a whitespace-only
+  // source, and swapping that in would destroy both the raw text and the
+  // ghost placeholder, leaving an empty strip you cannot even see to click.
+  function mdApply(el, html){
+    if (!html) return false;
+    el.innerHTML = html;
+    el.classList.remove('raw');
+    el.classList.add('md');
+    return true;
+  }
+  // The guards matter more than the cache. Pages are re-rendered on every SSE
+  // tick and both reuse #pagedesc, and a render started before you clicked
+  // into the editor can land after it opened. So a result is only allowed in
+  // while it still belongs where it was sent: same live node, same generation,
+  // nothing open over it. Anything late is dropped.
+  //
+  // (The detail overlay is NOT rebuilt by the SSE path — refresh() only calls
+  // route(), which redraws the page behind it. #desc goes stale by being
+  // replaced by a later openDetail, which the same guards cover.)
+  function descLands(el, seq){
+    return el.isConnected                         // the view moved on under us
+      && el.dataset.seq === seq                   // a newer paint owns this node
+      && el.style.display !== 'none';             // an editor is open over it
+  }
+  async function paintDesc(el, src){
+    if (!el || !src || mdFailed.has(src)) return;
+    // A generation is taken even on the cache path: an older render still in
+    // flight for this same node must not overwrite what the cache just put in.
+    const seq = String(++descSeq);
+    el.dataset.seq = seq;
+    const hit = mdCache.get(src);
+    if (hit !== undefined){ if (descLands(el, seq)) mdApply(el, hit); return; }
+    let html;
+    try { html = (await api('/api/render', { method: 'POST', body: JSON.stringify({ md: src }) })).html; }
+    catch { mdFailed.add(src); return; }          // the raw text stands; that IS the fallback
+    mdPut(src, html);
+    if (descLands(el, seq)) mdApply(el, html);
+  }
+
+  // One description box, however it is reached. ghost is escaped even though
+  // every caller passes a literal today: this is the shared entry point for
+  // all three surfaces, and the next caller to pass a stored string should not
+  // have to notice that the parameter was raw.
+  function descBox(attrs, src, ghost){
+    return '<div class="desc raw" tabindex="0" title="click, or press e, to edit" ' + attrs + '>' +
+      (src ? esc(src) : '<span class="ghost">' + esc(ghost) + '</span>') + '</div>';
+  }
+  // Once a body is real markup, "click anywhere to edit" is too broad. A link
+  // has to open, a selection you just dragged has to survive, and a middle or
+  // modified click belongs to the browser rather than to us.
+  function editBlocked(ev, el){
+    if (ev){
+      if (ev.button > 0 || ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.altKey) return true;
+      if (ev.target && ev.target.closest && ev.target.closest('a')) return true;
+    }
+    const s = window.getSelection && window.getSelection();
+    if (s && !s.isCollapsed && s.anchorNode && el.contains(s.anchorNode)) return true;
+    return false;
+  }
+  // Fit the editor to what is in it. A ticket body runs to a few hundred words
+  // here, and typing it through a six-line letterbox is the thing that makes
+  // the overlay feel small. Capped so the buttons below stay reachable, and
+  // resize:vertical still lets you overrule it by hand.
+  function growEdit(ta){
+    ta.style.height = 'auto';
+    ta.style.height = Math.min(ta.scrollHeight + 4, Math.round(window.innerHeight * 0.6)) + 'px';
+  }
+  function startEdit(el, ta){
+    if (!el || !ta) return false;
+    el.style.display = 'none';
+    ta.classList.add('on');
+    growEdit(ta);                 // measured after .on makes it visible
+    ta.focus();
+    return true;
+  }
+  // Save on blur, Escape to abandon, Cmd/Ctrl+Enter to commit. Wired when the
+  // surface is built rather than on first click, so the e key and the keyboard
+  // can open an editor that has never been clicked.
+  //
+  // Escape abandons by RAISING A FLAG the blur handler checks, not by removing
+  // the handler: clearing it left the next editor with nothing on blur, and an
+  // edit typed into it vanished with no error.
+  function wireDescEdit(el, ta, save){
+    let abandoned = false;
+    ta.oninput = () => growEdit(ta);
+    ta.onblur = () => {
+      if (abandoned){ abandoned = false; return; }
+      save();
+    };
+    ta.onkeydown = (ev) => {
+      if (ev.key === 'Escape'){
+        ev.stopPropagation();
+        abandoned = true;
+        ta.classList.remove('on'); el.style.display = '';
+        el.focus();
+      }
+      if (ev.key === 'Enter' && (ev.metaKey || ev.ctrlKey)) ta.blur();
+    };
+    el.addEventListener('keydown', (ev) => {
+      if (ev.target !== el) return;               // a link inside keeps its own Enter
+      if (ev.key !== 'Enter' && ev.key !== ' ') return;
+      // stopPropagation, not just preventDefault: the global handler treats
+      // Enter with the overlay open as "start this ticket", which cuts a
+      // worktree and spawns a session. Opening an editor must not also do that.
+      ev.preventDefault();
+      ev.stopPropagation();
+      startEdit(el, ta);
+    });
   }
 
   async function refresh(){
@@ -1186,14 +1363,28 @@ export function boardPage(): string {
     const run = runFor(t);
     const docs = docsFor(t);
     const proj = t.project_id != null ? projectById(t.project_id) : null;
-    let h = '<h2>' + esc(t.title) + '</h2>' +
-      '<div class="m">#' + t.id + ' · ' +
-      (t.repo_slug ? '<span class="jump" data-app="' + esc(t.repo_slug) + '">' + esc(appLabel(t.repo_slug)) + '</span>' : 'no app yet') +
-      (proj ? ' / <span class="jump" data-proj="' + proj.id + '">' + esc(proj.name) + '</span>' : '') +
-      ' · <b>' + esc(STATUS[t.status] || t.status) + '</b>' +
-      (t.branch ? ' · ' + esc(t.branch) : '') + (docs.length ? ' · ' + docs.length + ' document' + (docs.length > 1 ? 's' : '') : '') + '</div>';
-    h += '<div class="body" id="desc" data-act="editdesc" title="click to edit">' +
-      (t.body ? esc(t.body) : '<span class="ghost">add a description…</span>') + '</div>';
+    // The number is identity, so it sits above the title rather than being the
+    // first clause of a sentence. Rows below are emitted whether or not they
+    // are filled, so the block does not jump about between tickets. The
+    // document count is gone on purpose: the paper trail is listed in full a
+    // few inches down, and counting it here said the same thing twice.
+    // label is escaped, value is not: value is markup the callers below build
+    // (a jump span, a stamp) and have already escaped the text inside.
+    const field = (label, value, cls) =>
+      '<dt>' + esc(label) + '</dt><dd' + (cls ? ' class="' + cls + '"' : '') + '>' + value + '</dd>';
+    let h = '<div class="eyebrow">#' + t.id + '</div>' +
+      '<h2>' + esc(t.title) + '</h2>' +
+      '<dl class="fields">' +
+      field('app', t.repo_slug
+        ? '<span class="jump" data-app="' + esc(t.repo_slug) + '">' + esc(appLabel(t.repo_slug)) + '</span>'
+        : 'no app yet', t.repo_slug ? '' : 'empty') +
+      field('project', proj
+        ? '<span class="jump" data-proj="' + proj.id + '">' + esc(proj.name) + '</span>'
+        : '— loose in ' + esc(t.repo_slug ? appLabel(t.repo_slug) : 'no app'), proj ? '' : 'empty') +
+      field('status', '<span class="stamp">' + esc(STATUS[t.status] || t.status) + '</span>') +
+      field('branch', t.branch ? esc(t.branch) : 'not started yet', t.branch ? 'wire' : 'empty') +
+      '</dl>';
+    h += descBox('id="desc" data-act="editdesc"', t.body, 'add a description…');
     h += '<textarea class="descedit" id="descedit" placeholder="what this actually is, and why">' + esc(t.body || '') + '</textarea>';
     h += '<div class="acts">';
     // "attach" is only honest if a session actually exists. Basing it on the
@@ -1233,7 +1424,7 @@ export function boardPage(): string {
     if (docs.length){
       h += '<div class="trail">' + docs.map((d) =>
         '<div class="doc" data-doc="' + d.id + '"><span class="tag">' + esc(d.type) + '</span><span>' + esc(d.path.split('/').pop()) + '</span></div>'
-      ).join('') + '</div><div class="docview" id="docview"></div>';
+      ).join('') + '</div><div class="docview md" id="docview"></div>';
     }
     h += '<div class="runs" id="runs"></div>';
     h += '<div class="attach" id="attach"></div>';
@@ -1245,24 +1436,26 @@ export function boardPage(): string {
       const ta = $('#descedit');
       const next = ta.value.trim();
       ta.classList.remove('on'); $('#desc').style.display = '';
-      if (next === (t.body || '').trim()) return;
+      // Compare against the CURRENT stored body, not the one captured when the
+      // overlay was drawn. The overlay is not rebuilt by the SSE path, so the
+      // captured ticket goes stale the moment an agent rewrites it — and
+      // this decides whether a PATCH is sent at all.
+      const live = (S.tickets.find((x) => x.id === t.id) || t).body || '';
+      if (next === live.trim()) return;
       try {
         await api('/api/tickets/' + t.id, { method: 'PATCH', body: JSON.stringify({ body: next }) });
         toast('description saved'); await refresh(); openDetail(t.id);
       } catch (e) { toast('could not save: ' + esc(e.message)); }
     };
-    $('#detbody').querySelectorAll('[data-act]').forEach((b) => b.addEventListener('click', async () => {
+    wireDescEdit($('#desc'), $('#descedit'), saveDesc);
+    paintDesc($('#desc'), t.body);
+    $('#detbody').querySelectorAll('[data-act]').forEach((b) => b.addEventListener('click', async (ev) => {
       const act = b.dataset.act;
       if (act === 'start') startTicket(t);
       if (act === 'done'){ markDone(t); closeAll(); }
       if (act === 'editdesc'){
-        const ta = $('#descedit');
-        $('#desc').style.display = 'none'; ta.classList.add('on'); ta.focus();
-        ta.onblur = saveDesc;
-        ta.onkeydown = (ev) => {
-          if (ev.key === 'Escape'){ ev.stopPropagation(); ta.onblur = null; ta.classList.remove('on'); $('#desc').style.display = ''; }
-          if (ev.key === 'Enter' && (ev.metaKey || ev.ctrlKey)) ta.blur();
-        };
+        if (editBlocked(ev, b)) return;
+        startEdit(b, $('#descedit'));
       }
       if (act === 'restart'){
         toast('restarting the session for <b>#' + t.id + '</b>…', 8000);
@@ -1558,6 +1751,24 @@ export function boardPage(): string {
       case 'm': openPace(); break;
       case 't': toggleTheme(); break;
       case 'r': refresh(); toast('refreshed'); break;
+      // e edits whichever description is in front of you. Until now the only
+      // way into an editor was a mouse click, on a board that is otherwise
+      // entirely keyboard-driven.
+      //
+      // Only the detail overlay has a description behind it. help and pace do
+      // not, and focusing a textarea underneath one of those puts every
+      // keystroke somewhere invisible AND stops refresh() re-rendering, since
+      // isEditing() then reports true.
+      case 'e': {
+        if (['helpv', 'pacev'].some((id) => $('#' + id).classList.contains('on'))) break;
+        const opened = $('#detv').classList.contains('on')
+          ? startEdit($('#desc'), $('#descedit'))
+          : startEdit($('#pagedesc'), $('#pagedescedit'));
+        // Only claim the key when it did something — the footer chip flashing
+        // on a view with no description reads as "that worked".
+        if (opened){ e.preventDefault(); tapKey('e'); }
+        break;
+      }
       // p opens the app of whatever is selected — the one key that navigates
       // between the two levels without reaching for the mouse.
       case 'p': {
@@ -1590,7 +1801,7 @@ export function boardPage(): string {
   // cheapest moment to notice the server died while the laptop slept. Repo
   // files are not watched, so this is also when an edited PROJECT.md shows up.
   document.addEventListener('visibilitychange', () => {
-    if (!document.hidden){ docCache.clear(); refresh(); }
+    if (!document.hidden){ docCache.clear(); mdFailed.clear(); refresh(); }
   });
   // Visibility-aware heartbeat: keeps the server alive only while the tab is
   // actually being looked at, so a backgrounded tab lets it idle out.
