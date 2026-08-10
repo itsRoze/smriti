@@ -256,6 +256,40 @@ async function shAsync(bin: string, args: string[], timeoutMs: number): Promise<
   try { return (await p.exited) === 0; } finally { clearTimeout(killer); }
 }
 
+// Same, but the child reads a body on stdin. `smriti trace report` takes the
+// text that way because a captured summary is multi-line and shell-quoting one
+// is a bug waiting to happen.
+async function shIn(bin: string, args: string[], input: string, timeoutMs: number): Promise<boolean> {
+  const p = Bun.spawn([bin, ...args], { stdin: 'pipe', stdout: 'ignore', stderr: 'ignore' });
+  const killer = setTimeout(() => p.kill(), timeoutMs);
+  try {
+    p.stdin.write(input);
+    await p.stdin.end();
+    return (await p.exited) === 0;
+  } catch {
+    return false;
+  } finally { clearTimeout(killer); }
+}
+
+// Non-blocking twin of herdrSessions(), for the close sweep. The sync one runs
+// on every /api/state and must stay as it is; a timer has no excuse to freeze
+// the loop.
+async function herdrSessionsAsync(): Promise<Session[]> {
+  if (!Bun.which('herdr')) return [];
+  const r = await shOut('herdr', ['agent', 'list'], 8000);
+  if (!r.ok) return [];
+  try {
+    return (JSON.parse(r.out)?.result?.agents ?? [])
+      .map((a: Record<string, string>) => ({
+        name: a?.name ?? '',
+        status: a?.agent_status ?? a?.status ?? 'unknown',
+        cwd: a?.cwd ?? '',
+        pane: a?.pane_id ?? '',
+      }))
+      .filter((s: Session) => s.name || s.cwd);
+  } catch { return []; }
+}
+
 // Type the prompt into the session, the way you would.
 //
 // `herdr agent prompt` is the documented way to do this and it does not work
@@ -288,6 +322,123 @@ async function deliverPrompt(pane: string, prompt: string): Promise<boolean> {
   if (!await shAsync('herdr', ['pane', 'send-text', pane, prompt], 10000)) return false;
   await Bun.sleep(500);
   return shAsync('herdr', ['pane', 'send-keys', pane, 'Enter'], 10000);
+}
+
+// ─── closing a session once its ticket has shipped ──────────────────────────
+//
+// Shipping leaves the herdr pane open in a worktree `smriti clean` has already
+// deleted. `clean` cannot be the one to close it: it almost always runs INSIDE
+// the session being closed, and closing a pane mid-command kills the process
+// running the command, so the tidy may not finish and its exit status is lost.
+// The board is a separate long-lived process that already polls this state, so
+// it is the safe actor.
+//
+// Nothing is closed that has not first been captured. `smriti trace report`
+// normally stores the run's own closing summary and that is the licence to
+// close. When a run left none — it died before Gate 3, or the session was never
+// /begin — the pane is scraped first and recorded as a scrape, never passed off
+// as the run's own words.
+//
+// The scrape is ONE VIEWPORT and cannot be more. Claude Code draws on the
+// terminal's alternate screen, and herdr cannot recover rows that have left it:
+// `pane read --lines 2000` returns exactly what `--lines 55` does, silently.
+// That limit is the whole reason the run writes its own report rather than
+// being photographed.
+type ArtifactRow = { run_uid: string; kind: string; source?: string; status?: string | null; body?: string | null };
+type RunRow = { run_uid: string; herdr_pane?: string | null };
+type ShipTicket = { id: number; status: string; worktree_path?: string | null };
+
+async function closeOnShipEnabled(): Promise<boolean> {
+  // Unset means on, matching how the ticket asked for it: default on, with a
+  // key to opt out. Only an explicit `false` disables it.
+  const r = await shOut(join(SMRITI_BIN, 'smriti-config'), ['get', 'close_session_on_ship'], 5000);
+  return r.out.trim() !== 'false';
+}
+
+// Panes we have already tried and failed to capture, so a pane that cannot be
+// read is attempted once rather than every ten seconds forever. Process-scoped
+// on purpose: a board restart is a fair moment to try again.
+const closeGaveUp = new Set<string>();
+let sweeping = false;
+
+async function sweepShippedSessions(): Promise<void> {
+  // A slow herdr must not let sweeps stack on top of each other.
+  if (sweeping) return;
+  sweeping = true;
+  try {
+    // The same ownership rule the reaper uses. This is the board's only timer
+    // that reaches outside its own process — the watcher and heartbeat merely
+    // read — so a stale server that lost the pidfile race must not be closing
+    // panes belonging to the live one.
+    let ownsState = false;
+    try { ownsState = parseInt(readFileSync(join(STATE_DIR, 'pidfile'), 'utf8').trim(), 10) === process.pid; } catch {}
+    if (!ownsState) return;
+
+    if (!Bun.which('herdr')) return;
+    if (!(await closeOnShipEnabled())) return;
+
+    const tickets = await readJsonAsync<ShipTicket[]>(['list', '--all', '--json']);
+    if (!tickets) return;
+    // Shipped, and the worktree actually gone. Both, because a shipped ticket
+    // whose worktree is still there is a session someone may still be using.
+    const done = tickets.filter((t) => t.status === 'shipped' && t.worktree_path && !existsSync(t.worktree_path));
+    if (!done.length) return;
+
+    const agents = await herdrSessionsAsync();
+    if (!agents.length) return;
+
+    for (const t of done) {
+      const runs = (await readJsonAsync<RunRow[]>(['list', '--ticket', String(t.id), '--json'], TRACE)) ?? [];
+      // cwd first, because that is the identifier herdr does not lose and it
+      // equals worktree_path. The stamped pane is the fallback for the case
+      // this feature exists in: the directory is gone, so cwd may be too.
+      const panes = new Set(runs.map((r) => r.herdr_pane).filter(Boolean) as string[]);
+      const sess = agents.find((a) => a.cwd && a.cwd === t.worktree_path)
+                ?? agents.find((a) => a.pane && panes.has(a.pane));
+      if (!sess?.pane || closeGaveUp.has(sess.pane)) continue;
+
+      // `done` is not a lesser `idle` — it IS idle, for work that finished while
+      // nobody was looking at the tab, which is precisely this ticket's case.
+      // `unknown` explicitly does not prove completion, and `blocked` is a
+      // session sitting at a question.
+      if (sess.status !== 'idle' && sess.status !== 'done') continue;
+
+      // Which run owns this pane. A ticket can have several — the board's own
+      // restart action closes one session and starts another on the same
+      // worktree — so an older run's report must not license closing a newer
+      // session. runs are newest-first.
+      const run = runs.find((r) => r.herdr_pane && r.herdr_pane === sess.pane) ?? runs[0];
+      if (!run) continue;
+
+      const arts = (await readJsonAsync<ArtifactRow[]>(
+        ['artifacts', '--ticket', String(t.id), '--kind', 'report', '--json'], TRACE)) ?? [];
+      let captured = arts.some((a) => a.run_uid === run.run_uid);
+
+      if (!captured) {
+        const read = await shOut('herdr',
+          ['pane', 'read', sess.pane, '--source', 'recent-unwrapped', '--lines', '200', '--format', 'text'], 10000);
+        const text = read.ok ? read.out.trim() : '';
+        if (text) {
+          captured = await shIn(TRACE, ['report', '--run', run.run_uid, '--source', 'pane'], text + '\n', 10000);
+        }
+      }
+
+      if (!captured) {
+        // Leave it open rather than closing blind. Losing the only copy of what
+        // the run said is the bug this feature exists to prevent, so an
+        // uncapturable pane stays visible and yours to deal with.
+        closeGaveUp.add(sess.pane);
+        continue;
+      }
+
+      // herdr 0.8 has no `agent stop`; closing the pane is what ends a session.
+      if (!await shAsync('herdr', ['pane', 'close', sess.pane], 10000)) closeGaveUp.add(sess.pane);
+    }
+  } catch {
+    // A sweep is housekeeping. It must never be able to take the board down.
+  } finally {
+    sweeping = false;
+  }
 }
 
 function launchSession(dir: string, ticketId: number, force = false): Launch {
@@ -479,9 +630,15 @@ async function cmdServer(): Promise<never> {
         touch();
         const uid = runDetail[1];
         if (!/^[0-9a-f]{8}$/.test(uid)) return json({ error: 'bad run id' }, 400);
-        const detail = await readJsonAsync(['show', uid, '--json'], TRACE);
+        // Artifacts ride along with the breakdown rather than getting a route
+        // of their own: the overlay fills one run body from one fetch, and a
+        // second round-trip per run would show the report a beat after the bar.
+        const [detail, artifacts] = await Promise.all([
+          readJsonAsync(['show', uid, '--json'], TRACE),
+          readJsonAsync<ArtifactRow[]>(['artifacts', '--run', uid, '--json'], TRACE),
+        ]);
         if (detail === null) return json({ error: 'no such run' }, 404);
-        return json(detail);
+        return json({ ...(detail as object), artifacts: artifacts ?? [] });
       }
 
       if (url.pathname === '/api/stats' && req.method === 'GET') {
@@ -783,6 +940,20 @@ async function cmdServer(): Promise<never> {
   const heartbeat = setInterval(() => { if (sse.size) for (const fn of sse) fn(': keep-alive\n\n'); }, 20000);
   heartbeat.unref?.();
 
+  // Close finished sessions. Its own timer, deliberately NOT the /api/state
+  // path: that already spawns herdr synchronously about once a second while an
+  // agent works, and this adds several more spawns per pass.
+  //
+  // Ten seconds because this is a rare event and nothing is waiting on it. The
+  // board is opportunistic rather than a daemon — it reaps itself after
+  // IDLE_MS, so if it is not running when a ticket ships, nothing closes that
+  // pane until you next open the board. That is why the sweep scans state
+  // instead of reacting to an event, and why it also runs once at startup:
+  // whatever shipped while the board was down is caught on the way back up.
+  // Late is fine now that capture no longer depends on the pane surviving.
+  const sweeper = setInterval(() => { void sweepShippedSessions(); }, 10000);
+  sweeper.unref?.();
+
   const reaper = setInterval(() => {
     if (Date.now() - last <= IDLE_MS) return;
     // Only tear down state that is still OURS. An orphan from a lost start
@@ -824,6 +995,11 @@ async function cmdServer(): Promise<never> {
   // pidfile claimed above; portfile last, because its presence means "ready".
   writeFileSync(join(STATE_DIR, 'secret'), secret + '\n', { mode: 0o600 });
   writeFileSync(join(STATE_DIR, 'portfile'), `${server.port}\n`, { mode: 0o600 });
+
+  // Only now, with the pidfile actually ours, is the first sweep allowed to
+  // run — it checks ownership itself, but starting it before the claim would
+  // just be a guaranteed no-op.
+  void sweepShippedSessions();
 
   return await new Promise<never>(() => {});
 }

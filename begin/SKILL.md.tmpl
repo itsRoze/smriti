@@ -274,16 +274,24 @@ If verification fails, fix and re-verify. Don't hand back red.
 
 ## Step 9 · Finish — **Gate 3**
 
-Summarize and **stop for the human**:
+Summarize and **stop for the human**. Write the summary through `smriti trace report`,
+which prints it *and* stores it — so say it once, here, rather than twice:
 
-```
+```bash
+smriti trace report --status ok <<'EOF'
 ✅ /begin complete on <branch>
    ticket:   #<id> <title>          [omit the line entirely when $TICKET is empty]
    built:    <one line — what landed>
    review:   <code-review outcome — bugs fixed / clean>
    verify:   <screenshots captured / tests green>  [attach screenshots for web]
    next (you): test it, then say the word to ship.
+EOF
 ```
+
+**No `|| true` on that one line**, unlike every other trace call. This is the only one
+whose failure matters: the board treats a stored report as licence to close this session's
+pane once the ticket ships, and until this existed the summary lived nowhere but the
+pane's pixels. `--status fail` instead if the run is handing back something broken.
 
 Then **mark the gate and stop** — this is a wait on a human, so it is recorded as one:
 

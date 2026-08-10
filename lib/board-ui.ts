@@ -572,6 +572,33 @@ export function boardPage(): string {
   .phz .p .sw i.a{background:var(--pine-c)}
   .phz .p .sw i.y{background:rgba(var(--hi-rgb),.9)}
 
+  /* What the run concluded, above where its time went — the what before the
+     how-long. Drawn as a margin rule rather than another dashed rectangle: the
+     run is already a box, and the app index next door sets the precedent that
+     a second frame inside a frame is one frame too many. Pine, because pine has
+     meant the agent's own work everywhere else on this board. */
+  .rep{border-left:3px solid var(--pine-c);padding:1px 0 2px 13px;margin:0 0 13px;display:grid;gap:4px}
+  .rep .r{display:flex;align-items:baseline;gap:11px;
+    font-family:ui-monospace,Menlo,monospace;font-size:12px;line-height:1.5}
+  .rep .r .k{min-width:58px;flex:none;color:var(--ink-3);
+    font-size:10.5px;letter-spacing:.14em;text-transform:uppercase}
+  .rep .r .v{color:var(--ink);min-width:0;overflow-wrap:anywhere}
+  /* A scraped report is one viewport of terminal, not the run's own words, and
+     says so in a sentence rather than wearing a badge. The rule goes dotted for
+     the same reason a dashed border reads as provisional. */
+  .rep.scraped{border-left-style:dotted;border-left-color:var(--ink-4)}
+  .rep .prov{font-size:14px;color:var(--ink-3);margin:0}
+  .rep .raw{font-family:ui-monospace,Menlo,monospace;font-size:11.5px;line-height:1.5;
+    color:var(--ink-2);background:rgba(var(--sh),.05);border-radius:6px;
+    padding:9px 11px;margin:2px 0 0;white-space:pre;overflow-x:auto;max-height:340px}
+  .rep .fold{display:flex;align-items:center;gap:8px;width:100%;text-align:left;cursor:pointer;
+    font:inherit;font-family:ui-monospace,Menlo,monospace;font-size:11px;
+    letter-spacing:.14em;text-transform:uppercase;color:var(--ink-4);
+    background:transparent;border:0;padding:2px 0 0}
+  .rep .fold .arrow{color:var(--pine-c);font-size:12px;letter-spacing:0;flex:none}
+  .rep .fold:hover{color:var(--ink-3)}
+  .rep .fold:focus-visible{outline:2.5px solid var(--hi);outline-offset:3px}
+
   /* pace: medians across runs */
   .pace{padding:22px 26px 26px}
   .pace h2{font-size:26px;font-weight:400;margin:0 0 6px}
@@ -1877,7 +1904,19 @@ export function boardPage(): string {
         // The overlay may have been closed or reopened while this was in
         // flight; writing into a detached node is harmless, missing one is not.
         const el = box.querySelector('[data-run="' + r.run_uid + '"] .bd');
-        if (el) el.innerHTML = phaseBreakdown(d.phases || [], d.totals || {});
+        if (!el) return;
+        el.innerHTML = reportHtml(d.artifacts || []) + phaseBreakdown(d.phases || [], d.totals || {});
+        // Bound here, not in bind(): these nodes are created after the render
+        // pass that wires the rest of the page, and they are freshly made every
+        // time a run body is filled — so one listener each, never stacked.
+        const fold = el.querySelector('[data-repfold]');
+        if (fold) fold.addEventListener('click', () => {
+          const pre = el.querySelector('.rep .raw');
+          const on = fold.getAttribute('aria-expanded') === 'true';
+          fold.setAttribute('aria-expanded', String(!on));
+          fold.querySelector('.arrow').textContent = on ? '▸' : '▾';
+          if (pre) pre.hidden = on;
+        });
       } catch {}
     }));
   }
@@ -1897,6 +1936,44 @@ export function boardPage(): string {
       '<span class="tot"' + (live ? ' data-live="dur" data-since="' + esc(r.started_at) + '"' : '') + '>' +
       fmtDur(secs) + '</span>' + split + '</div>' +
       '<div class="bd"></div></div>';
+  }
+
+  // What the run concluded. Until this existed the text lived only in a herdr
+  // pane, so shipping — which deletes the worktree and lets the board close the
+  // pane — destroyed it.
+  //
+  // Two provenances, shown honestly. A run-written report gets no marker at all:
+  // it is the normal case, and a badge on the normal case only teaches the eye
+  // to ignore badges. A scrape is one viewport of terminal that happened not to
+  // have scrolled away, so it says so in a sentence and folds its raw text away.
+  function reportHtml(artifacts){
+    const rep = (artifacts || []).find((a) => a.kind === 'report');
+    if (!rep || !rep.body) return '';
+    const scraped = rep.source === 'pane';
+    if (scraped){
+      return '<div class="rep scraped">' +
+        '<p class="prov">recovered from the terminal — may be partial</p>' +
+        '<button class="fold" data-repfold="1" aria-expanded="false">' +
+        '<span class="arrow">▸</span><span>terminal output</span></button>' +
+        '<pre class="raw" hidden>' + esc(rep.body) + '</pre></div>';
+    }
+    // The shape /begin writes is "label: value" lines. Parsed into a two-column
+    // grid when it holds, rendered verbatim when it does not — a report that
+    // arrived in some other shape is still the run's own words and must not be
+    // dropped for failing to match a pattern.
+    // (No backticks in here: this whole file is one template literal.)
+    // Escapes are DOUBLED: this file is one template literal, so a lone \n here
+    // becomes a real newline inside the emitted string and the script stops
+    // parsing at that point. Same trap the regex on the route matcher notes.
+    const lines = String(rep.body).split('\\n').map((l) => l.trim()).filter(Boolean)
+      .filter((l) => !/^✅/.test(l));
+    const rows = lines.map((l) => {
+      const m = l.match(/^([a-z][a-z ]{0,14}): *(.+)$/i);
+      return m
+        ? '<div class="r"><span class="k">' + esc(m[1]) + '</span><span class="v">' + esc(m[2]) + '</span></div>'
+        : '<div class="r"><span class="v">' + esc(l) + '</span></div>';
+    }).join('');
+    return rows ? '<div class="rep">' + rows + '</div>' : '';
   }
 
   // A stacked bar over the phases in order, then the same numbers as rows.
