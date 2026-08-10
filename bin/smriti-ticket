@@ -580,8 +580,8 @@ cmd_rm() {
   echo "deleted: #$id  $title"
 }
 
-# /ship calls this once the PR exists. in_review rather than shipped: the merge
-# has not happened yet, and /clean is what confirms it.
+# /begin's ship step calls this once the PR exists. in_review rather than shipped:
+# the merge has not happened yet, and `smriti clean` is what confirms it.
 cmd_pr() {
   [ $# -ge 2 ] || usage
   local id="$1" url="$2"
@@ -710,7 +710,7 @@ cmd_current() {
   while [ $# -gt 0 ]; do
     case "$1" in
       --json)   json=1; shift ;;
-      # /clean needs the ticket for a branch it is about to delete, which by
+      # smriti-clean needs the ticket for a branch it is about to delete, which by
       # then is not the branch it is standing on.
       --branch)  [ $# -ge 2 ] || die "--branch requires a value";  want_branch="$2";  shift 2 ;;
       # The preamble already has SLUG and BRANCH; passing them avoids

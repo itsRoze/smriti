@@ -170,7 +170,7 @@ cmd_list() {
   fi
 
   if [ -z "$slugs" ]; then
-    echo "no apps tracked yet — run /bootstrap in a repo, or: smriti ticket add \"<what you want>\""
+    echo "no apps tracked yet — run /begin in a repo, or: smriti ticket add \"<what you want>\""
     return 0
   fi
 
@@ -326,7 +326,7 @@ cmd_show() {
   echo "$slug"
   echo "path:     ${path:-—}"
   if [ -n "$path" ]; then
-    echo "PROJECT:  $([ -f "$path/PROJECT.md" ] && echo present || echo '— (run /bootstrap)')"
+    echo "PROJECT:  $([ -f "$path/PROJECT.md" ] && echo present || echo '— (run /begin)')"
     echo "DESIGN:   $([ -f "$path/DESIGN.md" ]  && echo present || echo '— (run /design-consultation)')"
   fi
 
@@ -413,8 +413,7 @@ cmd_new() {
   echo "Next steps:"
   echo "  cd $name"
   echo "  claude                    # open Claude Code"
-  echo "  /bootstrap                # set up PROJECT.md + coding principles"
-  echo "  /begin                    # build your first feature end to end"
+  echo "  /begin                    # sets up PROJECT.md + principles, then builds"
 }
 
 # ─── forget ─────────────────────────────────────────────────────────────────

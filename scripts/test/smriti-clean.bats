@@ -489,16 +489,6 @@ EOF
   [ "$status" -eq 64 ]
 }
 
-# ─── T2: /ship hint contract ───────────────────────────────────────────
-
-@test "ship hint: 'Next: /clean' line is present in ship/SKILL.md (T2 regression lock)" {
-  # Lives here because the contract is about /clean's discoverability — if
-  # someone refactors /ship's tail end and drops the hint, /clean silently
-  # loses its callsite. Grep against the rendered SKILL.md (the production
-  # artifact); the .tmpl source's intent doesn't matter if generation drops it.
-  grep -q "Next: /clean" "$ROOT/ship/SKILL.md"
-}
-
 # ─── artifact purge: deleting a branch clears its out-of-repo scratch ───
 
 # Resolve + create the current repo's artifact dir; echo its path so the test

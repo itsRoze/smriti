@@ -126,7 +126,7 @@ type Row =
   | { kind: 'app'; label: string }
   | { kind: 'project'; label: string }
   | { kind: 'ticket'; ticket: Ticket; run?: Run }
-  // A run with no ticket behind it — /debug on a hand-cut branch, say. Without
+  // A run with no ticket behind it — /begin on a hand-cut branch, say. Without
   // its own row such a run is invisible here, so a gate it parks at never
   // reaches "waiting on you", which is the whole point of the board.
   | { kind: 'run'; run: Run }

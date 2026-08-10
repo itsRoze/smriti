@@ -3,7 +3,7 @@
 #
 # Single source of truth for "what's this repo's base branch?" — used by both
 # lib/resolvers/base-branch-detect.md (skill templates) and bin/smriti-clean
-# (the /clean script). Extracting this once means a tweak to detection logic
+# (the smriti-clean script). Extracting this once means a tweak to detection logic
 # (e.g., supporting `trunk`) lands in one place, not three.
 #
 # Detection order (each step falls through on empty / error):

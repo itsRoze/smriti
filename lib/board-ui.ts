@@ -1202,7 +1202,10 @@ export function boardPage(): string {
     const has = docTab === 'PROJECT' ? repo.project_md : repo.design_md;
     if (!has){
       pane.innerHTML = '<div class="nothing">no ' + docTab + '.md yet' +
-        '<div class="cmd">' + (docTab === 'PROJECT' ? '/bootstrap' : '/design-consultation') + '</div></div>';
+        // /begin, not /bootstrap: bootstrapping folded into the flow when the
+        // opinion layer was retired, and an empty state naming a command that
+        // no longer exists is worse than no hint at all.
+        '<div class="cmd">' + (docTab === 'PROJECT' ? '/begin' : '/design-consultation') + '</div></div>';
       return;
     }
     const key = slug + '|' + docTab;
