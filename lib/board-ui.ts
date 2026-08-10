@@ -1809,7 +1809,11 @@ export function boardPage(): string {
       '<h2>' + esc(t.title) + '</h2>' +
       '<dl class="fields">' +
       (started
-        ? field('app', appVal + '<span class="held">held by <b>' + esc(t.branch || '') + '</b></span>',
+        // started is branch OR worktree_path, so name the branch when there is
+        // one and fall back to the tree itself rather than rendering an empty
+        // bold at the end of the sentence.
+        ? field('app', appVal + '<span class="held">held by <b>' +
+                  (t.branch ? esc(t.branch) : 'its worktree') + '</b></span>',
                 t.repo_slug ? '' : 'empty')
         : field('app', appVal, 'edit' + (t.repo_slug ? '' : ' empty'), 'a', 'app')) +
       field('project', projVal, 'edit' + (proj ? '' : ' empty'), 'f', 'project') +
