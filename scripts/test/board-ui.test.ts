@@ -340,10 +340,209 @@ describe('board UI', () => {
       expect(labels).toEqual(['APP', 'PROJECT', 'STATUS', 'BRANCH']);
       expect(await page.locator('.fields .stamp').innerText()).toBe('READY');
       expect(await page.locator('.fields dd.empty').count()).toBe(2);
+      // Three of the four rows are controls now; BRANCH is the one that is not.
+      // The key each row carries is its own hover hint, so the block teaches
+      // the shortcut rather than needing the help sheet.
+      expect(await page.locator('.fields dd[data-field]').count()).toBe(3);
+      expect(await page.locator('.fields dd[data-field="app"]').getAttribute('data-k')).toBe('a');
+      expect(await page.locator('.fields dd[data-field="project"]').getAttribute('data-k')).toBe('f');
+      expect(await page.locator('.fields dd[data-field="status"]').getAttribute('data-k')).toBe('x');
       // The document count is gone; the paper trail below says it in full.
       // #detbody, not .detail — the help veil reuses that class for its heading.
       expect(await page.locator('#detbody').innerText()).not.toContain('document');
       expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+
+  // ── the fields block as a control surface (T20) ────────────────────────
+
+  it('a key pressed over the overlay acts on the ticket you opened, not the board cursor', async () => {
+    if (!HAS_CHROMIUM) return;
+    // The regression this whole row of work rests on. A card click goes
+    // straight to openDetail() without moving `sel`, so the global keys — which
+    // read the BOARD's cursor — were acting on a different ticket, or on
+    // nothing at all. It has to open by MOUSE: opening by keyboard sets `sel`
+    // to the same ticket and hides the bug completely.
+    const { context, page, errors } = await open();
+    try {
+      // Arrow first, so the board cursor is parked on a DIFFERENT ticket.
+      await page.keyboard.press('ArrowDown');
+      await page.waitForSelector('.card.sel');
+      const parked = await page.locator('.card.sel .t').innerText();
+
+      await openBodyTicket(page);
+      const opened = await page.locator('#detbody > h2').innerText();
+      expect(opened).not.toBe(parked);
+
+      await page.keyboard.press('d');
+      // The stamp is a live field now, so shipping updates it in place rather
+      // than closing the ticket out from under you.
+      await page.waitForSelector('.fields .stamp:has-text("SHIPPED")');
+
+      // The ticket that was on screen shipped; the one the cursor sat on did not.
+      const list = JSON.parse(run(TICKET, ['list', '--all', '--json'], appDir).stdout) as
+        { id: number; title: string; status: string }[];
+      expect(list.find((t) => t.id === MD_TICKET)!.status).toBe('shipped');
+      expect(list.find((t) => t.title === parked)!.status).not.toBe('shipped');
+      expect(errors).toEqual([]);
+    } finally {
+      run(TICKET, ['status', String(MD_TICKET), 'ready'], appDir);
+      await context.close();
+    }
+  }, T);
+
+  it('a captured idea with no app is filed from the board, app and all', async () => {
+    if (!HAS_CHROMIUM) return;
+    // The motivating case: `smriti ticket add` works from anywhere, so an idea
+    // arrives with no app and no project and could only be filed from a
+    // terminal. Picking a project settles the app too, because a project
+    // belongs to exactly one.
+    const id = idOf('an idea with no app');
+    const { context, page, errors } = await open();
+    try {
+      await page.locator('.card[data-tid="' + id + '"]').click();
+      await page.waitForSelector('#detv.on');
+      expect(await page.locator('.fields dd[data-field="app"]').innerText()).toContain('no app yet');
+
+      await page.locator('.fields dd[data-field="project"]').click();
+      await page.waitForSelector('#palv.on');
+      // It has no app, so every app's projects are on offer and grouped by app.
+      expect(await page.locator('#palopts .grp').count()).toBeGreaterThan(0);
+      await page.locator('#palopts .o:has-text("Search v2")').click();
+
+      await page.waitForSelector('.fields dd[data-field="project"]:has-text("Search v2")');
+      // ...and it is really in the store, not just on screen.
+      const t = (JSON.parse(run(TICKET, ['list', '--all', '--json'], appDir).stdout) as any[])
+        .find((x) => String(x.id) === id);
+      // Both halves, from one pick: the project settles the app it belongs to.
+      expect(t.project_ref).toBe('search-v2');
+      expect(t.repo_slug).toBe('test-demo');
+      expect(errors).toEqual([]);
+    } finally {
+      run(TICKET, ['edit', id, '--repo', '-'], appDir);
+      await context.close();
+    }
+  }, T);
+
+  it('the picker hands the ticket back rather than closing it', async () => {
+    if (!HAS_CHROMIUM) return;
+    // closeAll() takes every veil down at once, which is exactly why the
+    // command palette could not be reused here as it stood.
+    const { context, page, errors } = await open();
+    try {
+      await openBodyTicket(page);
+      await page.keyboard.press('x');
+      await page.waitForSelector('#palv.on');
+      expect(await page.locator('#detv.on').count()).toBe(1);
+
+      // Escape leaves the picker and keeps the ticket.
+      await page.keyboard.press('Escape');
+      await page.waitForSelector('#palv.on', { state: 'hidden' });
+      expect(await page.locator('#detv.on').count()).toBe(1);
+
+      // ...and so does choosing.
+      await page.keyboard.press('x');
+      await page.waitForSelector('#palv.on');
+      await page.locator('#palopts .o:has-text("in review")').click();
+      await page.waitForSelector('#palv.on', { state: 'hidden' });
+      await page.waitForSelector('.fields .stamp:has-text("IN REVIEW")');
+      expect(await page.locator('#detv.on').count()).toBe(1);
+      expect(errors).toEqual([]);
+    } finally {
+      run(TICKET, ['status', String(MD_TICKET), 'ready'], appDir);
+      await context.close();
+    }
+  }, T);
+
+  it('the status picker offers all six, cancelled included', async () => {
+    if (!HAS_CHROMIUM) return;
+    // The ticket that asked for this said five; the CLI has always taken six,
+    // and only its usage string disagreed.
+    const { context, page, errors } = await open();
+    try {
+      await openBodyTicket(page);
+      await page.keyboard.press('x');
+      await page.waitForSelector('#palv.on');
+      const rows = await page.locator('#palopts .o span:first-child').allInnerTexts();
+      expect(rows).toEqual(['idea', 'ready', 'building', 'in review', 'shipped', 'cancelled']);
+      // The row you are on says so instead of repeating the word.
+      expect(await page.locator('#palopts .o:has-text("ready") .r').innerText()).toBe('current');
+
+      await page.locator('#palopts .o:has-text("cancelled")').click();
+      await page.waitForSelector('.fields .stamp:has-text("CANCELLED")');
+      const t = (JSON.parse(run(TICKET, ['list', '--all', '--json'], appDir).stdout) as any[])
+        .find((x) => x.id === MD_TICKET);
+      expect(t.status).toBe('cancelled');
+      expect(errors).toEqual([]);
+    } finally {
+      run(TICKET, ['status', String(MD_TICKET), 'ready'], appDir);
+      await context.close();
+    }
+  }, T);
+
+  it('a started ticket says what holds its app instead of offering a picker', async () => {
+    if (!HAS_CHROMIUM) return;
+    // Its worktree lives inside the app's tree, so bin/smriti-ticket refuses
+    // the move. A picker that failed on submit would be the wrong half of that.
+    // Its own fixture, started and torn down here, so the shared board is not
+    // left with an extra in_progress ticket for every test after this one.
+    spawnSync('git', ['add', '-A'], { cwd: appDir });
+    spawnSync('git', ['-c', 'user.email=t@smriti.local', '-c', 'user.name=t',
+      'commit', '-q', '-m', 'seed'], { cwd: appDir });
+    must(run(TICKET, ['add', 'held by its worktree', '--ready'], appDir), 'add held');
+    const held = idOf('held by its worktree');
+    must(run(TICKET, ['start', held], appDir), 'start held');
+
+    const { context, page, errors } = await open();
+    try {
+      await page.locator('.card[data-tid="' + held + '"]').click();
+      await page.waitForSelector('#detv.on');
+
+      // No control on the app row, and the branch named as the reason.
+      expect(await page.locator('.fields dd[data-field="app"]').count()).toBe(0);
+      expect(await page.locator('.fields .held').innerText()).toContain('t' + held + '-');
+      // The key does nothing either — the lock is not just a missing click target.
+      await page.keyboard.press('a');
+      expect(await page.locator('#palv.on').count()).toBe(0);
+      // ...while the project row stays editable: only the APP cannot move,
+      // because only the APP is where the worktree lives.
+      expect(await page.locator('.fields dd[data-field="project"]').count()).toBe(1);
+      expect(errors).toEqual([]);
+    } finally {
+      await context.close();
+      const wt = JSON.parse(run(TICKET, ['list', '--all', '--json'], appDir).stdout)
+        .find((t: any) => String(t.id) === held)?.worktree_path;
+      if (wt) spawnSync('git', ['worktree', 'remove', '--force', wt], { cwd: appDir });
+      run(TICKET, ['rm', held, '--yes'], appDir);
+    }
+  }, T);
+
+  it('a refusal reads as a sentence, not as raw JSON', async () => {
+    if (!HAS_CHROMIUM) return;
+    // The whole chain: CLI die() → stderr → {error} → api() → toast. Before
+    // this the toast showed the transport around the sentence, not the
+    // sentence: could not save: {"error":"smriti-ticket: no ticket #7"}.
+    const { context, page } = await open();
+    try {
+      must(run(TICKET, ['add', 'about to vanish', '--ready'], appDir), 'add doomed');
+      const doomed = idOf('about to vanish');
+      await page.locator('.card[data-tid="' + doomed + '"]').click();
+      await page.waitForSelector('#detv.on');
+
+      // Delete it out from under the open overlay, then act on it — a real
+      // race, and the only refusal reachable now that the app row locks itself.
+      run(TICKET, ['rm', doomed, '--yes'], appDir);
+      await page.keyboard.press('x');
+      await page.waitForSelector('#palv.on');
+      await page.locator('#palopts .o:has-text("shipped")').click();
+
+      await page.waitForSelector('#toast.on');
+      const said = await page.locator('#toast').innerText();
+      expect(said).toContain('no ticket #' + doomed);
+      expect(said).not.toContain('{');
+      expect(said).not.toContain('smriti-ticket:');
+      // errors is not asserted empty here: the 500 this deliberately provokes
+      // is logged by the browser as a failed resource load.
     } finally { await context.close(); }
   }, T);
 

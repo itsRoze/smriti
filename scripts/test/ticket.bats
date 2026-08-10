@@ -630,6 +630,66 @@ seed_commit() { echo seed > f && git add f && git commit -q -m init; }
   [ "$(tdb "SELECT project_id FROM tickets WHERE id=1;")" = "1" ]
 }
 
+@test "edit --repo: moving apps takes the old app's project off the ticket" {
+  # A project belongs to exactly one app, so a ticket that carried one through
+  # an app move ended up filed in a project belonging somewhere else — a row
+  # every later read then has to defend against.
+  "$PROJECT" add "Search v2" >/dev/null
+  "$CLI" add "index it" --project search-v2 >/dev/null
+  [ "$(tdb "SELECT project_id FROM tickets WHERE id=1;")" = "1" ]
+
+  run "$CLI" edit 1 --repo other-app
+  [ "$status" -eq 0 ]
+  [ "$(tdb "SELECT repo_slug FROM tickets WHERE id=1;")" = "other-app" ]
+  [ "$(tdb "SELECT coalesce(project_id,'NULL') FROM tickets WHERE id=1;")" = "NULL" ]
+  # The paper trail follows the ticket, so it must not keep the old project either.
+  [ "$(tdb "SELECT count(*) FROM documents WHERE ticket_id=1 AND project_id IS NOT NULL;")" = "0" ]
+}
+
+@test "edit --repo --project: refuses a project belonging to another app" {
+  "$PROJECT" add "Other work" --repo other-app >/dev/null
+  "$CLI" add "index it" >/dev/null
+  # By NUMERIC id on purpose: resolve_project_ref returns a bare number without
+  # any app check, so this is the path that filed a ticket across apps while
+  # the slug form was already being caught by its scoping.
+  pid=$(tdb "SELECT id FROM projects WHERE slug='other-work';")
+
+  run "$CLI" edit 1 --repo test-demo --project "$pid"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"belonging to another app"* ]]
+  [ "$(tdb "SELECT coalesce(project_id,'NULL') FROM tickets WHERE id=1;")" = "NULL" ]
+  [ "$(tdb "SELECT coalesce(repo_slug,'NULL') FROM tickets WHERE id=1;")" = "test-demo" ]
+}
+
+@test "edit --repo --project: a project in the destination app is accepted" {
+  "$PROJECT" add "Other work" --repo other-app >/dev/null
+  "$CLI" add "index it" >/dev/null
+  pid=$(tdb "SELECT id FROM projects WHERE slug='other-work';")
+
+  run "$CLI" edit 1 --repo other-app --project "$pid"
+  [ "$status" -eq 0 ]
+  [ "$(tdb "SELECT repo_slug FROM tickets WHERE id=1;")" = "other-app" ]
+  [ "$(tdb "SELECT project_id FROM tickets WHERE id=1;")" = "$pid" ]
+}
+
+@test "status: takes all six values, cancelled included" {
+  "$CLI" add "x" >/dev/null
+  # cancelled has always been in VALID_STATUSES; only the usage string said
+  # five, which is why the board never offered it.
+  for s in idea ready in_progress in_review shipped cancelled; do
+    run "$CLI" status 1 "$s"
+    [ "$status" -eq 0 ]
+    [ "$(tdb "SELECT status FROM tickets WHERE id=1;")" = "$s" ]
+  done
+
+  run "$CLI" status 1 archived
+  [ "$status" -eq 2 ]
+
+  # And the usage says so, so the next reader does not have to run it to find out.
+  run "$CLI"
+  [[ "$output" == *"in_review|shipped|cancelled"* ]]
+}
+
 @test "start: an idea with no app says what to do instead of failing obscurely" {
   cd "$WORK"
   "$CLI" add "someday" >/dev/null

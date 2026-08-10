@@ -453,6 +453,11 @@ export function boardPage(): string {
      with headings and tables, and an editor over the top of it. It gets more
      room than the palette or the help sheet, which are lists. (A real ticket
      PAGE is the better answer and is its own ticket; this is the cheap half.) */
+  /* The picker sits above every other veil. They all shared one z-index, and
+     #detv comes later in the document — so the moment the picker could be
+     raised FROM the ticket overlay, the ticket was painted over it and ate
+     every click meant for a row. */
+  #palv{z-index:30}
   #detv{padding-top:6vh}
   #detv .panel{width:min(1000px,94vw);max-height:86vh}
   @keyframes pop{from{opacity:0;transform:scale(.96) translateY(8px)}}
@@ -489,16 +494,45 @@ export function boardPage(): string {
     letter-spacing:.14em;text-transform:uppercase;color:var(--orange);
     border:2px solid var(--orange);padding:2px 9px 3px;
     border-radius:9px 13px 8px 12px/12px 8px 13px 9px;transform:rotate(-1.2deg)}
-  .refile{display:flex;align-items:center;gap:10px;margin-bottom:18px;
-    font-family:ui-monospace,Menlo,monospace;font-size:10.5px;letter-spacing:.15em;
-    text-transform:uppercase;color:var(--ink-3)}
-  .refile select{
-    font:inherit;font-family:"Chalkboard SE",cursive;font-size:15px;text-transform:none;
-    letter-spacing:0;color:var(--ink);background:var(--paper-2);cursor:pointer;
-    border:2.5px solid var(--ink-4);border-radius:11px 14px 10px 13px/13px 10px 14px 11px;
-    padding:5px 10px 6px;
-  }
-  .refile select:hover{border-color:var(--ink)}
+  /* ── an editable value ───────────────────────────────────────────────
+     The value itself is the target: on a pre-printed form you rewrite what
+     is in the blank. Wash plus a hint in the row's right edge — the same
+     affordance .desc wears — except the hint is the KEY, so a board that is
+     otherwise keyboard-driven teaches the shortcut as you reach for it.
+     Absolutely positioned rather than a third grid column, so a row with no
+     control does not reserve space for one. */
+  .fields dd.edit{position:relative;cursor:pointer;border-radius:8px;
+    padding-left:7px;margin-left:-7px;padding-right:26px;
+    transition:background .12s ease;outline:none}
+  .fields dd.edit:hover,.fields dd.edit:focus-visible{background:rgba(var(--hi-rgb),.34)}
+  .fields dd.edit:focus-visible{box-shadow:0 0 0 2.5px var(--hi)}
+  .fields dd.edit::after{
+    content:attr(data-k);position:absolute;top:50%;right:6px;transform:translateY(-50%);
+    font-family:ui-monospace,Menlo,monospace;font-size:9px;letter-spacing:.14em;
+    text-transform:uppercase;color:var(--ink-3);opacity:0;transition:opacity .12s ease}
+  .fields dd.edit:hover::after,.fields dd.edit:focus-visible::after{opacity:1}
+  /* The one flourish: the stamp straightens as you go to re-stamp it. */
+  .fields dd.edit:hover .stamp,.fields dd.edit:focus-visible .stamp{
+    transform:rotate(0deg) translateY(-1px)}
+  /* Navigation keeps the glyph it already has elsewhere in this app
+     ("open the plan ↗", "open PR ↗"), so it stops competing with the value
+     for the same click and is recognised rather than learned. */
+  .fields .go{font-family:ui-monospace,Menlo,monospace;font-size:11px;color:var(--ink-3);
+    margin-left:7px;cursor:pointer;text-decoration:none}
+  .fields .go:hover,.fields .go:focus-visible{color:var(--pine-b);outline:none}
+  /* A started ticket's app is not greyed out — it is still true, and it keeps
+     full ink. The branch holding it in place is set in the same wire mono the
+     BRANCH row uses two lines down, so the eye ties them together unprompted. */
+  .fields .held{font-family:ui-monospace,Menlo,monospace;font-size:11.5px;
+    color:var(--ink-3);margin-left:9px}
+  .fields .held b{color:var(--ink-2);font-weight:400}
+  /* A picker group header, in the same type as a field label, so the picker
+     and the form it edits speak one language. */
+  .pal .grp{font-family:ui-monospace,Menlo,monospace;font-size:9px;letter-spacing:.18em;
+    text-transform:uppercase;color:var(--ink-3);padding:11px 20px 4px;
+    border-bottom:1px dotted var(--ink-4);margin:0 14px 4px}
+  .pal .q .cue{font-family:ui-monospace,Menlo,monospace;font-size:9.5px;letter-spacing:.16em;
+    text-transform:uppercase;color:var(--ink-3);flex:none;align-self:center}
   /* ── a description: one surface, three states ────────────────────────
      .raw is the source with its line breaks honoured — what you see before
      the render lands, and what you keep if it never does. .md is the
@@ -614,6 +648,8 @@ export function boardPage(): string {
 
   .helpgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:12px;padding:22px 26px 26px}
   .helpgrid div{font-size:16px;color:var(--ink-2)}
+  .helpgrid .hnote{font-family:ui-monospace,Menlo,monospace;font-size:10px;letter-spacing:.1em;
+    text-transform:uppercase;color:var(--ink-3);align-self:center}
 
   .void{padding:60px 20px;text-align:center;font-size:22px;color:var(--ink-3)}
   .void .big{font-size:34px;color:var(--ink-2);margin-bottom:10px}
@@ -666,7 +702,7 @@ export function boardPage(): string {
 </div>
 
 <div class="veil" id="palv"><div class="box b4 panel pal">
-  <div class="q"><input id="palq" placeholder="type a ticket title, or search…" autocomplete="off"></div>
+  <div class="q"><span class="cue" id="palcue" style="display:none"></span><input id="palq" placeholder="type a ticket title, or search…" autocomplete="off"></div>
   <div id="palopts"></div>
 </div></div>
 
@@ -681,6 +717,8 @@ export function boardPage(): string {
     <div><b>s</b> — start work</div><div><b>c</b> — capture (into what you're on)</div>
     <div><b>e</b> — edit the description</div><div><b>⌘⏎</b> — save it, <b>esc</b> — abandon</div>
     <div><b>d</b> — mark done</div><div><b>⌘K / /</b> — palette, apps & projects too</div>
+    <div><b>a</b> — move it to another app</div><div><b>f</b> — file it into a project</div>
+    <div><b>x</b> — set the status</div><div class="hnote">a, f and x work on an open ticket</div>
     <div><b>p</b> — open its project / app</div><div><b>m</b> — pace (medians)</div>
     <div><b>b</b> — the margin, open / collapsed</div><div><b>h</b> — completed work, every group</div>
     <div><b>esc</b> — close, then back up a level</div>
@@ -1484,11 +1522,36 @@ export function boardPage(): string {
   }
   function move(d){ if (!flat.length) return; sel = sel < 0 ? 0 : Math.min(flat.length - 1, Math.max(0, sel + d)); tapKey('nav'); paintSel(); }
   function selectedTicket(){ return sel >= 0 && flat[sel] ? S.tickets.find((t) => t.id === flat[sel].id) : null; }
+  // The ticket the keys act on. The overlay wins whenever it is open, because
+  // that is the ticket in front of you — sel is the BOARD's cursor and the
+  // two part company the moment you open a ticket with the mouse: wire() takes
+  // a card click straight to openDetail() without moving sel. Before this,
+  // clicking a ticket and pressing d marked whatever you last arrowed to, or
+  // nothing at all when sel was still -1. board-ui.test.ts:406 documented that
+  // gap as the reason its own test had to open the overlay by keyboard.
+  function activeTicket(){
+    if (detailId != null){
+      const t = S.tickets.find((x) => x.id === detailId);
+      if (t) return t;
+    }
+    return selectedTicket();
+  }
 
   // ── api ──────────────────────────────────────────────────────────────
   async function api(path, opts){
     const r = await fetch(path, Object.assign({ headers: { 'content-type': 'application/json' } }, opts));
-    if (!r.ok) throw new Error((await r.text().catch(() => '')) || ('HTTP ' + r.status));
+    if (!r.ok){
+      // Unwrap {error} rather than throwing the raw body. Every failure here
+      // starts life as a CLI die() written to be read by a human, and a toast
+      // showing {"error":"smriti-ticket: #12 is started on …"} buries the
+      // sentence inside its own transport. The prefix goes too: the toast
+      // already says which action failed.
+      const raw = await r.text().catch(() => '');
+      let msg = raw;
+      try { const p = JSON.parse(raw); if (p && typeof p.error === 'string') msg = p.error; } catch (_) {}
+      msg = String(msg || '').replace(/^smriti-[a-z]+:\s*/, '');
+      throw new Error(msg || ('HTTP ' + r.status));
+    }
     return r.json();
   }
   // True while a description editor is open. Re-rendering underneath one
@@ -1659,7 +1722,17 @@ export function boardPage(): string {
   async function markDone(t){
     if (!t) return;
     tapKey('d');
-    try { await api('/api/tickets/' + t.id + '/done', { method: 'POST', body: '{}' }); toast('#' + t.id + ' shipped ✓'); refresh(); }
+    try {
+      await api('/api/tickets/' + t.id + '/done', { method: 'POST', body: '{}' });
+      toast('#' + t.id + ' shipped ✓');
+      await refresh();
+      // refresh() redraws the page behind the overlay and deliberately not the
+      // overlay itself, so shipping from an open ticket left its stamp reading
+      // the old status until you closed and reopened. The button that used to
+      // sit beside this closed the whole overlay instead; the stamp is a live
+      // field now, so it updates in place like every other one.
+      if (detailId === t.id) openDetail(t.id);
+    }
     catch (e) { toast('could not update: ' + esc(e.message)); }
   }
   async function addTicket(title, where){
@@ -1709,19 +1782,38 @@ export function boardPage(): string {
     // document count is gone on purpose: the paper trail is listed in full a
     // few inches down, and counting it here said the same thing twice.
     // label is escaped, value is not: value is markup the callers below build
-    // (a jump span, a stamp) and have already escaped the text inside.
-    const field = (label, value, cls) =>
-      '<dt>' + esc(label) + '</dt><dd' + (cls ? ' class="' + cls + '"' : '') + '>' + value + '</dd>';
+    // (a stamp, a nav glyph) and have already escaped the text inside. k is
+    // the key that opens this row's picker; it doubles as the hover hint via
+    // the data-k attribute, so the row teaches its own shortcut.
+    const field = (label, value, cls, k, name) =>
+      '<dt>' + esc(label) + '</dt><dd' + (cls ? ' class="' + cls + '"' : '') +
+      (k ? ' data-k="' + k + '" data-field="' + name + '" tabindex="0" role="button"' : '') +
+      '>' + value + '</dd>';
+    // ↗ already means "opens elsewhere" on this page (open the plan ↗, open
+    // PR ↗). Navigation moves onto it so the value itself is free to be the
+    // edit target — editing has no other route, while the app and project
+    // pages are also reachable from the margin.
+    const goGlyph = (attr, val, what) =>
+      '<a class="go" href="#" ' + attr + '="' + esc(String(val)) + '" title="open ' + esc(what) + '" aria-label="open ' + esc(what) + '">↗</a>';
+    // Its worktree lives inside the app's tree, so a started ticket cannot
+    // change apps — bin/smriti-ticket refuses it. The row states that instead
+    // of offering a picker that would fail on submit.
+    const started = Boolean(t.branch || t.worktree_path);
+    const appVal = t.repo_slug
+      ? esc(appLabel(t.repo_slug)) + goGlyph('data-app', t.repo_slug, appLabel(t.repo_slug))
+      : 'no app yet';
+    const projVal = proj
+      ? esc(proj.name) + goGlyph('data-proj', proj.id, proj.name)
+      : '— loose in ' + esc(t.repo_slug ? appLabel(t.repo_slug) : 'no app');
     let h = '<div class="eyebrow">#' + t.id + '</div>' +
       '<h2>' + esc(t.title) + '</h2>' +
       '<dl class="fields">' +
-      field('app', t.repo_slug
-        ? '<span class="jump" data-app="' + esc(t.repo_slug) + '">' + esc(appLabel(t.repo_slug)) + '</span>'
-        : 'no app yet', t.repo_slug ? '' : 'empty') +
-      field('project', proj
-        ? '<span class="jump" data-proj="' + proj.id + '">' + esc(proj.name) + '</span>'
-        : '— loose in ' + esc(t.repo_slug ? appLabel(t.repo_slug) : 'no app'), proj ? '' : 'empty') +
-      field('status', '<span class="stamp">' + esc(STATUS[t.status] || t.status) + '</span>') +
+      (started
+        ? field('app', appVal + '<span class="held">held by <b>' + esc(t.branch || '') + '</b></span>',
+                t.repo_slug ? '' : 'empty')
+        : field('app', appVal, 'edit' + (t.repo_slug ? '' : ' empty'), 'a', 'app')) +
+      field('project', projVal, 'edit' + (proj ? '' : ' empty'), 'f', 'project') +
+      field('status', '<span class="stamp">' + esc(STATUS[t.status] || t.status) + '</span>', 'edit', 'x', 'status') +
       field('branch', t.branch ? esc(t.branch) : 'not started yet', t.branch ? 'wire' : 'empty') +
       '</dl>';
     h += descBox('id="desc" data-act="editdesc"', t.body, 'add a description…');
@@ -1735,9 +1827,10 @@ export function boardPage(): string {
     if (t.status !== 'shipped' && t.status !== 'cancelled')
       h += '<button class="btn go" data-act="start">' + (live ? 'attach ⏎' : 'start ⏎') + '</button>';
     if (live) h += '<button class="btn" data-act="restart">restart session</button>';
-    if (t.status !== 'shipped' && t.status !== 'cancelled') h += '<button class="btn" data-act="done">mark done</button>';
-    if (t.status !== 'cancelled') h += '<button class="btn" data-act="cancel">cancel</button>';
-    else h += '<button class="btn" data-act="revive">bring it back</button>';
+    // mark done / cancel / bring it back used to live here. All three were one
+    // thing — a status write — and status now has a row of its own, so they
+    // were three buttons competing with the one action that is not just a
+    // status change. d still ships a ticket in a keystroke.
     h += '<button class="btn danger" data-act="delete">delete</button>';
     // The same click-through as the waiting band, where you land when you open
     // the ticket instead of the row. httpUrl is shared with planLink: esc()
@@ -1750,17 +1843,10 @@ export function boardPage(): string {
     if (t.pr_url && httpUrl(t.pr_url))
       h += '<a class="btn" href="' + esc(t.pr_url) + '" target="_blank" rel="noopener">open PR ↗</a>';
     h += '</div>';
-    // Re-filing, the other half of "tickets attached to projects": only
-    // offered within the ticket's own app, because moving between apps means
-    // moving a worktree and is a CLI decision, not a dropdown one.
-    if (t.repo_slug){
-      const opts = projectsIn(t.repo_slug).filter((p) => p.status === 'active');
-      h += '<div class="refile"><span>project</span><select id="refile">' +
-        '<option value="">— loose in ' + esc(appLabel(t.repo_slug)) + ' —</option>' +
-        opts.map((p) => '<option value="' + p.id + '"' +
-          (Number(t.project_id) === Number(p.id) ? ' selected' : '') + '>' + esc(p.name) + '</option>').join('') +
-        '</select></div>';
-    }
+    // The re-file <select> that used to sit here has moved up into the
+    // PROJECT row, which can also do it for a ticket with no app yet — the
+    // case this dropdown could never reach, since it only rendered when the
+    // ticket already had one.
     if (docs.length){
       h += '<div class="trail">' + docs.map((d) =>
         '<div class="doc" data-doc="' + d.id + '"><span class="tag">' + esc(d.type) + '</span><span>' + esc(d.path.split('/').pop()) + '</span></div>'
@@ -1792,7 +1878,6 @@ export function boardPage(): string {
     $('#detbody').querySelectorAll('[data-act]').forEach((b) => b.addEventListener('click', async (ev) => {
       const act = b.dataset.act;
       if (act === 'start') startTicket(t);
-      if (act === 'done'){ markDone(t); closeAll(); }
       if (act === 'editdesc'){
         if (editBlocked(ev, b)) return;
         startEdit(b, $('#descedit'));
@@ -1803,16 +1888,6 @@ export function boardPage(): string {
           const res = await api('/api/tickets/' + t.id + '/restart', { method: 'POST', body: '{}' });
           openDetail(t.id, res); refresh();
         } catch (e) { toast('could not restart: ' + esc(e.message)); }
-      }
-      if (act === 'cancel'){
-        try { await api('/api/tickets/' + t.id + '/cancel', { method: 'POST', body: '{}' });
-              toast('#' + t.id + ' cancelled — still there under all'); closeAll(); refresh(); }
-        catch (e) { toast('could not cancel: ' + esc(e.message)); }
-      }
-      if (act === 'revive'){
-        try { await api('/api/tickets/' + t.id + '/revive', { method: 'POST', body: '{}' });
-              toast('#' + t.id + ' is back'); } catch (e) { toast('could not revive: ' + esc(e.message)); }
-        closeAll(); refresh();
       }
       if (act === 'delete'){
         if (b.dataset.armed !== '1'){
@@ -1832,23 +1907,141 @@ export function boardPage(): string {
       } catch (e) { toast('could not read the file: ' + esc(e.message)); }
     }));
     // The overlay binds its own navigation: wire() is scoped to .sheet, so
-    // these would otherwise never get a handler.
-    $('#detbody').querySelectorAll('[data-app]').forEach((el) => el.addEventListener('click', () => {
+    // these would otherwise never get a handler. stopPropagation because the
+    // glyph now sits INSIDE the row that opens a picker — without it, going to
+    // the app page would raise the app picker on the way out.
+    $('#detbody').querySelectorAll('[data-app]').forEach((el) => el.addEventListener('click', (ev) => {
+      ev.preventDefault(); ev.stopPropagation();
       closeAll(); go('#/r/' + encodeURIComponent(el.dataset.app));
     }));
-    $('#detbody').querySelectorAll('[data-proj]').forEach((el) => el.addEventListener('click', () => {
+    $('#detbody').querySelectorAll('[data-proj]').forEach((el) => el.addEventListener('click', (ev) => {
+      ev.preventDefault(); ev.stopPropagation();
       closeAll(); go('#/p/' + el.dataset.proj);
     }));
-    const rf = $('#refile');
-    if (rf) rf.addEventListener('change', async () => {
-      // '' is a real choice — "take it out of its project" — so it is sent as
-      // null rather than omitted, which would mean "leave it alone".
-      const project = rf.value ? rf.value : null;
-      try {
-        await api('/api/tickets/' + t.id, { method: 'PATCH', body: JSON.stringify({ project }) });
-        toast(project ? 'filed into ' + esc(rf.options[rf.selectedIndex].text) : 'now loose in the app');
-        await refresh(); openDetail(t.id);
-      } catch (e) { toast('could not re-file: ' + esc(e.message)); }
+    $('#detbody').querySelectorAll('[data-field]').forEach((el) => {
+      // Read the ticket fresh at the moment of the click: an agent may have
+      // rewritten it since the overlay was drawn, and the picker's "current"
+      // marker and its app scoping both depend on being right about that.
+      const open = () => openFieldPicker(el.dataset.field, t.id);
+      el.addEventListener('click', open);
+      el.addEventListener('keydown', (ev) => {
+        if (ev.target !== el) return;
+        if (ev.key !== 'Enter' && ev.key !== ' ') return;
+        // stopPropagation, not just preventDefault: the global handler reads
+        // Enter with the overlay open as "start this ticket".
+        ev.preventDefault(); ev.stopPropagation(); open();
+      });
+    });
+  }
+
+  // ── the fields block's three pickers ─────────────────────────────────
+  function openFieldPicker(which, id){
+    const t = S.tickets.find((x) => x.id === id);
+    if (!t) return;
+    if (which === 'app'){
+      if (t.branch || t.worktree_path) return;   // held by its worktree
+      pickApp(t);
+    }
+    else if (which === 'project') pickProject(t);
+    else if (which === 'status') pickStatus(t);
+  }
+  // All three end the same way: write through the CLI, then rebuild the
+  // overlay. refresh() redraws the page BEHIND the overlay and deliberately
+  // not the overlay itself, so without the openDetail() the row you just
+  // changed would keep its old value until you closed and reopened.
+  async function writeField(id, msg, run){
+    try {
+      await run();
+      toast(msg);
+      await refresh();
+      openDetail(id);
+    } catch (e) { toast(esc(e.message)); }
+  }
+  const patchTicket = (id, body) =>
+    api('/api/tickets/' + id, { method: 'PATCH', body: JSON.stringify(body) });
+
+  function pickApp(t){
+    tapKey('a');
+    // S.repositories, not appsWithWork(): this is the full list of apps you
+    // have ever stood in, and filing something into an app that has no tickets
+    // yet is exactly the move being made here.
+    pickOpen({
+      cue: 'move to', placeholder: 'which app?', keepOpen: true,
+      build: (q) => {
+        const ql = q.trim().toLowerCase();
+        const rows = (S.repositories || [])
+          .filter((r) => !ql || r.slug.toLowerCase().includes(ql) || (r.name || '').toLowerCase().includes(ql))
+          .map((r) => ({
+            label: r.name || r.slug,
+            r: r.slug === t.repo_slug ? 'current' : ((r.counts && r.counts.open) || 0) + ' open',
+            act: () => writeField(t.id, 'moved to ' + appLabel(r.slug),
+              () => patchTicket(t.id, { repo: r.slug })),
+          }));
+        if (t.repo_slug && (!ql || 'no app'.indexOf(ql) === 0))
+          rows.push({ label: 'no app', r: 'back to an idea',
+            act: () => writeField(t.id, 'back to an idea, in no app',
+              () => patchTicket(t.id, { repo: '' })) });
+        return rows;
+      },
+    });
+  }
+
+  function pickProject(t){
+    tapKey('f');
+    const active = (S.projects || []).filter((p) => p.status === 'active');
+    // With an app, the choice is scoped to it. WITHOUT one, every app's
+    // projects are offered and grouped — because a project settles the app
+    // too, so this one pick files a captured idea completely.
+    const pool = t.repo_slug
+      ? active.filter((p) => (p.repo_slug || NO_APP) === t.repo_slug)
+      : active.slice().sort((a, b) =>
+          String(a.repo_slug || '').localeCompare(String(b.repo_slug || '')) || a.name.localeCompare(b.name));
+    pickOpen({
+      cue: 'file into',
+      placeholder: t.repo_slug ? 'which project?' : 'which project? its app comes too',
+      keepOpen: true,
+      build: (q) => {
+        const ql = q.trim().toLowerCase();
+        const rows = pool
+          .filter((p) => !ql || p.name.toLowerCase().includes(ql) || String(p.slug || '').toLowerCase().includes(ql))
+          .map((p) => ({
+            label: p.name,
+            group: t.repo_slug ? '' : appLabel(p.repo_slug || NO_APP),
+            r: Number(t.project_id) === Number(p.id) ? 'current' : (p.open || 0) + ' open',
+            act: () => writeField(t.id, 'filed into ' + p.name,
+              () => patchTicket(t.id, { project: String(p.id) })),
+          }));
+        if (t.project_id != null && !ql)
+          rows.push({ label: 'leave it loose', group: t.repo_slug ? '' : '— or —', r: 'no project',
+            act: () => writeField(t.id, 'now loose in ' + appLabel(t.repo_slug || NO_APP),
+              () => patchTicket(t.id, { project: null })) });
+        return rows;
+      },
+    });
+  }
+
+  function pickStatus(t){
+    tapKey('x');
+    // All six, in lifecycle order. cancelled is in the list because the CLI
+    // takes it — "smriti ticket status <id> cancelled" has always worked; only
+    // the usage string said otherwise.
+    const VALUES = Object.keys(STATUS);
+    pickOpen({
+      cue: 'set status', placeholder: 'idea, ready, building…', keepOpen: true,
+      build: (q) => {
+        const ql = q.trim().toLowerCase();
+        return VALUES
+          .filter((v) => !ql || v.includes(ql) || STATUS[v].includes(ql))
+          .map((v) => ({
+            label: STATUS[v],
+            // The raw value the CLI takes, so the picker teaches
+            // "smriti ticket status <id> in_review" while you use it.
+            r: v === t.status ? 'current' : v,
+            act: () => writeField(t.id, '#' + t.id + ' → ' + STATUS[v],
+              () => api('/api/tickets/' + t.id + '/status',
+                { method: 'POST', body: JSON.stringify({ status: v }) })),
+          }));
+      },
     });
   }
   // ── where the time went ──────────────────────────────────────────────
@@ -2001,12 +2194,70 @@ export function boardPage(): string {
     });
   }
 
-  // ── palette ──────────────────────────────────────────────────────────
-  let palSel = 0, palItems = [];
-  function palOpen(){ tapKey('k'); $('#palv').classList.add('on'); $('#palq').value = ''; palRender(''); $('#palq').focus(); }
+  // ── picker ───────────────────────────────────────────────────────────
+  // One picker, several jobs. It was the command palette; it is now
+  // parameterised, because the fields block needs the same list-with-a-filter
+  // and a second one would mean a second keymap branch and a second set of
+  // styles in a file nothing type-checks.
+  //
+  // A caller supplies build(q) returning rows — so ranking and any cap stay
+  // the caller's policy, not the widget's — and keepOpen when the ticket
+  // overlay behind it must survive the choice. Rows may carry a group, which
+  // the project picker needs: on a ticket with no app it lists every app's
+  // projects and has to say which is which.
+  let palSel = 0, palItems = [], picker = null;
+
+  function pickOpen(opts){
+    picker = opts;
+    $('#palv').classList.add('on');
+    const cue = $('#palcue');
+    cue.textContent = opts.cue || '';
+    cue.style.display = opts.cue ? '' : 'none';
+    const q = $('#palq');
+    q.value = '';
+    q.placeholder = opts.placeholder || 'type a ticket title, or search…';
+    palRender('');
+    q.focus();
+  }
+  // Closes the picker ALONE. closeAll() takes every veil down with it, which
+  // is what made the palette unusable from inside the ticket overlay.
+  // Blurring is not decoration. Hiding the veil takes the query input out of
+  // the page, but the browser only moves focus off it on a later frame — and
+  // until it does, activeElement is still an INPUT, so the global handler's
+  // typing guard swallows every key. Closing a picker and immediately pressing
+  // another key found a dead keyboard.
+  function blurQuery(){ const q = $('#palq'); if (q && document.activeElement === q) q.blur(); }
+  function pickClose(){ $('#palv').classList.remove('on'); picker = null; blurQuery(); }
+  function pickCommit(i){
+    const it = palItems[i];
+    const keep = picker && picker.keepOpen;
+    pickClose();
+    if (!keep) closeAll();
+    if (it) it.act();
+  }
   function palRender(q){
+    if (!picker) return;
+    palItems = picker.build(q) || [];
+    palSel = 0;
+    let seen = null;
+    $('#palopts').innerHTML = palItems.map((it, i) => {
+      let head = '';
+      if (it.group && it.group !== seen){ head = '<div class="grp">' + esc(it.group) + '</div>'; seen = it.group; }
+      return head + '<div class="o' + (i === palSel ? ' on' : '') + '" data-i="' + i + '">' +
+        '<span>' + esc(it.label) + '</span><span class="r">' + esc(it.r || '') + '</span></div>';
+    }).join('');
+    $('#palopts').querySelectorAll('.o').forEach((el) =>
+      el.addEventListener('click', () => pickCommit(Number(el.dataset.i))));
+  }
+  function palPaint(){
+    $('#palopts').querySelectorAll('.o').forEach((el, i) => el.classList.toggle('on', i === palSel));
+  }
+
+  // ── the command palette, now the picker's first caller ───────────────
+  function palOpen(){ tapKey('k'); pickOpen({ build: paletteItems }); }
+  function paletteItems(q){
     const ql = q.trim().toLowerCase();
-    palItems = [];
+    const palItems = [];
     if (q.trim()){
       const into = view.kind === 'project' ? ' into this project'
         : view.kind === 'app' ? ' into ' + appLabel(view.slug) : '';
@@ -2034,18 +2285,17 @@ export function boardPage(): string {
     }
     const first = S.tickets.find((t) => t.status === 'ready');
     if (!ql && first) palItems.push({ label: 'Start #' + first.id + ' — cut worktree & open a session', r: '⌥⏎', act: () => startTicket(first) });
-    palSel = 0;
-    $('#palopts').innerHTML = palItems.map((it, i) =>
-      '<div class="o' + (i === palSel ? ' on' : '') + '" data-i="' + i + '"><span>' + esc(it.label) + '</span><span class="r">' + esc(it.r) + '</span></div>').join('');
-    $('#palopts').querySelectorAll('.o').forEach((el) => el.addEventListener('click', () => { closeAll(); palItems[Number(el.dataset.i)].act(); }));
-  }
-  function palPaint(){
-    $('#palopts').querySelectorAll('.o').forEach((el, i) => el.classList.toggle('on', i === palSel));
+    // The ten-row cap is this caller's ranking policy — the palette is a
+    // shortlist over everything you own. The field pickers below deliberately
+    // do not cap: a list of your apps is short and must be complete.
+    return palItems;
   }
 
   function closeAll(){
     ['palv','detv','helpv','pacev'].forEach((id) => $('#' + id).classList.remove('on'));
     detailId = null;
+    picker = null;
+    blurQuery();
   }
 
   // ── keyboard ─────────────────────────────────────────────────────────
@@ -2057,8 +2307,16 @@ export function boardPage(): string {
     // actually trying to follow.
     const onLink = e.target && typeof e.target.closest === 'function' && e.target.closest('a[href]');
 
-    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k'){ e.preventDefault(); inPal ? closeAll() : palOpen(); return; }
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k'){
+      e.preventDefault();
+      if (picker){ const keep = picker.keepOpen; pickClose(); if (!keep) closeAll(); }
+      else palOpen();
+      return;
+    }
     if (e.key === 'Escape'){
+      // A picker raised over the ticket gives the ticket back rather than
+      // taking it down too — you were editing one field, not leaving.
+      if (picker && picker.keepOpen){ pickClose(); return; }
       // On a page with nothing open, esc is "go back up" rather than a no-op:
       // project → its app → the board.
       const anyOpen = ['palv','detv','helpv'].some((id) => $('#' + id).classList.contains('on'));
@@ -2073,13 +2331,16 @@ export function boardPage(): string {
     if (inPal){
       if (e.key === 'ArrowDown'){ e.preventDefault(); palSel = Math.min(palItems.length - 1, palSel + 1); palPaint(); }
       else if (e.key === 'ArrowUp'){ e.preventDefault(); palSel = Math.max(0, palSel - 1); palPaint(); }
-      else if (e.key === 'Enter'){ e.preventDefault(); const it = palItems[palSel]; closeAll(); if (it) it.act(); }
+      else if (e.key === 'Enter'){ e.preventDefault(); pickCommit(palSel); }
       return;
     }
     if (typing) return;
     if (onLink && (e.key === 'Enter' || e.key === ' ')) return;
 
-    const t = selectedTicket();
+    // activeTicket, not selectedTicket: with the overlay open these keys mean
+    // "do this to the ticket I am looking at". Board navigation below still
+    // drives sel alone, so the view-owns-the-keyboard invariant is untouched.
+    const t = activeTicket();
     switch (e.key){
       case 'ArrowDown': case 'j': e.preventDefault(); move(1); break;
       case 'ArrowUp': case 'k': e.preventDefault(); move(-1); break;
@@ -2111,6 +2372,11 @@ export function boardPage(): string {
         if (opened){ e.preventDefault(); tapKey('e'); }
         break;
       }
+      // The fields block, from the keyboard. Only with the overlay open: these
+      // act on one ticket's filing, and there is no such thing on a board.
+      case 'a': if (detailId && t && !(t.branch || t.worktree_path)){ e.preventDefault(); pickApp(t); } break;
+      case 'f': if (detailId && t){ e.preventDefault(); pickProject(t); } break;
+      case 'x': if (detailId && t){ e.preventDefault(); pickStatus(t); } break;
       // p opens the app of whatever is selected — the one key that navigates
       // between the two levels without reaching for the mouse.
       case 'p': {

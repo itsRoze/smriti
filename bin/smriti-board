@@ -735,6 +735,23 @@ async function cmdServer(): Promise<never> {
         return json({ ok: true });
       }
 
+      // The general form of the three above. Kept as its own route rather than
+      // a field on PATCH: `edit` and `status` are separate CLI verbs, so a
+      // PATCH carrying status alongside repo would have to run two of them in
+      // sequence with nothing transactional around the pair.
+      const setStatus = url.pathname.match(/^\/api\/tickets\/(\d+)\/status$/);
+      if (setStatus && req.method === 'POST') {
+        touch();
+        const b = (await req.json().catch(() => ({}))) as { status?: string };
+        if (typeof b.status !== 'string' || !b.status) return json({ error: 'a status is required' }, 400);
+        // The CLI owns which values are legal — validate_status rejects
+        // anything else and its message names the whole set.
+        const r = sh(TICKET, ['status', setStatus[1], b.status]);
+        if (!r.ok) return json({ error: r.errOut || 'could not set the status' }, 500);
+        broadcast();
+        return json({ ok: true });
+      }
+
       const done = url.pathname.match(/^\/api\/tickets\/(\d+)\/done$/);
       if (done && req.method === 'POST') {
         touch();

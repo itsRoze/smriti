@@ -525,6 +525,42 @@ test('a project can be created and described through the board', async () => {
   expect(s.projects.find((x) => x.id === id)?.description).toBe('make it rank');
 });
 
+// Status has its own route rather than a field on PATCH: `edit` and `status`
+// are separate CLI verbs, so a PATCH carrying both would have to run two of
+// them in sequence with nothing transactional around the pair.
+test('any status can be set through the board, cancelled included', async () => {
+  const tk = (args: string[]) =>
+    spawnSync(TICKET, args, { encoding: 'utf8', env: { ...process.env, SMRITI_HOME: HOME_DIR } });
+  tk(['add', 'status me', '--repo', 'demo']);
+  const all = JSON.parse(tk(['list', '--all', '--json']).stdout) as { id: number; title: string }[];
+  const id = all.find((t) => t.title === 'status me')!.id;
+
+  const set = (status: string) =>
+    fetch(`${base()}/api/tickets/${id}/status`, {
+      method: 'POST',
+      headers: { cookie: jar, 'content-type': 'application/json' },
+      body: JSON.stringify({ status }),
+    });
+  const statusOf = () =>
+    (JSON.parse(tk(['list', '--all', '--json']).stdout) as { id: number; status: string }[])
+      .find((t) => t.id === id)!.status;
+
+  for (const s of ['idea', 'ready', 'in_progress', 'in_review', 'shipped', 'cancelled']) {
+    expect((await set(s)).status).toBe(200);
+    expect(statusOf()).toBe(s);
+  }
+
+  // The CLI owns which values are legal; the route does not keep its own list
+  // that could drift out of step with validate_status.
+  const bad = await set('archived');
+  expect(bad.status).toBe(500);
+  expect(((await bad.json()) as { error: string }).error).toContain('invalid status');
+  expect(statusOf()).toBe('cancelled');
+
+  const empty = await set('');
+  expect(empty.status).toBe(400);
+});
+
 test('a ticket can be re-filed into a project and back out again', async () => {
   const tk = (args: string[]) =>
     spawnSync(TICKET, args, { encoding: 'utf8', env: { ...process.env, SMRITI_HOME: HOME_DIR } });
