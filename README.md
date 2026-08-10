@@ -175,7 +175,18 @@ grid paper, **dark** is chalk on slate (a dark evergreen read through Nord).
 It follows your OS by default; `t` overrides and the choice sticks.
 Everything is keyboard-first — `↑↓` move, `⏎` open, `s` start, `c` capture,
 `p` open its project or app, `d` done, `⌘K` for anything — and every action
-lands in under a keystroke-and-a-half.
+lands in under a keystroke-and-a-half. The bar along the bottom lists those,
+and only those: a key earns a permanent slot there when nothing on screen can
+wear it. A control that is always visible carries its own key instead, written
+beside it in the quietest ink. `?` is the full list either way.
+
+Down the left is the **margin**: the app → project index, drawn as the ruled
+edge of the page rather than as another box, so the three levels are visible
+without going looking for them. `b` collapses it to a column of sigils and
+back — the key is written under the tab that does the same thing. Work that
+finished is folded away; the `shipped 3 · cancelled 1` line at the foot of a
+group is the fold that reveals it, and `h` at its far end opens every fold at
+once.
 
 ### Apps, projects, tickets
 
