@@ -1530,12 +1530,18 @@ export function boardPage(): string {
   // nothing at all when sel was still -1. board-ui.test.ts:406 documented that
   // gap as the reason its own test had to open the overlay by keyboard.
   function activeTicket(){
-    if (detailId != null){
-      const t = S.tickets.find((x) => x.id === detailId);
-      if (t) return t;
-    }
+    // No fall-through to the board's cursor when the overlay's ticket has gone
+    // — deleted underneath you, or dropped by a refresh. Falling through would
+    // write to whatever the cursor last sat on, which is the very bug this
+    // function exists to prevent, only harder to see because the overlay on
+    // screen still names a different ticket.
+    if (detailId != null) return S.tickets.find((x) => x.id === detailId) || null;
     return selectedTicket();
   }
+  // Its worktree lives in the app's tree, so the app cannot move. One
+  // definition, because the render, the click path and the key path all ask —
+  // and three copies would drift the day the CLI's own condition changes.
+  const isStarted = (t) => Boolean(t && (t.branch || t.worktree_path));
 
   // ── api ──────────────────────────────────────────────────────────────
   async function api(path, opts){
@@ -1709,6 +1715,13 @@ export function boardPage(): string {
 
   async function startTicket(t){
     if (!t) return;
+    // Finished work has nothing to start. The button hid itself for these, and
+    // that was the only mouse route — but the keys reach the OPEN ticket now
+    // rather than the board's cursor, so the guard belongs on the action.
+    if (t.status === 'shipped' || t.status === 'cancelled'){
+      toast('#' + t.id + ' is ' + esc(STATUS[t.status] || t.status) + ' — set it back to ready first');
+      return;
+    }
     tapKey('s');
     const live = Boolean(sessionFor(t));
     toast(live ? 'finding the session for <b>#' + t.id + '</b>…'
@@ -1721,6 +1734,10 @@ export function boardPage(): string {
   }
   async function markDone(t){
     if (!t) return;
+    // Same reason as startTicket: re-shipping a shipped ticket only bumps
+    // updated_at and re-broadcasts, and the button that used to guard this is
+    // gone. Use the status row to move it somewhere else.
+    if (t.status === 'shipped'){ toast('#' + t.id + ' is already shipped'); return; }
     tapKey('d');
     try {
       await api('/api/tickets/' + t.id + '/done', { method: 'POST', body: '{}' });
@@ -1798,7 +1815,7 @@ export function boardPage(): string {
     // Its worktree lives inside the app's tree, so a started ticket cannot
     // change apps — bin/smriti-ticket refuses it. The row states that instead
     // of offering a picker that would fail on submit.
-    const started = Boolean(t.branch || t.worktree_path);
+    const started = isStarted(t);
     const appVal = t.repo_slug
       ? esc(appLabel(t.repo_slug)) + goGlyph('data-app', t.repo_slug, appLabel(t.repo_slug))
       : 'no app yet';
@@ -1943,7 +1960,7 @@ export function boardPage(): string {
     const t = S.tickets.find((x) => x.id === id);
     if (!t) return;
     if (which === 'app'){
-      if (t.branch || t.worktree_path) return;   // held by its worktree
+      if (isStarted(t)) return;   // held by its worktree
       pickApp(t);
     }
     else if (which === 'project') pickProject(t);
@@ -1958,7 +1975,10 @@ export function boardPage(): string {
       await run();
       toast(msg);
       await refresh();
-      openDetail(id);
+      // Only if you are still standing on it. The write and the refresh are
+      // both awaited, and leaving the ticket in between is easy — without this
+      // the overlay you just dismissed pops back over the board.
+      if (detailId === id) openDetail(id);
     } catch (e) { toast(esc(e.message)); }
   }
   const patchTicket = (id, body) =>
@@ -1978,10 +1998,10 @@ export function boardPage(): string {
           .map((r) => ({
             label: r.name || r.slug,
             r: r.slug === t.repo_slug ? 'current' : ((r.counts && r.counts.open) || 0) + ' open',
-            act: () => writeField(t.id, 'moved to ' + appLabel(r.slug),
+            act: () => writeField(t.id, 'moved to ' + esc(appLabel(r.slug)),
               () => patchTicket(t.id, { repo: r.slug })),
           }));
-        if (t.repo_slug && (!ql || 'no app'.indexOf(ql) === 0))
+        if (t.repo_slug && 'no app'.includes(ql))
           rows.push({ label: 'no app', r: 'back to an idea',
             act: () => writeField(t.id, 'back to an idea, in no app',
               () => patchTicket(t.id, { repo: '' })) });
@@ -2012,13 +2032,19 @@ export function boardPage(): string {
             label: p.name,
             group: t.repo_slug ? '' : appLabel(p.repo_slug || NO_APP),
             r: Number(t.project_id) === Number(p.id) ? 'current' : (p.open || 0) + ' open',
-            act: () => writeField(t.id, 'filed into ' + p.name,
+            act: () => writeField(t.id, 'filed into ' + esc(p.name),
               () => patchTicket(t.id, { project: String(p.id) })),
           }));
-        if (t.project_id != null && !ql)
+        if (t.project_id != null && 'leave it loose'.includes(ql))
           rows.push({ label: 'leave it loose', group: t.repo_slug ? '' : '— or —', r: 'no project',
-            act: () => writeField(t.id, 'now loose in ' + appLabel(t.repo_slug || NO_APP),
+            act: () => writeField(t.id, 'now loose in ' + esc(appLabel(t.repo_slug || NO_APP)),
               () => patchTicket(t.id, { project: null })) });
+        // An app with no projects yet would otherwise render a blank panel,
+        // which reads as a failure to load rather than as an empty shelf.
+        // Says which app, because that is the thing that has none.
+        if (!rows.length && !pool.length)
+          rows.push({ label: (t.repo_slug ? appLabel(t.repo_slug) : 'no app') + ' has no projects yet',
+            r: 'smriti project add', act: () => {} });
         return rows;
       },
     });
@@ -2340,6 +2366,12 @@ export function boardPage(): string {
     }
     if (typing) return;
     if (onLink && (e.key === 'Enter' || e.key === ' ')) return;
+    // A modifier means the key belongs to the browser or the OS, not the
+    // board: ⌘F is find, ⌘A is select all, ⌘X is cut. The single-letter keys
+    // below must not answer for them — and a and f in particular land on the
+    // detail overlay, which is the one surface with prose you would reach for
+    // find or select-all on. (⌘K is handled above, before this point.)
+    if (e.metaKey || e.ctrlKey) return;
 
     // activeTicket, not selectedTicket: with the overlay open these keys mean
     // "do this to the ticket I am looking at". Board navigation below still
@@ -2378,7 +2410,7 @@ export function boardPage(): string {
       }
       // The fields block, from the keyboard. Only with the overlay open: these
       // act on one ticket's filing, and there is no such thing on a board.
-      case 'a': if (detailId && t && !(t.branch || t.worktree_path)){ e.preventDefault(); pickApp(t); } break;
+      case 'a': if (detailId && t && !isStarted(t)){ e.preventDefault(); pickApp(t); } break;
       case 'f': if (detailId && t){ e.preventDefault(); pickProject(t); } break;
       case 'x': if (detailId && t){ e.preventDefault(); pickStatus(t); } break;
       // p opens the app of whatever is selected — the one key that navigates
@@ -2413,7 +2445,14 @@ export function boardPage(): string {
   });
   $('#rtab').addEventListener('click', toggleRail);
   $('#palq').addEventListener('input', (e) => palRender(e.target.value));
-  document.querySelectorAll('.veil').forEach((v) => v.addEventListener('click', (e) => { if (e.target === v) closeAll(); }));
+  document.querySelectorAll('.veil').forEach((v) => v.addEventListener('click', (e) => {
+    if (e.target !== v) return;
+    // The backdrop of a picker raised over the ticket hands the ticket back,
+    // exactly as Escape does. Without this it was the one route that closed
+    // both, losing the ticket you were part-way through editing.
+    if (v.id === 'palv' && picker && picker.keepOpen){ pickClose(); return; }
+    closeAll();
+  }));
 
   // ── live updates ─────────────────────────────────────────────────────
   try {

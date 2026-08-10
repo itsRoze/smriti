@@ -495,9 +495,12 @@ cmd_edit() {
     move_repo=1
   fi
   if [ "$project_given" -eq 1 ]; then
-    # Scoped to the app the ticket is ENDING UP in, so a slug that exists in
-    # several apps resolves against the destination rather than wherever the
-    # ticket happens to sit right now.
+    # Scoped to the destination app when --repo names one. Without it the
+    # scope is the app you are STANDING IN, which is what lets a loose ticket
+    # be filed by slug from inside the repo it belongs to — and it means a slug
+    # that exists in several apps resolves to this one's, moving the ticket
+    # here. Long-standing behaviour, left alone; the pair check below is what
+    # stops the two halves disagreeing when both are given.
     local pid; pid=$(resolve_project_ref "$project" "$([ "$move_repo" -eq 1 ] && printf '%s' "$new_repo" || current_slug)")
     project_sql="$pid"
     local p_repo; p_repo=$(repo_of_project "$pid")
@@ -518,11 +521,13 @@ cmd_edit() {
   fi
 
   if [ "$move_repo" -eq 1 ]; then
-    local cur_repo cur_wt cur_branch
+    local cur_repo cur_wt cur_branch cur_pid
     db_fields "SELECT coalesce(repo_slug,'')     FROM tickets WHERE id = $id;
                SELECT coalesce(worktree_path,'') FROM tickets WHERE id = $id;
-               SELECT coalesce(branch,'')        FROM tickets WHERE id = $id;"
+               SELECT coalesce(branch,'')        FROM tickets WHERE id = $id;
+               SELECT coalesce(project_id,'')    FROM tickets WHERE id = $id;"
     cur_repo="${DB_FIELDS[0]}"; cur_wt="${DB_FIELDS[1]}"; cur_branch="${DB_FIELDS[2]}"
+    cur_pid="${DB_FIELDS[3]}"
     if [ "$cur_repo" != "$new_repo" ] && { [ -n "$cur_wt" ] || [ -n "$cur_branch" ]; }; then
       die "#$id is started on '$cur_branch' in ${cur_repo:-no app} — its worktree lives there. Finish or cancel it before moving it to another app"
     fi
@@ -531,11 +536,9 @@ cmd_edit() {
     # has to defend against. The move settles it — that project is not a
     # project of this app. Only when the caller did not name a project itself;
     # an explicit --project has already been checked against the destination.
-    if [ "$cur_repo" != "$new_repo" ] && [ -z "$project_sql" ]; then
-      local cur_pid; cur_pid=$(db "SELECT coalesce(project_id,'') FROM tickets WHERE id = $id;")
-      if [ -n "$cur_pid" ] && [ "$(repo_of_project "$cur_pid")" != "$new_repo" ]; then
-        project_sql="NULL"
-      fi
+    if [ "$cur_repo" != "$new_repo" ] && [ -z "$project_sql" ] && [ -n "$cur_pid" ] &&
+       [ "$(repo_of_project "$cur_pid")" != "$new_repo" ]; then
+      project_sql="NULL"
     fi
     sets="$sets repo_slug = $(sql_quote_or_null "$new_repo"),"
   fi

@@ -491,10 +491,22 @@ describe('board UI', () => {
       'commit', '-q', '-m', 'seed'], { cwd: appDir });
     must(run(TICKET, ['add', 'held by its worktree', '--ready'], appDir), 'add held');
     const held = idOf('held by its worktree');
-    must(run(TICKET, ['start', held], appDir), 'start held');
 
-    const { context, page, errors } = await open();
+    // From here on everything is torn down in the finally, including a
+    // worktree from a `start` that fails part-way: leaking either into the
+    // shared board changes what every later test in this file sees.
+    const cleanup = () => {
+      const wt = JSON.parse(run(TICKET, ['list', '--all', '--json'], appDir).stdout)
+        .find((t: any) => String(t.id) === held)?.worktree_path;
+      if (wt) spawnSync('git', ['worktree', 'remove', '--force', wt], { cwd: appDir });
+      run(TICKET, ['rm', held, '--yes'], appDir);
+    };
+    let context: import('playwright').BrowserContext | null = null;
     try {
+      must(run(TICKET, ['start', held], appDir), 'start held');
+      const opened = await open();
+      context = opened.context;
+      const { page, errors } = opened;
       await page.locator('.card[data-tid="' + held + '"]').click();
       await page.waitForSelector('#detv.on');
 
@@ -509,11 +521,8 @@ describe('board UI', () => {
       expect(await page.locator('.fields dd[data-field="project"]').count()).toBe(1);
       expect(errors).toEqual([]);
     } finally {
-      await context.close();
-      const wt = JSON.parse(run(TICKET, ['list', '--all', '--json'], appDir).stdout)
-        .find((t: any) => String(t.id) === held)?.worktree_path;
-      if (wt) spawnSync('git', ['worktree', 'remove', '--force', wt], { cwd: appDir });
-      run(TICKET, ['rm', held, '--yes'], appDir);
+      await context?.close();
+      cleanup();
     }
   }, T);
 
@@ -522,18 +531,20 @@ describe('board UI', () => {
     // The whole chain: CLI die() → stderr → {error} → api() → toast. Before
     // this the toast showed the transport around the sentence, not the
     // sentence: could not save: {"error":"smriti-ticket: no ticket #7"}.
+    must(run(TICKET, ['add', 'about to vanish', '--ready'], appDir), 'add doomed');
+    const doomed = idOf('about to vanish');
     const { context, page } = await open();
     try {
-      must(run(TICKET, ['add', 'about to vanish', '--ready'], appDir), 'add doomed');
-      const doomed = idOf('about to vanish');
       await page.locator('.card[data-tid="' + doomed + '"]').click();
       await page.waitForSelector('#detv.on');
 
-      // Delete it out from under the open overlay, then act on it — a real
-      // race, and the only refusal reachable now that the app row locks itself.
-      run(TICKET, ['rm', doomed, '--yes'], appDir);
+      // Open the picker BEFORE deleting. Its rows captured the id when they
+      // were built, so the click below does not go back through activeTicket()
+      // — which correctly returns null once the ticket leaves S.tickets, and
+      // would otherwise make this race the 900ms db-mtime watcher.
       await page.keyboard.press('x');
       await page.waitForSelector('#palv.on');
+      run(TICKET, ['rm', doomed, '--yes'], appDir);
       await page.locator('#palopts .o:has-text("shipped")').click();
 
       await page.waitForSelector('#toast.on');
@@ -543,6 +554,100 @@ describe('board UI', () => {
       expect(said).not.toContain('smriti-ticket:');
       // errors is not asserted empty here: the 500 this deliberately provokes
       // is logged by the browser as a failed resource load.
+    } finally {
+      // Idempotent: the point of the test is that the delete lands, but it
+      // must also be cleaned up when an assertion above fails first.
+      run(TICKET, ['rm', doomed, '--yes'], appDir);
+      await context.close();
+    }
+  }, T);
+
+  it('the keys go quiet when the open ticket is gone, rather than hitting the cursor', async () => {
+    if (!HAS_CHROMIUM) return;
+    // The dangerous half of activeTicket(). If the overlay's ticket cannot be
+    // resolved, falling back to the board's cursor writes to a ticket that is
+    // not even on screen — the original bug wearing a disguise.
+    must(run(TICKET, ['add', 'here and then not', '--ready'], appDir), 'add ghost');
+    const ghost = idOf('here and then not');
+    const { context, page } = await open();
+    try {
+      await page.keyboard.press('ArrowDown');
+      await page.waitForSelector('.card.sel');
+      const parked = await page.locator('.card.sel .t').innerText();
+
+      await page.locator('.card[data-tid="' + ghost + '"]').click();
+      await page.waitForSelector('#detv.on');
+      run(TICKET, ['rm', ghost, '--yes'], appDir);
+      // Wait for the store to reach the page, so detailId names a ticket that
+      // S.tickets no longer has — the state the fallback used to mishandle.
+      await page.waitForFunction(
+        (id) => !document.querySelector('.card[data-tid="' + id + '"]'), ghost);
+
+      await page.keyboard.press('d');
+      await page.waitForTimeout(400);
+      const list = JSON.parse(run(TICKET, ['list', '--all', '--json'], appDir).stdout) as
+        { title: string; status: string }[];
+      expect(list.find((t) => t.title === parked)!.status).not.toBe('shipped');
+    } finally {
+      run(TICKET, ['rm', ghost, '--yes'], appDir);
+      await context.close();
+    }
+  }, T);
+
+  it('a modifier key belongs to the browser, not the board', async () => {
+    if (!HAS_CHROMIUM) return;
+    // a / f / x preventDefault, so without this guard the detail overlay —
+    // the one surface with prose on it — swallowed find and select-all.
+    const { context, page, errors } = await open();
+    try {
+      await openBodyTicket(page);
+      for (const combo of ['Meta+f', 'Meta+a', 'Meta+x', 'Control+f']) {
+        await page.keyboard.press(combo);
+        expect(await page.locator('#palv.on').count()).toBe(0);
+      }
+      // ...and the bare key still works.
+      await page.keyboard.press('f');
+      await page.waitForSelector('#palv.on');
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+
+  it('the picker backdrop hands the ticket back, the same as escape', async () => {
+    if (!HAS_CHROMIUM) return;
+    const { context, page, errors } = await open();
+    try {
+      await openBodyTicket(page);
+      await page.keyboard.press('x');
+      await page.waitForSelector('#palv.on');
+      // The veil itself, outside the panel.
+      await page.locator('#palv').click({ position: { x: 8, y: 8 } });
+      await page.waitForSelector('#palv.on', { state: 'hidden' });
+      expect(await page.locator('#detv.on').count()).toBe(1);
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+
+  it('finished work cannot be started or re-shipped from the keyboard', async () => {
+    if (!HAS_CHROMIUM) return;
+    // The buttons carried these guards and the buttons are gone; the keys now
+    // reach the open ticket, so the guards moved onto the actions.
+    const shipped = idOf('the old importer');
+    const { context, page } = await open();
+    try {
+      // Completed work is folded away by default.
+      await page.keyboard.press('h');
+      await page.locator('.card[data-tid="' + shipped + '"]').click();
+      await page.waitForSelector('#detv.on');
+
+      const before = JSON.parse(run(TICKET, ['list', '--all', '--json'], appDir).stdout)
+        .find((t: any) => String(t.id) === shipped).updated_at;
+      await page.keyboard.press('Enter');   // would cut a worktree
+      await page.keyboard.press('d');       // would re-ship
+      await page.waitForTimeout(500);
+      const after = JSON.parse(run(TICKET, ['list', '--all', '--json'], appDir).stdout)
+        .find((t: any) => String(t.id) === shipped);
+      expect(after.updated_at).toBe(before);
+      expect(after.branch).toBeNull();
     } finally { await context.close(); }
   }, T);
 
