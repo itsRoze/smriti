@@ -37,6 +37,25 @@ let browser: import('playwright').Browser | null = null;
 // Chromium launch + networkidle is comfortably over bun's 5s default.
 const T = 30_000;
 
+// The fixture body for the markdown tests. Kept verbatim so the round-trip
+// assertion can compare against the exact source the CLI was handed.
+const MD_BODY = [
+  '## why this exists',
+  '',
+  'the first paragraph.',
+  '',
+  'a second one, after a blank line.',
+  '',
+  '- one',
+  '- two',
+  '',
+  '| state | what |',
+  '|---|---|',
+  '| raw | source |',
+  '',
+  'see [the docs](https://example.com/docs) for more.',
+].join('\n');
+
 async function chromiumAvailable(): Promise<boolean> {
   try {
     const { chromium } = await import('playwright');
@@ -50,6 +69,24 @@ async function chromiumAvailable(): Promise<boolean> {
 
 const run = (bin: string, args: string[], cwd?: string) =>
   spawnSync(bin, args, { encoding: 'utf8', cwd, env: { ...process.env, SMRITI_HOME: HOME_DIR } });
+
+// Fixture ids come back out of the store by title, never from position in it.
+// Two tickets added ahead of another one's fixture is all it takes to renumber
+// everything after it, and a hard-coded id then fails inside whichever test
+// happens to use it rather than at the line that moved.
+const idOf = (title: string) => {
+  const r = run(TICKET, ['list', '--all', '--json'], appDir);
+  if (r.status !== 0) throw new Error('ticket list failed: ' + r.stderr);
+  const found = JSON.parse(r.stdout).find((t: any) => t.title === title);
+  if (!found) throw new Error('fixture ticket never landed: ' + title);
+  return String(found.id);
+};
+const must = (r: ReturnType<typeof run>, what: string) => {
+  if (r.status !== 0) throw new Error(what + ' failed: ' + (r.stderr || r.stdout));
+};
+// Assigned in beforeAll — the describe body runs at collection time, before
+// any fixture exists.
+let MD_TICKET = 0;
 
 beforeAll(async () => {
   HAS_CHROMIUM = await chromiumAvailable();
@@ -75,24 +112,14 @@ beforeAll(async () => {
   // Finished work, so the fold has something to unfold. Cancelled rather than
   // two shipped: they are the two halves of "completed" and the board must
   // treat them alike behind the fold while drawing them differently on a card.
-  //
-  // The id comes back out of the store by title rather than scraped from
-  // stdout: a silently-wrong id here would fail later, inside the fold tests,
-  // pointing at the fold rather than at this line.
-  const idOf = (title: string) => {
-    const r = run(TICKET, ['list', '--all', '--json'], appDir);
-    if (r.status !== 0) throw new Error('ticket list failed: ' + r.stderr);
-    const found = JSON.parse(r.stdout).find((t: any) => t.title === title);
-    if (!found) throw new Error('fixture ticket never landed: ' + title);
-    return String(found.id);
-  };
-  const must = (r: ReturnType<typeof run>, what: string) => {
-    if (r.status !== 0) throw new Error(what + ' failed: ' + (r.stderr || r.stdout));
-  };
   must(run(TICKET, ['add', 'the old importer', '--project', 'search-v2'], appDir), 'add shipped');
   must(run(TICKET, ['done', idOf('the old importer')], appDir), 'done');
   must(run(TICKET, ['add', 'a road not taken'], appDir), 'add cancelled');
   must(run(TICKET, ['cancel', idOf('a road not taken')], appDir), 'cancel');
+  // A body written the way the real backlog is written: sections, a list, a
+  // table, a link. Before this rendered it arrived as one unbroken run.
+  must(run(TICKET, ['add', 'a ticket with a real body', '--ready', '--body', MD_BODY], appDir), 'add body');
+  MD_TICKET = Number(idOf('a ticket with a real body'));
 
   const r = spawnSync('bun', [BOARD, '--url'], {
     encoding: 'utf8',
@@ -269,6 +296,287 @@ describe('board UI', () => {
     } finally { await context.close(); }
   }, T);
 
+  // ── markdown descriptions ────────────────────────────────────────────
+  // The renderer runs server-side, so these prove the whole round trip:
+  // raw text painted first, /api/render called, rendered markup swapped in.
+
+  // The fixture adds four tickets in order, so the one with a body is #4.
+
+  async function openBodyTicket(page: import('playwright').Page) {
+    await page.locator('.card[data-tid="' + MD_TICKET + '"]').click();
+    await page.waitForSelector('#detv.on');
+    // .raw → .md is the swap landing. Waiting on the class rather than a
+    // timeout keeps this honest about what it is testing.
+    await page.waitForSelector('#desc.md');
+  }
+
+  it('a ticket body renders as markdown rather than a wall of text', async () => {
+    if (!HAS_CHROMIUM) return;
+    const { context, page, errors } = await open();
+    try {
+      await openBodyTicket(page);
+      const desc = page.locator('#desc');
+      expect(await desc.locator('h2').innerText()).toBe('why this exists');
+      expect(await desc.locator('p').count()).toBeGreaterThanOrEqual(3);
+      expect(await desc.locator('li').count()).toBe(2);
+      expect(await desc.locator('.tablewrap table th').first().innerText()).toBe('state');
+      expect(await desc.locator('a').getAttribute('href')).toBe('https://example.com/docs');
+      // The source is still the source: the editor is a textarea over it.
+      expect(await page.locator('#descedit').inputValue()).toBe(MD_BODY);
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+
+  it('the detail view shows fields, not a dot-separated sentence', async () => {
+    if (!HAS_CHROMIUM) return;
+    const { context, page, errors } = await open();
+    try {
+      await openBodyTicket(page);
+      expect(await page.locator('#detbody .eyebrow').innerText()).toBe('#' + MD_TICKET);
+      // Rows are emitted whether or not they are filled, so the block does not
+      // reflow between tickets — this one has no project and no branch.
+      // innerText is post-CSS, and the labels are small caps by text-transform.
+      const labels = await page.locator('.fields dt').allInnerTexts();
+      expect(labels).toEqual(['APP', 'PROJECT', 'STATUS', 'BRANCH']);
+      expect(await page.locator('.fields .stamp').innerText()).toBe('READY');
+      expect(await page.locator('.fields dd.empty').count()).toBe(2);
+      // The document count is gone; the paper trail below says it in full.
+      // #detbody, not .detail — the help veil reuses that class for its heading.
+      expect(await page.locator('#detbody').innerText()).not.toContain('document');
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+
+  it('a link in the body opens instead of dropping you into the editor', async () => {
+    if (!HAS_CHROMIUM) return;
+    const { context, page, errors } = await open();
+    try {
+      await openBodyTicket(page);
+      // The renderer marks links target="_blank", so a real click would open a
+      // tab. What matters here is only that the editor did NOT open.
+      const link = page.locator('#desc a');
+      await link.evaluate((a: HTMLAnchorElement) => a.removeAttribute('target'));
+      await page.evaluate(() => {
+        document.querySelector('#desc a')!.addEventListener('click', (e) => e.preventDefault());
+      });
+      await link.click();
+      expect(await page.locator('#descedit.on').count()).toBe(0);
+
+      // ...but clicking the prose still edits, which is the other half.
+      await page.locator('#desc p').first().click();
+      await page.waitForSelector('#descedit.on');
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+
+  it('e opens the editor, and the markdown round-trips byte for byte', async () => {
+    if (!HAS_CHROMIUM) return;
+    const { context, page, errors } = await open();
+    try {
+      await openBodyTicket(page);
+      // The board had no keyboard path into an editor at all before this.
+      await page.keyboard.press('e');
+      await page.waitForSelector('#descedit.on');
+      expect(await page.locator('#descedit').inputValue()).toBe(MD_BODY);
+
+      // Saving an unchanged body must not write at all. Counting the PATCH is
+      // the only honest way to assert that — reading the store back would pass
+      // whether or not a request was sent, since the value is identical either
+      // way. (The changed-body write-back is covered by the cancel test.)
+      let patches = 0;
+      page.on('request', (req) => {
+        if (req.method() === 'PATCH' && req.url().includes('/api/tickets/')) patches++;
+      });
+      await page.locator('#descedit').press('Meta+Enter');
+      await page.waitForSelector('#desc.md');
+      expect(patches).toBe(0);
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+
+  it('Enter on a focused description edits it and does not start the ticket', async () => {
+    if (!HAS_CHROMIUM) return;
+    const { context, page, errors } = await open();
+    try {
+      // Counted AND blocked: if the guard regresses this fires for real, and
+      // starting a ticket cuts a git worktree and spawns an agent session.
+      let starts = 0;
+      await page.route('**/api/tickets/*/start', (route) => { starts++; route.abort(); });
+
+      // The selection has to come from the keyboard: the global Enter branch
+      // is `if (detailId && selectedTicket())`, so opening the overlay with a
+      // mouse click leaves sel at -1 and the bug cannot show itself.
+      await page.keyboard.press('ArrowDown');
+      await page.waitForSelector('.sel');
+      await page.keyboard.press('Enter');
+      await page.waitForSelector('#detv.on');
+
+      // The description is tabbable now, and Escape from its editor focuses it.
+      // With the overlay open the GLOBAL Enter means "start this ticket", so
+      // the element handler has to stop the event, not merely preventDefault.
+      await page.keyboard.press('e');
+      await page.waitForSelector('#descedit.on');
+      await page.locator('#descedit').press('Escape');
+      await page.waitForSelector('#descedit.on', { state: 'hidden' });
+      expect(await page.evaluate(() => document.activeElement?.id)).toBe('desc');
+
+      await page.keyboard.press('Enter');
+      await page.waitForSelector('#descedit.on');
+      expect(starts).toBe(0);
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+
+  it('the editor opens tall enough to show the body it holds', async () => {
+    if (!HAS_CHROMIUM) return;
+    const { context, page, errors } = await open();
+    try {
+      await openBodyTicket(page);
+      await page.keyboard.press('e');
+      await page.waitForSelector('#descedit.on');
+      // The property worth pinning is not a pixel count, it is "you can see
+      // what you are typing": no inner scrollbar, so the whole body is visible
+      // without scrolling inside a six-line letterbox.
+      const { clientH, scrollH, capped } = await page.evaluate(() => {
+        const ta = document.querySelector('#descedit') as HTMLTextAreaElement;
+        return { clientH: ta.clientHeight, scrollH: ta.scrollHeight, capped: Math.round(window.innerHeight * 0.6) };
+      });
+      expect(scrollH).toBeLessThanOrEqual(clientH + 2);
+      // ...but never past the cap, or the save buttons below leave the screen.
+      expect(clientH).toBeLessThanOrEqual(capped);
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+
+  it('an app description renders markdown too, not just a ticket body', async () => {
+    if (!HAS_CHROMIUM) return;
+    const { context, page, errors } = await open();
+    try {
+      // The page surfaces re-derive their source from S rather than from what
+      // descBox was handed, so rendering there is a genuinely separate path
+      // from the ticket body — and it is two of the ticket's three surfaces.
+      run(REPO, ['edit', 'test-demo', '--description', '## the app\n\n- one\n- two'], appDir);
+      await page.goto(url.split('?')[0] + '#/r/test-demo', { waitUntil: 'domcontentloaded' });
+      await page.waitForSelector('#pagedesc.md');
+      expect(await page.locator('#pagedesc h2').innerText()).toBe('the app');
+      expect(await page.locator('#pagedesc li').count()).toBe(2);
+      // The editor still holds the source, not the rendered markup.
+      expect(await page.locator('#pagedescedit').inputValue()).toBe('## the app\n\n- one\n- two');
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+
+  it('an edit after a cancelled edit still saves', async () => {
+    if (!HAS_CHROMIUM) return;
+    const { context, page, errors } = await open();
+    try {
+      await openBodyTicket(page);
+      // Escape ABANDONS by clearing the blur handler. Opening a second editor
+      // has to re-arm it, or the next edit blurs into nothing and is lost with
+      // no error — the worst shape a bug can have on a description box.
+      await page.keyboard.press('e');
+      await page.waitForSelector('#descedit.on');
+      await page.locator('#descedit').press('Escape');
+      await page.waitForSelector('#descedit.on', { state: 'hidden' });
+
+      await page.keyboard.press('e');
+      await page.waitForSelector('#descedit.on');
+      await page.locator('#descedit').fill('rewritten after a cancel');
+      await page.locator('#descedit').press('Meta+Enter');
+
+      await page.waitForSelector('#desc:has-text("rewritten after a cancel")');
+      const shown = spawnSync(TICKET, ['show', String(MD_TICKET), '--json'], {
+        encoding: 'utf8', env: { ...process.env, SMRITI_HOME: HOME_DIR },
+      });
+      expect(JSON.parse(shown.stdout).ticket.body).toBe('rewritten after a cancel');
+
+      // Put it back, so the tests after this one still see the fixture body.
+      run(TICKET, ['edit', String(MD_TICKET), '--body', MD_BODY], appDir);
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+
+  it('a render that comes back empty does not blank the description', async () => {
+    if (!HAS_CHROMIUM) return;
+    const { context, page, errors } = await open();
+    try {
+      // renderMarkdown returns '' for a whitespace-only source, which is
+      // reachable via `smriti ticket add --body`. Swapping that in would leave
+      // an empty strip with no text and no ghost — and, with .raw removed, no
+      // pre-wrap either. The box has to keep what it already had.
+      await page.route('**/api/render', (route) =>
+        route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ html: '' }) }));
+      // Armed BEFORE the click: the render fires as the overlay opens, so
+      // registering the wait afterwards races the request and hangs.
+      const rendered = page.waitForResponse((r) => r.url().includes('/api/render'));
+      await page.locator('.card[data-tid="' + MD_TICKET + '"]').click();
+      await page.waitForSelector('#detv.on');
+      await rendered;
+      // A settle only AFTER a confirmed response. The negative assertion below
+      // needs the client's continuation to have run; what it must not do is
+      // bet on the response arriving at all, which is what a bare sleep does.
+      await page.waitForTimeout(100);
+
+      expect(await page.locator('#desc.raw').count()).toBe(1);
+      expect(await page.locator('#desc').innerText()).toContain('the first paragraph.');
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+
+  it('with rendering unavailable the body still keeps its line breaks', async () => {
+    if (!HAS_CHROMIUM) return;
+    // No errors assertion here, unlike every other test in this file: aborting
+    // the request is the point, and the browser logs the failed fetch itself.
+    const { context, page } = await open();
+    try {
+      await page.route('**/api/render', (route) => route.abort());
+      await page.locator('.card[data-tid="' + MD_TICKET + '"]').click();
+      await page.waitForSelector('#detv.on');
+      // The point of painting raw first: a render that never lands degrades to
+      // readable source, not a blank box — and crucially not to the one
+      // unbroken run this ticket existed to fix.
+      const desc = page.locator('#desc.raw');
+      await desc.waitFor();
+      const text = await desc.innerText();
+      expect(text).toContain('the first paragraph.');
+      expect(text).toContain('a second one, after a blank line.');
+      expect(text.split('\n').length).toBeGreaterThan(5);
+      expect(await page.locator('#desc.md').count()).toBe(0);
+    } finally { await context.close(); }
+  }, T);
+
+  it('a render that lands after you start editing is discarded', async () => {
+    if (!HAS_CHROMIUM) return;
+    const { context, page, errors } = await open();
+    try {
+      // Hold the render open, so the response is guaranteed to arrive after
+      // the editor is up. This is the race the generation guard exists for:
+      // without it the stale HTML swaps in underneath a live textarea.
+      let release: () => void = () => {};
+      const gate = new Promise<void>((r) => { release = r; });
+      await page.route('**/api/render', async (route) => { await gate; await route.continue(); });
+
+      await page.locator('.card[data-tid="' + MD_TICKET + '"]').click();
+      await page.waitForSelector('#desc.raw');
+      await page.keyboard.press('e');
+      await page.waitForSelector('#descedit.on');
+
+      // Wait on the RESPONSE, not a sleep. A timeout here would let the test
+      // pass because the render never arrived — i.e. it would stay green with
+      // the guard deleted, which is the one thing it exists to catch.
+      const landed = page.waitForResponse((r) => r.url().includes('/api/render'));
+      release();
+      await landed;
+      // Settle only after the response is known to have arrived — see the
+      // empty-render test for why that is not the same as sleeping and hoping.
+      await page.waitForTimeout(100);
+
+      expect(await page.locator('#descedit.on').count()).toBe(1);
+      expect(await page.locator('#desc.md').count()).toBe(0);
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+
   it('the DESIGN.md tab shows its empty state rather than an error', async () => {
     if (!HAS_CHROMIUM) return;
     const { context, page, errors } = await open();
@@ -386,9 +694,12 @@ describe('the margin', () => {
     if (!HAS_CHROMIUM) return;
     const { context, page, errors } = await open();
     try {
-      const bar = await page.locator('.keys .k').allInnerTexts();
-      expect(bar).toHaveLength(10);
-      expect(bar.join(' ').toLowerCase()).not.toContain('margin');
+      // Not an exact count — the bar legitimately grows when a key has nowhere
+      // else to live. What must stay true is that a key with a control on
+      // screen is not ALSO listed here.
+      const bar = (await page.locator('.keys').innerText()).toLowerCase();
+      expect(bar).not.toContain('margin');
+      expect(bar).not.toContain('completed');
       expect(await page.locator('.keys .k[data-k="b"]').count()).toBe(0);
       expect(await page.locator('.keys .k[data-k="h"]').count()).toBe(0);
 
