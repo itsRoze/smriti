@@ -1,10 +1,15 @@
 #!/usr/bin/env bats
-# Tests for the v1 → v2 migration in lib/factory-db.sh.
+# Tests for the migration chain in lib/factory-db.sh (v1 → v2 → v3).
 #
 # v1 called a column project_slug that always held a REPOSITORY. v2 renames it
 # to repo_slug, makes it nullable, and adds project_id beside it. SQLite can do
 # neither in place, so this is a table rebuild — the one piece of smriti that
 # destroys and recreates tables holding real work. It gets its own file.
+#
+# v3 adds runs.html_session and is a pure ALTER TABLE ADD COLUMN, deliberately
+# NOT a rebuild: other /begin sessions write runs and events to this same
+# database concurrently, and a rebuild under live writers can lose rows or
+# orphan events.
 #
 # Run via: bun run test (which shells out to scripts/run-tests.sh)
 
@@ -202,30 +207,31 @@ migrate() { "$TICKET" list --all >/dev/null; }
   "$TICKET" add "first" >/dev/null
   [ "$(db "SELECT count(*) FROM pragma_table_info('tickets') WHERE name='repo_slug';")" = "1" ]
   [ "$(db "SELECT count(*) FROM pragma_table_info('tickets') WHERE name='project_slug';")" = "0" ]
-  [ "$(db "PRAGMA user_version;")" = "2" ]
+  [ "$(db "PRAGMA user_version;")" = "3" ]
 }
 
 @test "migration: the version is stamped in the database, not beside it" {
   seed_v1
   [ "$(db "PRAGMA user_version;")" = "0" ]
   migrate
-  [ "$(db "PRAGMA user_version;")" = "2" ]
+  [ "$(db "PRAGMA user_version;")" = "3" ]
   # And it is not tracked by any sibling file, which could desynchronise from
   # the data it describes.
   [ ! -f "$SMRITI_HOME/.factory-schema-v2" ]
+  [ ! -f "$SMRITI_HOME/.factory-schema-v3" ]
 }
 
 @test "migration: restoring a v1 backup over a migrated home still migrates" {
   # The failure a marker file cannot catch: the version travels WITH the data.
   seed_v1
   migrate
-  [ "$(db "PRAGMA user_version;")" = "2" ]
+  [ "$(db "PRAGMA user_version;")" = "3" ]
 
   rm -f "$SMRITI_HOME/factory.db" "$SMRITI_HOME/factory.db-wal" "$SMRITI_HOME/factory.db-shm"
   seed_v1                                   # a pre-upgrade backup, restored
   run "$TICKET" list --all
   [ "$status" -eq 0 ]
-  [ "$(db "PRAGMA user_version;")" = "2" ]
+  [ "$(db "PRAGMA user_version;")" = "3" ]
   [ "$(db "SELECT count(*) FROM pragma_table_info('tickets') WHERE name='repo_slug';")" = "1" ]
 }
 
@@ -237,7 +243,7 @@ migrate() { "$TICKET" list --all >/dev/null; }
   db "PRAGMA user_version = 0;"
   run "$TICKET" list --all
   [ "$status" -eq 0 ]
-  [ "$(db "PRAGMA user_version;")" = "2" ]
+  [ "$(db "PRAGMA user_version;")" = "3" ]
   [ "$(db "SELECT count(*) FROM tickets;")" = "2" ]
 }
 
@@ -284,7 +290,7 @@ migrate() { "$TICKET" list --all >/dev/null; }
   [ "$s1" -eq 0 ] && [ "$s2" -eq 0 ] && [ "$s3" -eq 0 ]
   ! grep -q "migration failed" "$WORK/e1" "$WORK/e2" "$WORK/e3"
   [ "$(db "SELECT count(*) FROM tickets;")" = "2" ]
-  [ "$(db "PRAGMA user_version;")" = "2" ]
+  [ "$(db "PRAGMA user_version;")" = "3" ]
 }
 
 @test "migration: an unreadable store fails loudly rather than half-working" {
@@ -299,5 +305,81 @@ migrate() { "$TICKET" list --all >/dev/null; }
   # ...and it recovers once the file is readable again.
   migrate
   [ "$(db "SELECT count(*) FROM pragma_table_info('tickets') WHERE name='repo_slug';")" = "1" ]
-  [ "$(db "PRAGMA user_version;")" = "2" ]
+  [ "$(db "PRAGMA user_version;")" = "3" ]
+}
+
+# ─── v3: runs.html_session ──────────────────────────────────────────────────
+
+# A v2-shaped store: what a machine that ran the previous release actually has.
+# Built by migrating a v1 seed, then removing the v3 column and winding the
+# stamp back — the only honest way to get the real v2 shape from this checkout.
+seed_v2() {
+  seed_v1
+  migrate
+  db "ALTER TABLE runs DROP COLUMN html_session;"
+  db "PRAGMA user_version = 2;"
+}
+
+@test "migration v3: a v2 database gains html_session" {
+  seed_v2
+  [ "$(db "SELECT count(*) FROM pragma_table_info('runs') WHERE name='html_session';")" = "0" ]
+  migrate
+  [ "$(db "SELECT count(*) FROM pragma_table_info('runs') WHERE name='html_session';")" = "1" ]
+  [ "$(db "PRAGMA user_version;")" = "3" ]
+}
+
+@test "migration v3: a v2 database is NOT stamped current without gaining the column" {
+  # The trap in a version-stamped chain: when each step stamped for itself, a
+  # v2-shaped store took the v2 path, saw nothing to rebuild, stamped itself 3
+  # and never gained the column at all — a version that said current over a
+  # shape that was not. The stamp belongs after every step, not inside one.
+  seed_v2
+  migrate
+  run "$TICKET" list --all
+  [ "$status" -eq 0 ]
+  [ "$(db "SELECT count(*) FROM pragma_table_info('runs') WHERE name='html_session';")" = "1" ]
+}
+
+@test "migration v3: existing runs and events survive the column add" {
+  seed_v2
+  db "INSERT INTO runs (run_uid, repo_slug, skill, branch, status, started_at)
+      VALUES ('aaaa1111','demo','begin','main','running','2026-01-01T00:00:00Z');"
+  db "INSERT INTO events (run_uid, phase, status, at)
+      VALUES ('aaaa1111','plan','ok','2026-01-01T00:01:00Z');"
+  migrate
+  [ "$(db "SELECT count(*) FROM runs WHERE run_uid='aaaa1111';")" = "1" ]
+  [ "$(db "SELECT count(*) FROM events WHERE run_uid='aaaa1111';")" = "1" ]
+  # Additive and nullable: the pre-existing row simply has no session.
+  [ "$(db "SELECT coalesce(html_session,'NULL') FROM runs WHERE run_uid='aaaa1111';")" = "NULL" ]
+}
+
+@test "migration v3: a fresh database is born with the column" {
+  "$TICKET" add "first" >/dev/null
+  [ "$(db "SELECT count(*) FROM pragma_table_info('runs') WHERE name='html_session';")" = "1" ]
+  [ "$(db "PRAGMA user_version;")" = "3" ]
+}
+
+@test "migration v3: migrating twice changes nothing" {
+  seed_v2
+  migrate
+  migrate
+  [ "$(db "SELECT count(*) FROM pragma_table_info('runs') WHERE name='html_session';")" = "1" ]
+  [ "$(db "PRAGMA user_version;")" = "3" ]
+}
+
+@test "migration v3: concurrent upgraders all succeed, none hits duplicate column" {
+  # probe-then-ALTER is a read-modify-write: two upgraders passing the probe
+  # together would leave the loser failing on `duplicate column`. The mkdir
+  # lock is what makes it safe, so the concurrency is the test.
+  seed_v2
+  "$TICKET" list --all >/dev/null 2>"$WORK/v3a" & p1=$!
+  "$TICKET" list --all >/dev/null 2>"$WORK/v3b" & p2=$!
+  "$TRACE" list --json  >/dev/null 2>"$WORK/v3c" & p3=$!
+  wait $p1; s1=$?
+  wait $p2; s2=$?
+  wait $p3; s3=$?
+  [ "$s1" -eq 0 ] && [ "$s2" -eq 0 ] && [ "$s3" -eq 0 ]
+  ! grep -qi "duplicate column" "$WORK/v3a" "$WORK/v3b" "$WORK/v3c"
+  [ "$(db "SELECT count(*) FROM pragma_table_info('runs') WHERE name='html_session';")" = "1" ]
+  [ "$(db "PRAGMA user_version;")" = "3" ]
 }
