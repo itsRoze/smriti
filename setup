@@ -100,17 +100,20 @@ for src in "$SMRITI_DIR"/*/; do
   REGISTERED=$((REGISTERED + 1))
 done
 
-# Clean up stale smriti-managed symlinks — ones that point into $SMRITI_DIR but whose source
-# no longer exists. This is what catches a /office-hours symlink left behind after the skill
-# was renamed to /brainstorm. We only touch symlinks whose target prefix is $SMRITI_DIR, so
-# user-managed entries in $SKILLS_DIR are never affected.
+# Clean up stale smriti-managed symlinks — ones that point into $SMRITI_DIR but no longer
+# name a registered skill. This is what catches a /office-hours symlink left behind after the
+# skill was renamed to /brainstorm. The test is "does the target still have a SKILL.md", not
+# "does the directory still exist": a retired skill leaves its directory behind, because the
+# generated SKILL.md is gitignored and so survives the pull that deleted its .tmpl. Keying on
+# the directory would re-register a skill the repo has removed. We only touch symlinks whose
+# target prefix is $SMRITI_DIR, so user-managed entries in $SKILLS_DIR are never affected.
 REMOVED=0
 for entry in "$SKILLS_DIR"/*; do
   [ -L "$entry" ] || continue
   target=$(readlink "$entry")
   case "$target" in
     "$SMRITI_DIR"/*)
-      [ -d "$target" ] && continue
+      [ -f "$target/SKILL.md" ] && continue
       rm "$entry"
       echo "✗ removed stale /$(basename "$entry") (source no longer in repo)"
       REMOVED=$((REMOVED + 1))
@@ -196,5 +199,5 @@ else
   else
     echo "Setup complete. $REGISTERED skill(s) registered."
   fi
-  echo "Try: /bootstrap"
+  echo "Try: /begin"
 fi

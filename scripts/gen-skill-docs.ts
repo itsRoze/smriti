@@ -9,7 +9,7 @@
  * The generated SKILL.md gets a banner inserted after the YAML frontmatter so
  * it's obvious regenerated files shouldn't be hand-edited.
  */
-import { readdirSync, readFileSync, writeFileSync, existsSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, writeFileSync, existsSync, statSync, rmSync, rmdirSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -48,6 +48,26 @@ function findSkillTemplates(): string[] {
   });
 }
 
+// A generated SKILL.md whose .tmpl is gone is stale output, not a skill. It is
+// gitignored, so deleting the template does not delete it — the directory survives
+// the pull and setup would register a skill the repo has retired. Sweeping it here
+// keeps generation the single owner of what it wrote.
+function sweepOrphanedDocs(): string[] {
+  const swept: string[] = [];
+  for (const d of readdirSync(ROOT)) {
+    if (d.startsWith(".")) continue;
+    const dir = join(ROOT, d);
+    if (!statSync(dir).isDirectory()) continue;
+    if (existsSync(join(dir, "SKILL.md.tmpl"))) continue;
+    if (!existsSync(join(dir, "SKILL.md"))) continue;
+    rmSync(join(dir, "SKILL.md"));
+    swept.push(d);
+    // Only succeeds when nothing else is left, which is exactly when we want it.
+    try { rmdirSync(dir); } catch { /* dir still has content — leave it */ }
+  }
+  return swept;
+}
+
 function insertBanner(content: string): string {
   if (content.startsWith("---\n")) {
     const end = content.indexOf("\n---\n", 4);
@@ -61,6 +81,7 @@ function insertBanner(content: string): string {
 
 function main(): void {
   const resolvers = loadResolvers();
+  for (const stale of sweepOrphanedDocs()) console.log(`  ✗ ${stale}/SKILL.md (retired — template gone)`);
   const skills = findSkillTemplates();
 
   if (skills.length === 0) {

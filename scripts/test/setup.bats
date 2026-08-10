@@ -76,6 +76,24 @@ run_setup() {
   [ -L "$FAKE_HOME/.claude/skills/brainstorm" ]
 }
 
+@test "retires a skill whose directory survives the pull (generated SKILL.md is gitignored)" {
+  # The retirement failure mode: **/SKILL.md is gitignored, so deleting a skill's
+  # SKILL.md.tmpl leaves the generated SKILL.md — and its directory — behind after
+  # a pull. Keying the sweep off "does the directory exist" re-registered the
+  # retired skill with its old body. The sweep must key off SKILL.md instead.
+  # gen-skill-docs removes the orphaned doc; this asserts setup finishes the job
+  # even when the directory itself cannot be removed (other files remain).
+  mkdir -p "$FAKE_SMRITI/begin" "$FAKE_SMRITI/retired"
+  touch "$FAKE_SMRITI/begin/SKILL.md"
+  touch "$FAKE_SMRITI/retired/leftover.txt"   # dir survives; its SKILL.md is swept
+  ln -s "$FAKE_SMRITI/retired" "$FAKE_HOME/.claude/skills/retired"
+
+  run_setup
+
+  [ ! -e "$FAKE_HOME/.claude/skills/retired" ]
+  [ -L "$FAKE_HOME/.claude/skills/begin" ]
+}
+
 @test "leaves foreign symlinks alone (user-managed entries are not touched)" {
   # Stale-cleanup is scoped to symlinks whose target prefix is $SMRITI_DIR.
   # Anything pointing elsewhere belongs to the user (their own skills,

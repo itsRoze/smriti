@@ -147,7 +147,7 @@ teardown() {
 }
 
 @test "a run with no ticket still reaches the board when it parks at a gate" {
-  # /debug on a hand-cut branch has no ticket. Keying the board purely off
+  # /begin on a hand-cut branch has no ticket. Keying the board purely off
   # tickets made such a run invisible, so the gate it was waiting at never
   # showed under "waiting on you" — the one thing the board exists to surface.
   local uid

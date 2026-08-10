@@ -84,7 +84,7 @@ else
   # A cache miss means smriti has not seen this *path* — not necessarily this
   # codebase. Git worktrees have their own paths, so without this every
   # freshly-cut worktree would claim to be a brand-new project and trigger the
-  # /bootstrap nudge. Repo identity is the right signal: if another cached path
+  # First-run nudge. Repo identity is the right signal: if another cached path
   # already resolves to the same slug, we know this codebase.
   #
   # Deliberately NOT keyed off `projects/<slug>/` existing — that directory is
