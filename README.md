@@ -410,8 +410,20 @@ grep-ability is preserved and nothing in-repo gains markup noise.
 - **Revision-scoped.** Each run gets a `session_id`, each render a `revision_id`.
   A submit is accepted only when both match the latest open revision — an old
   browser tab can't cross streams (`stale_revision` / `unknown_session`).
-- **Self-cleaning.** An idle server self-terminates and stale state is swept on
-  the next `serve`, so a skill that dies mid-loop never orphans a process.
+- **Self-cleaning.** An idle server self-terminates — closing its gate on the
+  way out, since a loop nobody returns to is exactly the one no `stop` runs for
+  — and stale state is swept on the next `serve`. `url` is a read: it reports
+  what it finds and deletes nothing, because the board calls it constantly.
+- **Mockups render as pictures.** A card's optional `mockup_html` — a complete
+  self-contained HTML document — is shown in an iframe sandboxed with
+  `allow-scripts` and deliberately *without* `allow-same-origin`, so a UI change
+  is something you look at rather than a wall of escaped source. It cannot reach
+  the review page or its submit path, and it sizes itself to its content.
+- **It brackets the gate for you.** `serve` and `render` put the run into
+  `awaiting` — recording the session so the board can click straight through —
+  and `await` and `stop` put it back. The skill emits nothing: the gate used to
+  be opened by hand with nothing specified for closing it, and runs sat in
+  "waiting on you" forever with their agent time booked against you.
 - **Never hard-stuck.** The page always offers a **copy-paste** payload block if
   the server is gone, and the skill falls back to one AskUserQuestion per genuine
   fork if you'd rather not open a browser.
@@ -420,7 +432,8 @@ grep-ability is preserved and nothing in-repo gains markup noise.
 smriti html serve <spec.json>          # start the server, print {session_id,port,url}
 smriti html await --session <id>       # block until you submit; print the decisions
 smriti html render --session <id> <spec.json>   # swap content + bump revision (re-render)
-smriti html stop  --session <id>       # tear down (idempotent)
+smriti html stop  --session <id>       # tear down (idempotent); closes the gate
+smriti html url   --session <id>       # where it is, if it is genuinely up (else exit 6)
 ```
 
 **Exit codes:** `0` ok · `1` usage · `2` runtime · `3` invalid spec/payload · `5` await-timeout · `6` no-server.

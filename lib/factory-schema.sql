@@ -107,7 +107,14 @@ CREATE TABLE IF NOT EXISTS runs (
   branch       TEXT,
   status       TEXT    NOT NULL,        -- running | awaiting | done | failed
   started_at   TEXT    NOT NULL,
-  ended_at     TEXT
+  ended_at     TEXT,
+  -- The `smriti html` session this run's CURRENT gate is served on, so the
+  -- board can click a "waiting on you" row straight through to the live review.
+  -- The id only; the port is deliberately not stored, because it dies with the
+  -- server and a link built from a remembered port is a link to nothing. Only
+  -- ever meaningful while status = 'awaiting' — every event rewrites it, and
+  -- `trace end` clears it.
+  html_session TEXT
 );
 
 -- The trace. `id` is the cursor: readers poll `WHERE id > ?` and that single

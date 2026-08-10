@@ -53,11 +53,23 @@ A ticket is never required; without one `$TICKET` is empty and nothing is stampe
 smriti trace start begin --ticket "${TICKET:--}" >/dev/null 2>&1 || true
 ```
 
-After each step, `smriti trace emit <phase> ok || true` with that step's own name:
-`ground`, `understand`, `clarify`, `plan`, `codex`, `approve`, `implement`, `review`,
-`verify`, `ship`. Gates emit `awaiting` instead of `ok` — that is what lists a run under
-*waiting on you*, and what bills the wait to your time rather than the agent's. Every
-call is `|| true`: a trace failure is bookkeeping, never a reason to stop.
+There is no run id to carry around — `emit` and `end` find the open run for this branch
+themselves. After each step, `smriti trace emit <phase> ok || true` with that step's own
+name: `ground`, `understand`, `clarify`, `plan`, `codex`, `implement`, `review`,
+`verify`. Two gates are exceptions:
+
+- **Gate 2 — emit nothing.** `smriti html serve` and `render` open the `approve` gate
+  themselves, and `await` and `stop` close it. That is deliberate: the gate used to be
+  opened by hand here with nothing specified for leaving it, so runs sat in *waiting on
+  you* for the rest of their lives and their agent time was booked against you. Emitting
+  `approve` by hand now only doubles the events.
+- **Gate 3 — emit `ship awaiting`,** and be the thing that closes it. Nothing else opens
+  this gate, so unlike Gate 2 it does have to be done by hand; the same rule applies
+  though — never open it without specifying how it ends. Step 9 below closes it on both
+  paths, whether the run ships or stops.
+
+**Never let tracing affect the work.** Every call is `|| true`; a trace failure is
+invisible bookkeeping, not a reason to stop.
 
 ---
 
@@ -190,9 +202,13 @@ someone deciding whether this is the right thing to build:
 sequences. Name the *component* that changes, not the path list. The exception is when
 the file layout **is** the deliverable — that's what **Shape** is for.
 
-**Sizable UI change →** build mockups so the user *sees* it at Gate 2. Use
-`frontend-design` and write a self-contained HTML fragment beside the plan for the
-approval view to embed. Skip for trivial UI and backend-only work.
+**Sizable UI change →** build mockups so the user *sees* it at Gate 2 rather than
+reading prose. Use `frontend-design` and what Step 1 learned about the app's real look,
+then put each mockup in its card's **`mockup_html`** — a complete self-contained HTML
+document, which the approval view renders as a picture in a sandboxed frame. Never put
+the markup in `body_md`: that field is escape-first and the mockup renders as a wall of
+visible source. Skip for trivial UI (copy, one field, a spacing nudge) and backend-only
+work.
 
 ## Step 4 · Codex second opinion on the plan
 
@@ -208,7 +224,7 @@ below. The markdown plan stays the source of truth; the spec is a generated view
 - **One card per plan section.** Card `id`s stay stable across re-renders.
 - Each `body_md` is that section's essence — the decision and why, in brief.
 - `source_hash` over `$PLAN_FILE`; `global_notes_prompt` invites overall direction.
-- Built mockups? Include them as a **Design** card.
+- Built mockups? Include them as a **Design** card, each in its card's `mockup_html`.
 
 **ALWAYS render Gate 2 as HTML** — running `smriti html serve` + `await` is mandatory.
 Do **not** substitute a plain `AskUserQuestion` because it seems quicker: presenting the
