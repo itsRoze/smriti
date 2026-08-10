@@ -61,6 +61,8 @@ usage() {
 usage:
   smriti trace start <skill> [--ticket N]
   smriti trace emit <phase> <start|ok|fail|awaiting> [--run UID] [--note TEXT]
+                                                     [--html-session ID]
+                                                     [--if-html-session ID]
   smriti trace end [--run UID] [--status done|failed]
   smriti trace list [--active] [--ticket N] [--limit N] [--json]
   smriti trace show <run-uid> [--json]
@@ -266,11 +268,21 @@ cmd_start() {
 cmd_emit() {
   [ $# -ge 2 ] || usage
   local phase="$1" status="$2"; shift 2
-  local uid="" note=""
+  local uid="" note="" html_session="" if_html_session=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --run)  [ $# -ge 2 ] || die "--run requires a value";  uid="$2";  shift 2 ;;
       --note) [ $# -ge 2 ] || die "--note requires a value"; note="$2"; shift 2 ;;
+      # The `smriti html` session this event's gate is served on, so the board
+      # can click through to it. Absent means NULL — see the rewrite rule below.
+      --html-session)
+        [ $# -ge 2 ] || die "--html-session requires a value"; html_session="$2"; shift 2 ;;
+      # Apply this emit ONLY while the run's gate is still the given session.
+      # How `smriti html`'s await and stop can both close a gate without the
+      # second one recording a phantom event, and how a stale stop is stopped
+      # from closing a gate that a newer serve has since opened.
+      --if-html-session)
+        [ $# -ge 2 ] || die "--if-html-session requires a value"; if_html_session="$2"; shift 2 ;;
       *) die "unknown flag: $1" ;;
     esac
   done
@@ -290,11 +302,33 @@ cmd_emit() {
   local run_status="running"
   [ "$status" = "awaiting" ] && run_status="awaiting"
 
+  # EVERY emit rewrites html_session, defaulting to NULL — the column describes
+  # the latest event, never an accumulated history. That is what lets a skill
+  # close a gate without remembering to clean up: `approve ok` drops the link as
+  # a side effect of the event it was already emitting.
+  #
+  # It rides in the SAME guarded UPDATE as the status, and that matters: a late
+  # emit after `end` is tolerated by design (the event still records), and
+  # without the shared guard it would re-hang a live-looking link on a run that
+  # has already finished.
+  # --if-html-session guards the INSERT as well as the UPDATE. Guarding only the
+  # update would still record the event, which is exactly the phantom "the gate
+  # closed twice" entry the predicate exists to avoid — a no-op must leave no
+  # trace at all.
+  local ev_guard="" run_guard=""
+  if [ -n "$if_html_session" ]; then
+    ev_guard=" WHERE (SELECT html_session FROM runs WHERE run_uid = $(sql_quote "$uid"))
+                     = $(sql_quote "$if_html_session")"
+    run_guard=" AND html_session = $(sql_quote "$if_html_session")"
+  fi
+
   db_write "INSERT INTO events (run_uid, phase, status, note, at)
-            VALUES ($(sql_quote "$uid"), $(sql_quote "$phase"), $(sql_quote "$status"),
-                    $(sql_quote_or_null "$note"), $(sql_quote "$(now_utc)"));
-            UPDATE runs SET status = $(sql_quote "$run_status")
-              WHERE run_uid = $(sql_quote "$uid") AND status IN ('running','awaiting');"
+            SELECT $(sql_quote "$uid"), $(sql_quote "$phase"), $(sql_quote "$status"),
+                   $(sql_quote_or_null "$note"), $(sql_quote "$(now_utc)")$ev_guard;
+            UPDATE runs SET status = $(sql_quote "$run_status"),
+                            html_session = $(sql_quote_or_null "$html_session")
+              WHERE run_uid = $(sql_quote "$uid")
+                AND status IN ('running','awaiting')$run_guard;"
 }
 
 # ─── end ────────────────────────────────────────────────────────────────────
@@ -318,7 +352,10 @@ cmd_end() {
   [ -n "$uid" ] || return 0    # nothing open; ending twice is not an error
   run_exists "$uid" || die "no run '$uid'" 4
 
-  db_write "UPDATE runs SET status = $(sql_quote "$status"), ended_at = $(sql_quote "$(now_utc)")
+  # html_session goes with it: a finished run has no gate to click into, and a
+  # link left behind here would outlive the server it points at.
+  db_write "UPDATE runs SET status = $(sql_quote "$status"), ended_at = $(sql_quote "$(now_utc)"),
+                            html_session = NULL
             WHERE run_uid = $(sql_quote "$uid");"
 }
 
@@ -350,7 +387,7 @@ cmd_list() {
   if [ "$json" -eq 1 ]; then
     db_json "$(segments_cte)
              SELECT r.run_uid, r.ticket_id, r.repo_slug, r.project_id, r.skill, r.branch, r.status,
-                    r.started_at, r.ended_at,
+                    r.started_at, r.ended_at, r.html_session,
                     (SELECT phase FROM events e WHERE e.run_uid = r.run_uid
                      ORDER BY e.id DESC LIMIT 1) AS last_phase,
                     (SELECT at FROM events e WHERE e.run_uid = r.run_uid

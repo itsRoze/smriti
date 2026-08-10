@@ -23,6 +23,8 @@ const TICKET = join(REPO_ROOT, 'bin', 'smriti-ticket');
 const PROJECT = join(REPO_ROOT, 'bin', 'smriti-project');
 const REPO = join(REPO_ROOT, 'bin', 'smriti-repo');
 const SLUG = join(REPO_ROOT, 'bin', 'smriti-slug');
+const TRACE = join(REPO_ROOT, 'bin', 'smriti-trace');
+const HTMLBIN = join(REPO_ROOT, 'bin', 'smriti-html');
 
 let HAS_CHROMIUM = false;
 let HOME_DIR = '';
@@ -259,4 +261,79 @@ describe('board UI', () => {
       expect(errors).toEqual([]);
     } finally { await context.close(); }
   });
+
+  // ── the click-through into a live gate (T8) ────────────────────────────
+  // A link inside a row that is itself clickable is the kind of thing that
+  // regresses silently: you click "open the plan" and get the ticket overlay.
+
+  it('a waiting row links to the live plan, and the link does not open the overlay', async () => {
+    if (!HAS_CHROMIUM) return;
+    // A real served gate, so the board resolves a real port.
+    const specPath = join(HOME_DIR, 'gate.json');
+    writeFileSync(specPath, JSON.stringify({
+      title: 'Plan', skill: 'begin', session_id: 'pending', revision_id: 'rev-1', source_hash: 'h',
+      sections: [{ id: 's', title: 'S', cards: [{ id: 'c1', title: 't', body_md: 'b' }] }],
+    }));
+    const served = spawnSync('bun', [HTMLBIN, 'serve', specPath, '--no-open', '--no-trace'], {
+      encoding: 'utf8', env: { ...process.env, SMRITI_HOME: HOME_DIR },
+    });
+    const { session_id: sid, port } = JSON.parse(served.stdout) as { session_id: string; port: number };
+
+    const tickets = JSON.parse(run(TICKET, ['list', '--all', '--json'], appDir).stdout) as
+      { id: number; title: string }[];
+    const tid = tickets.find((t) => t.title === 'index the corpus')!.id;
+    const uid = run(TRACE, ['start', 'begin', '--ticket', String(tid)], appDir).stdout.trim().split('=')[1];
+    run(TRACE, ['emit', 'approve', 'awaiting', '--run', uid, '--html-session', sid], appDir);
+
+    const { context, page, errors } = await open();
+    try {
+      const link = page.locator('.wait .planlink');
+      await link.waitFor();
+      expect(await link.getAttribute('href')).toBe(`http://127.0.0.1:${port}/`);
+      expect(await link.getAttribute('target')).toBe('_blank');
+
+      // The row underneath opens the ticket overlay. The link must not.
+      await link.click({ modifiers: ['Alt'] }); // Alt-click: no navigation, event still fires
+      await page.waitForTimeout(250);
+      expect(await page.locator('#detv.on').count()).toBe(0);
+
+      // ...while clicking the row itself still does open it.
+      await page.locator('.wait .item').first().click();
+      await page.waitForSelector('#detv.on');
+
+      // The overlay carries the same click-through, chosen by an explicit
+      // "awaiting with a live URL" predicate rather than by whichever run a
+      // bare find() happens to reach first.
+      const btn = page.locator('#detv .acts a:has-text("open the plan")');
+      await btn.waitFor();
+      expect(await btn.getAttribute('href')).toBe(`http://127.0.0.1:${port}/`);
+      expect(errors).toEqual([]);
+    } finally {
+      await context.close();
+      run(TRACE, ['end', '--run', uid], appDir);
+      spawnSync('bun', [HTMLBIN, 'stop', '--session', sid], {
+        encoding: 'utf8', env: { ...process.env, SMRITI_HOME: HOME_DIR },
+      });
+    }
+  }, T);
+
+  it('a waiting row with no live gate shows no link at all', async () => {
+    if (!HAS_CHROMIUM) return;
+    const tickets = JSON.parse(run(TICKET, ['list', '--all', '--json'], appDir).stdout) as
+      { id: number; title: string }[];
+    const tid = tickets.find((t) => t.title === 'a one-off bug')!.id;
+    const uid = run(TRACE, ['start', 'begin', '--ticket', String(tid)], appDir).stdout.trim().split('=')[1];
+    // Parked at a gate, but pointing at a session that was never served.
+    run(TRACE, ['emit', 'approve', 'awaiting', '--run', uid, '--html-session', 'sess-ghost'], appDir);
+
+    const { context, page, errors } = await open();
+    try {
+      await page.waitForSelector('.wait .item');
+      expect(await page.locator('.wait .planlink').count()).toBe(0);
+      expect(errors).toEqual([]);
+    } finally {
+      await context.close();
+      run(TRACE, ['end', '--run', uid], appDir);
+    }
+  }, T);
 });
