@@ -102,7 +102,12 @@ export function boardPage(): string {
      bare :root inside one would lose to nothing at all. */
   :root[data-rail="open"]{--rail-w:198px;--rail-pad:20px;--rail-detail:inline;--rail-lab:inline-block;--rail-proj:flex;--rail-just:flex-start;--rail-row-pad:6px;--rail-row-end:12px;--rail-glyph:"\\2039"}
   :root[data-rail="collapsed"]{--rail-w:58px;--rail-pad:0px;--rail-detail:none;--rail-lab:none;--rail-proj:none;--rail-just:center;--rail-row-pad:0px;--rail-row-end:0px;--rail-glyph:"\\203A"}
-  @media (max-width:700px){:root,:root[data-rail]{--rail-w:0px} .rail,.rtab{display:none}}
+  /* :root .rail, not .rail — a media query adds no specificity, and .rail and
+     .rtab both set display in their own rules further down the sheet, so a
+     bare selector here loses on source order and the margin was never actually
+     hidden on a phone: it collapsed to a 0-width sliver with its border still
+     drawn and its tab hanging half off the left edge. */
+  @media (max-width:700px){:root,:root[data-rail]{--rail-w:0px} :root .rail,:root .rtab{display:none}}
 
   .page{display:flex;position:relative;z-index:2;min-height:100vh}
   .rail{
@@ -567,15 +572,20 @@ export function boardPage(): string {
      width — actions above a long body and the trace below it means acting
      costs a scroll in both directions. The stub stays put instead. */
   .tgrid{
-    display:grid;gap:30px 34px;align-items:start;
+    display:grid;gap:30px 34px;
     grid-template-columns:minmax(0,1fr) 268px;
     grid-template-areas:"main stub";
   }
+  /* NO align-items:start here, however much it looks like it belongs. A grid
+     item defaults to stretching to the row, and that height is the only room a
+     sticky child has to travel in — shrink-wrapping .tstub to its content made
+     the stub scroll away with the body, which is the one thing it exists not
+     to do. .tmain opts out for itself instead. */
   /* minmax(0,…) AND min-width:0, both. A rendered body holds wide tables and
      long <pre>, and a grid item's automatic minimum is its content — either
      guard alone still lets one push the column past the sheet and scroll the
      whole page sideways. Same failure the shared .md block exists to stop. */
-  .tmain{grid-area:main;min-width:0}
+  .tmain{grid-area:main;min-width:0;align-self:start}
   .tstub{grid-area:stub;min-width:0}
   /* Stacking puts the stub FIRST: on a narrow window the disposition of the
      ticket is still what you came for, and burying it under six hundred words
@@ -583,6 +593,11 @@ export function boardPage(): string {
   @media (max-width:940px){
     .tgrid{grid-template-columns:minmax(0,1fr);grid-template-areas:"stub" "main"}
     .tstub .stick{position:static;max-height:none;overflow:visible}
+    /* Stacked it stays a CARD at the head of the page rather than a panel
+       stretched across it — 268px of controls spread over 900px reads as a
+       form whose labels have been abandoned at the far end. */
+    .tstub .stub{max-width:440px}
+    .stub .head{justify-content:flex-start;padding-left:22px}
   }
   .tstub .stick{
     position:sticky;top:26px;
@@ -1930,7 +1945,10 @@ export function boardPage(): string {
     // worktree and is a CLI decision, not a dropdown one.
     if (t.repo_slug){
       const opts = projectsIn(t.repo_slug).filter((p) => p.status === 'active');
-      h += '<div class="refile"><span>project</span><select id="refile">' +
+      // "re-file", not "project": the row above already names the project this
+      // ticket is in, and two adjacent labels reading PROJECT said the same
+      // thing twice. The row is where it lives; the select is the act.
+      h += '<div class="refile"><span>re-file</span><select id="refile">' +
         '<option value="">— loose in ' + esc(appLabel(t.repo_slug)) + ' —</option>' +
         opts.map((p) => '<option value="' + p.id + '"' +
           (Number(t.project_id) === Number(p.id) ? ' selected' : '') + '>' + esc(p.name) + '</option>').join('') +
