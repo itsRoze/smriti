@@ -577,12 +577,26 @@ export function boardPage(): string {
      run is already a box, and the app index next door sets the precedent that
      a second frame inside a frame is one frame too many. Pine, because pine has
      meant the agent's own work everywhere else on this board. */
-  .rep{border-left:3px solid var(--pine-c);padding:1px 0 2px 13px;margin:0 0 13px;display:grid;gap:4px}
-  .rep .r{display:flex;align-items:baseline;gap:11px;
+  /* Two columns across the WHOLE block, not per row. The labels are whatever
+     the run chose to call its fields, so a fixed guess at their width left the
+     longest one — "next (you)", the canonical last line — pushing its value out
+     of line with every row above it. display:contents hands each row's cells to
+     this grid, so one column width is negotiated across all of them at once. */
+  .rep{border-left:3px solid var(--pine-c);padding:1px 0 2px 13px;margin:0 0 13px;
+    display:grid;grid-template-columns:auto 1fr;gap:4px 12px;align-items:baseline}
+  .rep .r{display:contents}
+  /* .lb, not .k — .k is the keycap class on this page, and inheriting its
+     border, paper fill and drop shadow turned every field label into a fake
+     button. (No backticks anywhere in this file: it is one template literal.) */
+  .rep .r .lb{color:var(--ink-3);font-family:ui-monospace,Menlo,monospace;
+    font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;
+    line-height:1.6;white-space:nowrap}
+  .rep .r .v{color:var(--ink);min-width:0;overflow-wrap:anywhere;
     font-family:ui-monospace,Menlo,monospace;font-size:12px;line-height:1.5}
-  .rep .r .k{min-width:58px;flex:none;color:var(--ink-3);
-    font-size:10.5px;letter-spacing:.14em;text-transform:uppercase}
-  .rep .r .v{color:var(--ink);min-width:0;overflow-wrap:anywhere}
+  /* A line the run wrote without a label spans both columns rather than sitting
+     in the label one — a report is still its own words when it is not a table. */
+  .rep .r .v:only-child{grid-column:1 / -1}
+  .rep > .prov,.rep > .fold,.rep > .raw{grid-column:1 / -1}
   /* A scraped report is one viewport of terminal, not the run's own words, and
      says so in a sentence rather than wearing a badge. The rule goes dotted for
      the same reason a dashed border reads as provisional. */
@@ -1883,8 +1897,14 @@ export function boardPage(): string {
   async function loadRuns(ticketId){
     const box = $('#runs');
     if (!box) return;
-    let runs;
-    try { runs = (await api('/api/runs?ticket=' + ticketId)).runs || []; }
+    let runs, reports;
+    try {
+      const r = await api('/api/runs?ticket=' + ticketId);
+      runs = r.runs || [];
+      // Every run's report in one payload, so filling N run bodies costs N
+      // fetches rather than 2N.
+      reports = r.artifacts || [];
+    }
     catch (e) {
       // A ticket with no runs comes back as an empty list, not an error — so
       // the only things reaching here are a broken store or a dead server.
@@ -1905,7 +1925,8 @@ export function boardPage(): string {
         // flight; writing into a detached node is harmless, missing one is not.
         const el = box.querySelector('[data-run="' + r.run_uid + '"] .bd');
         if (!el) return;
-        el.innerHTML = reportHtml(d.artifacts || []) + phaseBreakdown(d.phases || [], d.totals || {});
+        el.innerHTML = reportHtml(reports.filter((a) => a.run_uid === r.run_uid)) +
+          phaseBreakdown(d.phases || [], d.totals || {});
         // Bound here, not in bind(): these nodes are created after the render
         // pass that wires the rest of the page, and they are freshly made every
         // time a run body is filled — so one listener each, never stacked.
@@ -1971,9 +1992,15 @@ export function boardPage(): string {
     const lines = String(rep.body).split('\\n').map((l) => l.trim()).filter(Boolean)
       .filter((l) => !/^✅/.test(l));
     const rows = lines.map((l) => {
-      const m = l.match(/^([a-z][a-z ]{0,14}): *(.+)$/i);
+      // Parentheses are in the class because the canonical last line of a
+      // /begin report is "next (you): …" — the one row always present was the
+      // one row that never got a label. And the separator demands a SPACE after
+      // the colon, which is what keeps a bare URL in the body from parsing as a
+      // field: "https://…" would otherwise render an uppercase HTTPS label
+      // beside a mangled value.
+      const m = l.match(/^([a-z][a-z ()]{0,14}): +(.+)$/i);
       return m
-        ? '<div class="r"><span class="k">' + esc(m[1]) + '</span><span class="v">' + esc(m[2]) + '</span></div>'
+        ? '<div class="r"><span class="lb">' + esc(m[1]) + '</span><span class="v">' + esc(m[2]) + '</span></div>'
         : '<div class="r"><span class="v">' + esc(l) + '</span></div>';
     }).join('');
     return rows ? '<div class="rep">' + rows + '</div>' : '';

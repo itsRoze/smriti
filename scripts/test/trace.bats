@@ -863,3 +863,56 @@ split_run() {
   [[ "$output" == *"for one"* ]]
   [[ "$output" != *"for two"* ]]
 }
+
+@test "report: an empty body is refused, not stored" {
+  # Worse than no report: the board treats a stored one as licence to close the
+  # pane, so an empty row would close a session having kept nothing.
+  uid=$(start_run)
+  run bash -c "printf '' | '$CLI' report"
+  [ "$status" -eq 2 ]
+  [ "$(sq "SELECT count(*) FROM run_artifacts WHERE run_uid='$uid';")" = "0" ]
+}
+
+@test "report: a whitespace-only body is refused too" {
+  uid=$(start_run)
+  run bash -c "printf '   \n\n  \n' | '$CLI' report"
+  [ "$status" -eq 2 ]
+  [ "$(sq "SELECT count(*) FROM run_artifacts WHERE run_uid='$uid';")" = "0" ]
+}
+
+@test "report: --path records an artifact on disk without demanding a body" {
+  # The path-only form is for evidence that lives as a file — a browse audit, a
+  # screenshot. Requiring stdin as well made it hang at a terminal.
+  uid=$(start_run)
+  run "$CLI" report --run "$uid" --kind screenshot --path /tmp/shot.png < /dev/null
+  [ "$status" -eq 0 ]
+  [ "$(sq "SELECT path FROM run_artifacts WHERE run_uid='$uid';")" = "/tmp/shot.png" ]
+}
+
+@test "report: a scrape declines rather than overwrite the run's own words" {
+  # The board decides to scrape from a read taken moments earlier; a run
+  # reaching Gate 3 in between must not have its complete summary replaced by
+  # one viewport of terminal.
+  uid=$(start_run)
+  printf 'the complete summary\n' | "$CLI" report >/dev/null
+  run bash -c "printf 'one viewport of terminal\n' | '$CLI' report --source pane"
+  [ "$status" -eq 0 ]
+  [ "$(sq "SELECT source FROM run_artifacts WHERE run_uid='$uid';")" = "run" ]
+  [ "$(sq "SELECT body FROM run_artifacts WHERE run_uid='$uid';")" = "the complete summary" ]
+}
+
+@test "report: a scrape still replaces an earlier scrape" {
+  uid=$(start_run)
+  printf 'first scrape\n'  | "$CLI" report --source pane >/dev/null
+  printf 'second scrape\n' | "$CLI" report --source pane >/dev/null
+  [ "$(sq "SELECT count(*) FROM run_artifacts WHERE run_uid='$uid';")" = "1" ]
+  [ "$(sq "SELECT body FROM run_artifacts WHERE run_uid='$uid';")" = "second scrape" ]
+}
+
+@test "report: the run's own words replace an earlier scrape" {
+  uid=$(start_run)
+  printf 'scraped guess\n' | "$CLI" report --source pane >/dev/null
+  printf 'the real thing\n' | "$CLI" report >/dev/null
+  [ "$(sq "SELECT source FROM run_artifacts WHERE run_uid='$uid';")" = "run" ]
+  [ "$(sq "SELECT body FROM run_artifacts WHERE run_uid='$uid';")" = "the real thing" ]
+}

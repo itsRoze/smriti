@@ -52,7 +52,13 @@ const IDLE_MS = Number(process.env.SMRITI_BOARD_IDLE_MS || 45 * 60 * 1000);
 // it; the override exists so a test can watch a sweep decide without sitting
 // through ten of them, the same way SMRITI_BOARD_IDLE_MS makes the reaper
 // observable.
-const SWEEP_MS = Number(process.env.SMRITI_BOARD_SWEEP_MS || 10000);
+// Validated, unlike IDLE_MS where a NaN merely stops the reaper: setInterval
+// clamps NaN to 1ms, which would turn this into a hot loop spawning herdr and
+// smriti-config continuously.
+const SWEEP_MS = (() => {
+  const n = Number(process.env.SMRITI_BOARD_SWEEP_MS);
+  return Number.isFinite(n) && n > 0 ? n : 10000;
+})();
 // Ceiling for /api/render. Descriptions are prose typed by one person; two
 // orders of magnitude of headroom over the longest ticket in this backlog is
 // plenty, and well under the 2 MB the document routes allow for whole files.
@@ -210,20 +216,29 @@ async function resolveHtmlUrls(runs: Run[]): Promise<void> {
 // answered agent_not_found). Filtering on it made live sessions vanish from the
 // board — no blocked indicator, and start offered again on work already running.
 // `cwd` is the identifier herdr does not lose, and it equals worktree_path.
-function herdrSessions(): Session[] {
-  if (!Bun.which('herdr')) return [];
-  const r = sh('herdr', ['agent', 'list'], 8000);
-  if (!r.ok) return [];
+//
+// A row is kept if it can be identified AT ALL. `pane` counts: once a ticket has
+// shipped, `smriti clean` has deleted the directory the session is sitting in,
+// so a nameless agent reporting an empty cwd is exactly the session the close
+// sweep exists to find — and dropping it here would have made the pane fallback
+// permanently unreachable.
+function parseAgents(out: string): Session[] {
   try {
-    return (JSON.parse(r.out)?.result?.agents ?? [])
+    return (JSON.parse(out)?.result?.agents ?? [])
       .map((a: { name?: string; agent_status?: string; status?: string; cwd?: string; pane_id?: string }) => ({
         name: a?.name ?? '',
         status: a?.agent_status ?? a?.status ?? 'unknown',
         cwd: a?.cwd ?? '',
         pane: a?.pane_id ?? '',
       }))
-      .filter((s: Session) => s.name || s.cwd);
+      .filter((s: Session) => s.name || s.cwd || s.pane);
   } catch { return []; }
+}
+
+function herdrSessions(): Session[] {
+  if (!Bun.which('herdr')) return [];
+  const r = sh('herdr', ['agent', 'list'], 8000);
+  return r.ok ? parseAgents(r.out) : [];
 }
 
 // Is there already a session for this ticket? Without this check, starting an
@@ -277,22 +292,13 @@ async function shIn(bin: string, args: string[], input: string, timeoutMs: numbe
 }
 
 // Non-blocking twin of herdrSessions(), for the close sweep. The sync one runs
-// on every /api/state and must stay as it is; a timer has no excuse to freeze
-// the loop.
+// on every /api/state and must stay synchronous there; a timer has no excuse to
+// freeze the loop. They share the decode below rather than carrying two copies
+// of it — the first draft duplicated it and the two filters had already drifted.
 async function herdrSessionsAsync(): Promise<Session[]> {
   if (!Bun.which('herdr')) return [];
   const r = await shOut('herdr', ['agent', 'list'], 8000);
-  if (!r.ok) return [];
-  try {
-    return (JSON.parse(r.out)?.result?.agents ?? [])
-      .map((a: Record<string, string>) => ({
-        name: a?.name ?? '',
-        status: a?.agent_status ?? a?.status ?? 'unknown',
-        cwd: a?.cwd ?? '',
-        pane: a?.pane_id ?? '',
-      }))
-      .filter((s: Session) => s.name || s.cwd);
-  } catch { return []; }
+  return r.ok ? parseAgents(r.out) : [];
 }
 
 // Type the prompt into the session, the way you would.
@@ -350,7 +356,7 @@ async function deliverPrompt(pane: string, prompt: string): Promise<boolean> {
 // That limit is the whole reason the run writes its own report rather than
 // being photographed.
 type ArtifactRow = { run_uid: string; kind: string; source?: string; status?: string | null; body?: string | null };
-type RunRow = { run_uid: string; herdr_pane?: string | null };
+type RunRow = { run_uid: string; ticket_id?: number | null; status?: string; herdr_pane?: string | null };
 type ShipTicket = { id: number; status: string; worktree_path?: string | null };
 
 async function closeOnShipEnabled(): Promise<boolean> {
@@ -380,7 +386,9 @@ async function sweepShippedSessions(): Promise<void> {
     if (!ownsState) return;
 
     if (!Bun.which('herdr')) return;
-    if (!(await closeOnShipEnabled())) return;
+
+    const agents = await herdrSessionsAsync();
+    if (!agents.length) return;
 
     const tickets = await readJsonAsync<ShipTicket[]>(['list', '--all', '--json']);
     if (!tickets) return;
@@ -389,18 +397,20 @@ async function sweepShippedSessions(): Promise<void> {
     const done = tickets.filter((t) => t.status === 'shipped' && t.worktree_path && !existsSync(t.worktree_path));
     if (!done.length) return;
 
-    const agents = await herdrSessionsAsync();
-    if (!agents.length) return;
+    // Driven by AGENTS, not by shipped tickets. `done` only ever grows — every
+    // ticket ever shipped stays in it — so looking runs up per shipped ticket
+    // meant a sweep whose cost climbed forever while `agents` held nought or
+    // one. Live sessions are the small set, and the common case (a cwd match)
+    // needs no run lookup at all.
+    let allRuns: RunRow[] | null = null;
+    const runsForPane = async (pane: string): Promise<RunRow | undefined> => {
+      // One read per sweep, and only when a cwd match has already failed.
+      allRuns ??= (await readJsonAsync<RunRow[]>(['list', '--limit', '500', '--json'], TRACE)) ?? [];
+      return allRuns.find((r) => r.herdr_pane && r.herdr_pane === pane);
+    };
 
-    for (const t of done) {
-      const runs = (await readJsonAsync<RunRow[]>(['list', '--ticket', String(t.id), '--json'], TRACE)) ?? [];
-      // cwd first, because that is the identifier herdr does not lose and it
-      // equals worktree_path. The stamped pane is the fallback for the case
-      // this feature exists in: the directory is gone, so cwd may be too.
-      const panes = new Set(runs.map((r) => r.herdr_pane).filter(Boolean) as string[]);
-      const sess = agents.find((a) => a.cwd && a.cwd === t.worktree_path)
-                ?? agents.find((a) => a.pane && panes.has(a.pane));
-      if (!sess?.pane || closeGaveUp.has(sess.pane)) continue;
+    for (const sess of agents) {
+      if (!sess.pane || closeGaveUp.has(sess.pane)) continue;
 
       // `done` is not a lesser `idle` — it IS idle, for work that finished while
       // nobody was looking at the tab, which is precisely this ticket's case.
@@ -408,22 +418,50 @@ async function sweepShippedSessions(): Promise<void> {
       // session sitting at a question.
       if (sess.status !== 'idle' && sess.status !== 'done') continue;
 
+      // cwd first: it is the identifier herdr does not lose, and it equals
+      // worktree_path. The stamped pane is the fallback for the case this
+      // feature exists in — the directory is gone, so cwd may be gone with it.
+      //
+      // The fallback is deliberately NOT used for an agent sitting in some other
+      // directory. herdr does not reuse a closed pane's id, but a pane that is
+      // still open can be running something else entirely by now, and closing
+      // that would destroy a live session and file its terminal under a ticket
+      // it has nothing to do with. No cwd, or this ticket's cwd, or leave it be.
+      let t = done.find((x) => sess.cwd && x.worktree_path === sess.cwd);
+      let run: RunRow | undefined;
+      if (!t) {
+        if (sess.cwd) continue;
+        run = await runsForPane(sess.pane);
+        if (!run?.ticket_id) continue;
+        t = done.find((x) => x.id === run!.ticket_id);
+        if (!t) continue;
+      }
+
       // Which run owns this pane. A ticket can have several — the board's own
       // restart action closes one session and starts another on the same
       // worktree — so an older run's report must not license closing a newer
-      // session. runs are newest-first.
-      const run = runs.find((r) => r.herdr_pane && r.herdr_pane === sess.pane) ?? runs[0];
+      // session.
+      if (!run) {
+        const forTicket = (await readJsonAsync<RunRow[]>(['list', '--ticket', String(t.id), '--json'], TRACE)) ?? [];
+        // Newest-first, so [0] is the run this session most plausibly is.
+        run = forTicket.find((r) => r.herdr_pane && r.herdr_pane === sess.pane) ?? forTicket[0];
+      }
       if (!run) continue;
 
       const arts = (await readJsonAsync<ArtifactRow[]>(
-        ['artifacts', '--ticket', String(t.id), '--kind', 'report', '--json'], TRACE)) ?? [];
-      let captured = arts.some((a) => a.run_uid === run.run_uid);
+        ['artifacts', '--run', run.run_uid, '--kind', 'report', '--json'], TRACE)) ?? [];
+      // A row is not a capture — a row with something in it is. `trace report`
+      // refuses to store an empty body, but a `path`-only artifact is legitimate
+      // and older rows predate that rule.
+      let captured = arts.some((a) => (a.body && a.body.trim()) || a.path);
 
       if (!captured) {
         const read = await shOut('herdr',
           ['pane', 'read', sess.pane, '--source', 'recent-unwrapped', '--lines', '200', '--format', 'text'], 10000);
         const text = read.ok ? read.out.trim() : '';
         if (text) {
+          // `--source pane` will decline rather than overwrite if the run wrote
+          // its own report in the moments since the read above.
           captured = await shIn(TRACE, ['report', '--run', run.run_uid, '--source', 'pane'], text + '\n', 10000);
         }
       }
@@ -436,8 +474,24 @@ async function sweepShippedSessions(): Promise<void> {
         continue;
       }
 
+      // Gated HERE, not at the top of the sweep: capture is unconditional and
+      // only the closing is optional. Opting out means you want the panes kept,
+      // not that you want the record given up — and a pane you close by hand
+      // later must not take the summary with it.
+      if (!(await closeOnShipEnabled())) continue;
+
       // herdr 0.8 has no `agent stop`; closing the pane is what ends a session.
-      if (!await shAsync('herdr', ['pane', 'close', sess.pane], 10000)) closeGaveUp.add(sess.pane);
+      if (!await shAsync('herdr', ['pane', 'close', sess.pane], 10000)) { closeGaveUp.add(sess.pane); continue; }
+
+      // A run we had to scrape never reached its own `trace end`, and the
+      // process that would have called it has just been killed — so without
+      // this it stays `running` forever, ticking a live duration on the board
+      // for a session that no longer exists. Only when still open: `trace end`
+      // rewrites ended_at unconditionally, so re-ending a finished run would
+      // silently restate how long it took.
+      if (run.status === 'running' || run.status === 'awaiting') {
+        await shAsync(TRACE, ['end', '--run', run.run_uid, '--status', 'failed'], 5000);
+      }
     }
   } catch {
     // A sweep is housekeeping. It must never be able to take the board down.
@@ -622,9 +676,15 @@ async function cmdServer(): Promise<never> {
         touch();
         const id = url.searchParams.get('ticket') || '';
         if (!/^\d+$/.test(id)) return json({ error: 'bad ticket' }, 400);
-        const runs = await readJsonAsync<Run[]>(['list', '--ticket', id, '--limit', '1000', '--json'], TRACE);
+        // Reports ride along with the run list, one query for the whole ticket.
+        // Per-run they cost a spawn each, which doubled the subprocess count of
+        // opening a ticket — and the run bodies fill from this same fetch.
+        const [runs, artifacts] = await Promise.all([
+          readJsonAsync<Run[]>(['list', '--ticket', id, '--limit', '1000', '--json'], TRACE),
+          readJsonAsync<ArtifactRow[]>(['artifacts', '--ticket', id, '--kind', 'report', '--json'], TRACE),
+        ]);
         if (runs === null) return json({ error: 'could not read the trace' }, 503);
-        return json({ runs });
+        return json({ runs, artifacts: artifacts ?? [] });
       }
 
       // One run's phase breakdown. The uid comes from the client, so it is
@@ -635,15 +695,9 @@ async function cmdServer(): Promise<never> {
         touch();
         const uid = runDetail[1];
         if (!/^[0-9a-f]{8}$/.test(uid)) return json({ error: 'bad run id' }, 400);
-        // Artifacts ride along with the breakdown rather than getting a route
-        // of their own: the overlay fills one run body from one fetch, and a
-        // second round-trip per run would show the report a beat after the bar.
-        const [detail, artifacts] = await Promise.all([
-          readJsonAsync(['show', uid, '--json'], TRACE),
-          readJsonAsync<ArtifactRow[]>(['artifacts', '--run', uid, '--json'], TRACE),
-        ]);
+        const detail = await readJsonAsync(['show', uid, '--json'], TRACE);
         if (detail === null) return json({ error: 'no such run' }, 404);
-        return json({ ...(detail as object), artifacts: artifacts ?? [] });
+        return json(detail);
       }
 
       if (url.pathname === '/api/stats' && req.method === 'GET') {

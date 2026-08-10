@@ -424,21 +424,47 @@ cmd_report() {
     *) die "invalid --status '$status' (expected: ok, fail)" ;;
   esac
 
-  # A terminal on stdin means someone typed the command expecting it to take an
-  # argument; blocking on `cat` would just look like a hang.
-  [ -t 0 ] && die "the body is read from stdin (try: smriti trace report <<'EOF' … EOF)"
+  # --path names an artifact that lives on disk, so there is no body to read.
+  # Demanding one anyway made the documented path-only form hang at a terminal.
+  local body=""
+  if [ -z "$path" ]; then
+    # A terminal on stdin means someone typed the command expecting it to take
+    # an argument; blocking on `cat` would just look like a hang.
+    [ -t 0 ] && die "the body is read from stdin (try: smriti trace report <<'EOF' … EOF)"
+    body=$(cat)
+  elif [ ! -t 0 ]; then
+    body=$(cat)
+  fi
 
-  local body; body=$(cat)
+  # An empty report is not a report, and it is worse than none: the board treats
+  # a stored report as licence to close the pane, so an empty row would close a
+  # session having kept nothing — the exact loss this whole path exists to
+  # prevent. Refused here rather than guarded at the reader, so no empty row can
+  # be created in the first place.
+  if [ -z "$path" ] && [ -z "$(printf '%s' "$body" | tr -d '[:space:]')" ]; then
+    die "refusing to store an empty report — nothing was captured" 2
+  fi
 
   # Print BEFORE storing, always. If the store fails, the text has at least been
   # rendered into the pane, where the board's scrape can still recover it. The
   # one outcome worth engineering against is losing both copies at once.
-  printf '%s\n' "$body"
+  [ -n "$body" ] && printf '%s\n' "$body"
 
   factory_db_exists || die "no factory store yet — nothing to attach a report to" 3
   [ -n "$uid" ] || uid=$(report_run)
   [ -n "$uid" ] || die "no run on this branch to attach a report to" 4
   run_exists "$uid" || die "no run '$uid'" 4
+
+  # A scrape must never overwrite the run's own words. The board decides to
+  # scrape from a read taken moments earlier, so a run that reaches Gate 3 in
+  # between would otherwise have its complete summary deleted and replaced by
+  # one viewport of terminal. Already captured, properly: nothing to do.
+  if [ "$kind" = "report" ] && [ "$source" = "pane" ]; then
+    if [ "$(db "SELECT count(*) FROM run_artifacts
+                WHERE run_uid = $(sql_quote "$uid") AND kind = 'report' AND source = 'run';")" = "1" ]; then
+      return 0
+    fi
+  fi
 
   # One report per run, so a re-run replaces rather than stacks. Delete-then-
   # insert inside db_write's single transaction; the partial unique index in the

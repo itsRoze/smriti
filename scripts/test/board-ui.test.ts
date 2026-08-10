@@ -935,7 +935,7 @@ describe('the closing report', () => {
     const { context, page, errors } = await open();
     try {
       await openRunBody(page, tid);
-      const keys = await page.locator('#runs .rep .r .k').allTextContents();
+      const keys = await page.locator('#runs .rep .r .lb').allTextContents();
       expect(keys).toEqual(['built', 'review']);
       const vals = await page.locator('#runs .rep .r .v').allTextContents();
       expect(vals[0]).toBe('the parser');
@@ -964,6 +964,30 @@ describe('the closing report', () => {
       await page.locator('#runs .rep .fold').click();
       expect(await page.locator('#runs .rep .raw').isVisible()).toBe(true);
       expect(await page.locator('#runs .rep .raw').innerText()).toContain('noise from a spinner');
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+
+  it('parses the fields the /begin template actually writes', async () => {
+    if (!HAS_CHROMIUM) return;
+    // Two regressions in one: `next (you):` is the canonical LAST line of a
+    // /begin report, and a label class of [a-z ] excluded its parentheses — so
+    // the one row always present was the one row that never got a label. And a
+    // bare URL must not parse as a field, or `https://…` renders an uppercase
+    // HTTPS label beside a mangled value.
+    const tid = finishedRunOn('an idea with no app',
+      'built: the thing\n' +
+      'next (you): test it, then say the word to ship.\n' +
+      'https://github.com/test/demo/pull/12\n');
+    const { context, page, errors } = await open();
+    try {
+      await openRunBody(page, tid);
+      const keys = await page.locator('#runs .rep .r .lb').allTextContents();
+      expect(keys).toEqual(['built', 'next (you)']);
+      const rows = await page.locator('#runs .rep .r').allTextContents();
+      // The URL survives as its own unlabelled line rather than being split.
+      expect(rows[2]).toContain('https://github.com/test/demo/pull/12');
+      expect(keys).not.toContain('https');
       expect(errors).toEqual([]);
     } finally { await context.close(); }
   }, T);

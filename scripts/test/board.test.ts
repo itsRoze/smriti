@@ -273,6 +273,40 @@ test('the served page carries no template-literal escape damage', async () => {
   expect(script).not.toContain(':///i');
 });
 
+test('board-ui.ts stays one template literal, comments included', () => {
+  // Both halves of this have now shipped as real bugs, and neither is visible
+  // when reading the source — the source looks completely ordinary.
+  //
+  //   A backtick anywhere ENDS the literal. One in a CSS comment turned the
+  //   rest of the stylesheet into TypeScript and the page stopped building.
+  //
+  //   A backslash escape is consumed by the literal even inside a COMMENT. A
+  //   \n written in a `//` line became a real newline, ended the comment there
+  //   and spilled its remaining words into the page as code, which the browser
+  //   met as `ReferenceError: here is not defined`. It parses; it just breaks.
+  //
+  // Written as a source check rather than a page check because a comment leaves
+  // no trace in the output to assert against.
+  const src = readFileSync(join(REPO_ROOT, 'lib', 'board-ui.ts'), 'utf8');
+  const lines = src.split('\n');
+  const ticks = lines.flatMap((l, i) => (l.includes('`') ? [i + 1] : []));
+  // Exactly two: the line that opens the literal and the line that closes it.
+  expect(ticks.length).toBe(2);
+
+  const open = ticks[0]!;
+  const close = ticks[1]!;
+  const offenders = lines
+    .slice(open, close - 1)
+    .map((l, i) => ({ line: open + i + 1, text: l }))
+    .filter(({ text }) => {
+      const t = text.trim();
+      if (!(t.startsWith('//') || t.startsWith('*') || t.startsWith('/*'))) return false;
+      // A doubled backslash is already escaped and survives; a lone one does not.
+      return /(^|[^\\])\\[a-z]/.test(t);
+    });
+  expect(offenders).toEqual([]);
+});
+
 test('/api/state carries live sessions so a blocked agent can surface', async () => {
   // The board's "waiting on you" band was driven only by smriti's own trace,
   // which knows about /begin gates and nothing about a Claude session stalled

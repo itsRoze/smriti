@@ -285,11 +285,80 @@ test('an older run report does not license closing a newer session', async () =>
 });
 
 test('close_session_on_ship=false stops the closing but not the capture', async () => {
+  // Opting out means you want the panes kept, not that you want the record
+  // given up — a pane you close by hand later must not take the summary with
+  // it. Deliberately stores NO report first, so the only way this passes is if
+  // the scrape still ran with closing switched off.
   const { wt, uid } = shippedTicket('opted out', 'wK:p1');
-  storeReport(uid, 'built: the thing\n');
+  writeFileSync(READ_FILE, 'captured even though closing is off\n');
   writeFileSync(join(HOME_DIR, 'config'), 'close_session_on_ship=false\n');
   session(wt, 'idle', 'wK:p1');
   await sweepsPassed();
   expect(closes('wK:p1')).toBe(0);
+  const arts = spawnSync(TRACE, ['artifacts', '--run', uid, '--json'], { encoding: 'utf8', cwd: REPO, env: env() });
+  const rows = JSON.parse(arts.stdout);
+  expect(rows.length).toBe(1);
+  expect(rows[0].body).toContain('captured even though closing is off');
   rmSync(join(HOME_DIR, 'config'), { force: true });
+});
+
+test('an agent whose cwd is gone is still found, by the pane its run stamped', async () => {
+  // The case this whole feature exists in: `smriti clean` deleted the directory,
+  // so herdr may report no cwd at all. An earlier cut dropped nameless, cwd-less
+  // agents while decoding, which made the pane fallback unreachable.
+  const { wt, uid } = shippedTicket('cwd is gone', 'wL:p1');
+  storeReport(uid, 'built: the thing\n');
+  session('', 'idle', 'wL:p1');
+  expect(await until(() => closes('wL:p1') > 0)).toBe(true);
+  writeFileSync(CWD_FILE, wt);
+});
+
+test('the pane fallback never closes an agent sitting in someone else\'s worktree', async () => {
+  // A pane id outlives the run that stamped it. If that pane is now running
+  // something else, closing it would kill a live session and file its terminal
+  // under a ticket it has nothing to do with. No cwd, or this ticket's cwd —
+  // anything else is left alone.
+  const { uid } = shippedTicket('stale pane id', 'wM:p1');
+  storeReport(uid, 'built: the thing\n');
+  const other = cli(TICKET, ['add', 'someone else, still working', '--ready']);
+  const otherId = (other.stdout.match(/#(\d+)/) ?? [])[1]!;
+  const otherWt = cli(TICKET, ['start', otherId]).stdout.trim().split('\n')[0];
+  expect(existsSync(otherWt)).toBe(true);
+  // Same pane id, but the agent is plainly somewhere else now.
+  session(otherWt, 'idle', 'wM:p1');
+  await sweepsPassed();
+  expect(closes('wM:p1')).toBe(0);
+});
+
+test('a run that had to be scraped is ended, not left ticking forever', async () => {
+  // It never reached its own `trace end`, and the process that would have
+  // called it has just been killed — so nothing else can ever close it out.
+  const { wt, uid } = shippedTicket('died before gate 3', 'wN:p1');
+  writeFileSync(READ_FILE, 'whatever was still on screen\n');
+  session(wt, 'idle', 'wN:p1');
+  expect(await until(() => closes('wN:p1') > 0)).toBe(true);
+  // The close and the `trace end` that follows it are two spawns, so poll for
+  // the second rather than assuming it landed with the first.
+  const rowNow = () => (JSON.parse(spawnSync(TRACE, ['list', '--limit', '500', '--json'],
+    { encoding: 'utf8', cwd: REPO, env: env() }).stdout) as
+      { run_uid: string; status: string; ended_at: string | null }[]).find((r) => r.run_uid === uid);
+  expect(await until(() => rowNow()?.status === 'failed')).toBe(true);
+  expect(rowNow()!.ended_at).toBeTruthy();
+});
+
+test('a scrape never overwrites the report the run wrote itself', async () => {
+  // The sweep decides to scrape from a read taken moments earlier. A run that
+  // reaches Gate 3 in between would otherwise have its complete summary deleted
+  // and replaced by one viewport of terminal.
+  const { uid } = shippedTicket('race at gate 3', 'wO:p1');
+  storeReport(uid, 'built: the run\'s own complete words\n');
+  const scrape = spawnSync(TRACE, ['report', '--run', uid, '--source', 'pane'], {
+    encoding: 'utf8', cwd: REPO, env: env(), input: 'one viewport of terminal\n',
+  });
+  expect(scrape.status).toBe(0);
+  const rows = JSON.parse(spawnSync(TRACE, ['artifacts', '--run', uid, '--json'],
+    { encoding: 'utf8', cwd: REPO, env: env() }).stdout);
+  expect(rows.length).toBe(1);
+  expect(rows[0].source).toBe('run');
+  expect(rows[0].body).toContain("run's own complete words");
 });
