@@ -71,7 +71,7 @@ _factory_conn_args() {
 # Reading it costs one sqlite3 invocation (~4ms against ~16ms for a whole
 # `ticket list`). That is the price of a version that cannot lie, and it is also
 # what let v3 be added without guesswork about what any given store already has.
-FACTORY_SCHEMA_VERSION=3
+FACTORY_SCHEMA_VERSION=4
 
 # The store's schema version. Three answers, and they must stay distinct:
 # a number, or failure — because "could not read it" is not "it is current".
@@ -164,6 +164,26 @@ _db_migrate() {
     # the caller reports it and the store is left exactly as it was.
     sqlite3 "$FACTORY_DB" ".timeout 10000" \
       "ALTER TABLE runs ADD COLUMN html_session TEXT;" >/dev/null 2>&1 || {
+        rmdir "$lock" 2>/dev/null || true; return 1; }
+  fi
+
+  # ── step v4: runs.herdr_pane ────────────────────────────────────────────
+  #
+  # Another pure column add, for the same reason v3 was one: this store is
+  # written by every live /begin session at once, and a rebuild under concurrent
+  # writers can lose rows. Guarded on the table as well as the column, exactly
+  # as above — a stamped-but-tableless store is reachable, and factory-schema.sql
+  # creates `runs` WITH the column a moment later.
+  #
+  # run_artifacts needs no step at all: it is a new table, and every statement in
+  # factory-schema.sql is CREATE ... IF NOT EXISTS applied on every connection.
+  local has_pane
+  has_pane=$(sqlite3 "$FACTORY_DB" ".timeout 10000" \
+    "SELECT count(*) FROM pragma_table_info('runs') WHERE name='herdr_pane';" 2>/dev/null) || {
+      rmdir "$lock" 2>/dev/null || true; return 1; }
+  if [ "$has_runs" = "1" ] && [ "$has_pane" != "1" ]; then
+    sqlite3 "$FACTORY_DB" ".timeout 10000" \
+      "ALTER TABLE runs ADD COLUMN herdr_pane TEXT;" >/dev/null 2>&1 || {
         rmdir "$lock" 2>/dev/null || true; return 1; }
   fi
 

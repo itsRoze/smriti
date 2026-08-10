@@ -6,6 +6,8 @@
 #   smriti trace start <skill> [--ticket N]   begin a run; prints RUN_UID=…
 #   smriti trace emit <phase> <status> [--run UID] [--note TEXT]
 #   smriti trace end [--run UID] [--status done|failed]
+#   smriti trace report [--source run|pane] …    what the run concluded; stdin
+#   smriti trace artifacts [--run UID] [--ticket N] [--json]
 #   smriti trace list [--active] [--ticket N] [--limit N] [--json]
 #   smriti trace show <run-uid> [--json]
 #   smriti trace tail [--run UID] [--after ID] [--json]
@@ -30,6 +32,14 @@
 # Every write here is best-effort by contract: skills call this for
 # observability, so a trace failure must never be able to fail the work being
 # traced. Callers append `|| true`.
+#
+# `report` is the one deliberate exception, and it has to be. The rest of this
+# file OBSERVES the work; a report IS the work — it is the run's closing summary,
+# which the board then treats as licence to close the herdr pane that summary was
+# printed in. A silent failure here means the pane is closed with nothing kept.
+# So `report` exits non-zero when it cannot store, and /begin does not `|| true`
+# it. It also writes the body to stdout BEFORE storing, so that even a failed
+# store leaves the text rendered in the pane, where a scrape can still find it.
 
 set -e
 
@@ -64,6 +74,9 @@ usage:
                                                      [--html-session ID]
                                                      [--if-html-session ID]
   smriti trace end [--run UID] [--status done|failed]
+  smriti trace report [--run UID] [--kind K] [--source run|pane]
+                      [--status ok|fail] [--path P]      body on stdin
+  smriti trace artifacts [--run UID] [--ticket N] [--kind K] [--json]
   smriti trace list [--active] [--ticket N] [--limit N] [--json]
   smriti trace show <run-uid> [--json]
   smriti trace tail [--run UID] [--after ID] [--json]
@@ -255,11 +268,19 @@ cmd_start() {
     [ -n "$t_repo" ] && slug="$t_repo"
   fi
 
-  db_write "INSERT INTO runs (run_uid, ticket_id, repo_slug, project_id, skill, branch, status, started_at)
+  # The pane we are running in, straight from the environment herdr injects.
+  # Recorded now because this is the only moment it is free: afterwards the
+  # board would have to infer it from a cwd that `smriti clean` is about to
+  # delete, or from herdr's agent names, which are machine-global (`t<id>`) and
+  # have already collided between a test fixture and a real session. Empty when
+  # the run is not inside herdr, which is normal.
+  local pane="${HERDR_PANE_ID:-}"
+
+  db_write "INSERT INTO runs (run_uid, ticket_id, repo_slug, project_id, skill, branch, status, started_at, herdr_pane)
             VALUES ($(sql_quote "$uid"), $(sql_quote_or_null "$ticket"), $(sql_quote "$slug"),
                     ${project_sql:-NULL},
                     $(sql_quote "$skill"), $(sql_quote_or_null "$branch"), 'running',
-                    $(sql_quote "$(now_utc)"));"
+                    $(sql_quote "$(now_utc)"), $(sql_quote_or_null "$pane"));"
   printf 'RUN_UID=%s\n' "$uid"
 }
 
@@ -357,6 +378,121 @@ cmd_end() {
   db_write "UPDATE runs SET status = $(sql_quote "$status"), ended_at = $(sql_quote "$(now_utc)"),
                             html_session = NULL
             WHERE run_uid = $(sql_quote "$uid");"
+}
+
+# ─── report / artifacts ─────────────────────────────────────────────────────
+
+VALID_ARTIFACT_SOURCES="run pane"
+
+# The run a bare `report` attaches to: the newest run on this branch, WHATEVER
+# its status.
+#
+# Deliberately not implicit_run(), which only sees 'running'/'awaiting'. A report
+# is written at the very end of a run, and whether it lands a moment before or a
+# moment after `trace end` is an ordering detail of a markdown prompt. If that
+# detail decided whether the report was stored at all, reordering two lines in
+# the skill would silently start closing panes with nothing kept.
+report_run() {
+  local slug branch
+  slug=$(current_slug); branch=$(current_branch)
+  [ -n "$slug" ] || return 0
+  db "SELECT run_uid FROM runs
+      WHERE repo_slug = $(sql_quote "$slug")
+        AND branch IS $(sql_quote_or_null "$branch")
+      ORDER BY id DESC LIMIT 1;"
+}
+
+cmd_report() {
+  local uid="" kind="report" source="run" status="" path=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --run)    [ $# -ge 2 ] || die "--run requires a value";    uid="$2";    shift 2 ;;
+      --kind)   [ $# -ge 2 ] || die "--kind requires a value";   kind="$2";   shift 2 ;;
+      --source) [ $# -ge 2 ] || die "--source requires a value"; source="$2"; shift 2 ;;
+      --status) [ $# -ge 2 ] || die "--status requires a value"; status="$2"; shift 2 ;;
+      --path)   [ $# -ge 2 ] || die "--path requires a value";   path="$2";   shift 2 ;;
+      *) die "unknown flag: $1" ;;
+    esac
+  done
+  [ -n "$kind" ] || die "--kind cannot be empty"
+  case " $VALID_ARTIFACT_SOURCES " in
+    *" $source "*) ;;
+    *) die "invalid --source '$source' (expected: $VALID_ARTIFACT_SOURCES)" ;;
+  esac
+  case "$status" in
+    ''|ok|fail) ;;
+    *) die "invalid --status '$status' (expected: ok, fail)" ;;
+  esac
+
+  # A terminal on stdin means someone typed the command expecting it to take an
+  # argument; blocking on `cat` would just look like a hang.
+  [ -t 0 ] && die "the body is read from stdin (try: smriti trace report <<'EOF' … EOF)"
+
+  local body; body=$(cat)
+
+  # Print BEFORE storing, always. If the store fails, the text has at least been
+  # rendered into the pane, where the board's scrape can still recover it. The
+  # one outcome worth engineering against is losing both copies at once.
+  printf '%s\n' "$body"
+
+  factory_db_exists || die "no factory store yet — nothing to attach a report to" 3
+  [ -n "$uid" ] || uid=$(report_run)
+  [ -n "$uid" ] || die "no run on this branch to attach a report to" 4
+  run_exists "$uid" || die "no run '$uid'" 4
+
+  # One report per run, so a re-run replaces rather than stacks. Delete-then-
+  # insert inside db_write's single transaction; the partial unique index in the
+  # schema is what makes "one" true rather than merely intended. Only `report`
+  # is collapsed this way — a run may legitimately gather many screenshots.
+  local del=""
+  [ "$kind" = "report" ] && del="DELETE FROM run_artifacts
+                                 WHERE run_uid = $(sql_quote "$uid") AND kind = 'report';"
+
+  db_write "$del
+            INSERT INTO run_artifacts (run_uid, kind, source, status, body, path, created_at)
+            VALUES ($(sql_quote "$uid"), $(sql_quote "$kind"), $(sql_quote "$source"),
+                    $(sql_quote_or_null "$status"), $(sql_quote "$body"),
+                    $(sql_quote_or_null "$path"), $(sql_quote "$(now_utc)"));"
+}
+
+cmd_artifacts() {
+  local uid="" ticket="" kind="" json=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --run)    [ $# -ge 2 ] || die "--run requires a value";    uid="$2";    shift 2 ;;
+      --ticket) [ $# -ge 2 ] || die "--ticket requires a value"; ticket="$2"; shift 2 ;;
+      --kind)   [ $# -ge 2 ] || die "--kind requires a value";   kind="$2";   shift 2 ;;
+      --json)   json=1; shift ;;
+      *) die "unknown flag: $1" ;;
+    esac
+  done
+  [ -n "$ticket" ] && require_num "$ticket" "--ticket"
+
+  if ! factory_db_exists; then
+    [ "$json" = "1" ] && { echo "[]"; return 0; }
+    return 0
+  fi
+
+  local where="1=1"
+  [ -n "$uid" ]    && where="$where AND a.run_uid = $(sql_quote "$uid")"
+  [ -n "$ticket" ] && where="$where AND r.ticket_id = $ticket"
+  [ -n "$kind" ]   && where="$where AND a.kind = $(sql_quote "$kind")"
+
+  # herdr_pane rides along: the board needs to know which pane produced a report
+  # before it will accept that report as licence to close a pane.
+  local select="SELECT a.id, a.run_uid, a.kind, a.source, a.status, a.body, a.path,
+                       a.created_at, r.ticket_id, r.herdr_pane
+                FROM run_artifacts a JOIN runs r ON r.run_uid = a.run_uid
+                WHERE $where ORDER BY a.id;"
+
+  if [ "$json" = "1" ]; then
+    db_json "$select"
+    return 0
+  fi
+  db "SELECT a.created_at || char(9) || a.kind || char(9) || a.source || char(9) ||
+             coalesce(a.status,'-') || char(9) || a.run_uid
+      FROM run_artifacts a JOIN runs r ON r.run_uid = a.run_uid
+      WHERE $where ORDER BY a.id;" | awk -F'\t' '{printf "%s  %-10s %-5s %-5s %s\n", $1, $2, $3, $4, $5}'
 }
 
 # ─── list / show / tail ─────────────────────────────────────────────────────
@@ -661,6 +797,8 @@ case "$CMD" in
   start)        cmd_start "$@" ;;
   emit)         cmd_emit "$@" ;;
   end)          cmd_end "$@" ;;
+  report)       cmd_report "$@" ;;
+  artifacts)    cmd_artifacts "$@" ;;
   list)         cmd_list "$@" ;;
   show)         cmd_show "$@" ;;
   tail)         cmd_tail "$@" ;;
