@@ -297,6 +297,12 @@ export function boardPage(): string {
   .veil{position:fixed;inset:0;z-index:20;background:var(--veil);display:none;align-items:flex-start;justify-content:center;padding:9vh 20px 20px}
   .veil.on{display:flex}
   .panel{width:min(760px,94vw);max-height:80vh;overflow:auto;padding:0;animation:pop .22s cubic-bezier(.2,.9,.3,1.3)}
+  /* The ticket overlay alone is a reading-and-writing surface: a rendered body
+     with headings and tables, and an editor over the top of it. It gets more
+     room than the palette or the help sheet, which are lists. (A real ticket
+     PAGE is the better answer and is its own ticket; this is the cheap half.) */
+  #detv{padding-top:6vh}
+  #detv .panel{width:min(1000px,94vw);max-height:86vh}
   @keyframes pop{from{opacity:0;transform:scale(.96) translateY(8px)}}
   .pal .q{padding:16px 20px;font-size:21px;border-bottom:2.5px dashed var(--ink-4);display:flex;gap:8px}
   .pal .q input{
@@ -360,7 +366,7 @@ export function boardPage(): string {
     text-transform:uppercase;color:var(--ink-3)}
   .desc a{cursor:pointer}
   .descedit{
-    display:none;width:100%;min-height:96px;font:inherit;font-size:17px;color:var(--ink);
+    display:none;width:100%;min-height:160px;font:inherit;font-size:17px;color:var(--ink);
     background:var(--paper);border:2.5px dashed var(--ink-4);border-radius:12px;
     padding:12px 14px;margin-bottom:18px;resize:vertical;outline:none;
   }
@@ -1201,10 +1207,19 @@ export function boardPage(): string {
     if (s && !s.isCollapsed && s.anchorNode && el.contains(s.anchorNode)) return true;
     return false;
   }
+  // Fit the editor to what is in it. A ticket body runs to a few hundred words
+  // here, and typing it through a six-line letterbox is the thing that makes
+  // the overlay feel small. Capped so the buttons below stay reachable, and
+  // resize:vertical still lets you overrule it by hand.
+  function growEdit(ta){
+    ta.style.height = 'auto';
+    ta.style.height = Math.min(ta.scrollHeight + 4, Math.round(window.innerHeight * 0.6)) + 'px';
+  }
   function startEdit(el, ta){
     if (!el || !ta) return false;
     el.style.display = 'none';
     ta.classList.add('on');
+    growEdit(ta);                 // measured after .on makes it visible
     ta.focus();
     return true;
   }
@@ -1217,6 +1232,7 @@ export function boardPage(): string {
   // edit typed into it vanished with no error.
   function wireDescEdit(el, ta, save){
     let abandoned = false;
+    ta.oninput = () => growEdit(ta);
     ta.onblur = () => {
       if (abandoned){ abandoned = false; return; }
       save();

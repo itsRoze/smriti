@@ -400,6 +400,27 @@ describe('board UI', () => {
     } finally { await context.close(); }
   }, T);
 
+  it('the editor opens tall enough to show the body it holds', async () => {
+    if (!HAS_CHROMIUM) return;
+    const { context, page, errors } = await open();
+    try {
+      await openBodyTicket(page);
+      await page.keyboard.press('e');
+      await page.waitForSelector('#descedit.on');
+      // The property worth pinning is not a pixel count, it is "you can see
+      // what you are typing": no inner scrollbar, so the whole body is visible
+      // without scrolling inside a six-line letterbox.
+      const { clientH, scrollH, capped } = await page.evaluate(() => {
+        const ta = document.querySelector('#descedit') as HTMLTextAreaElement;
+        return { clientH: ta.clientHeight, scrollH: ta.scrollHeight, capped: Math.round(window.innerHeight * 0.6) };
+      });
+      expect(scrollH).toBeLessThanOrEqual(clientH + 2);
+      // ...but never past the cap, or the save buttons below leave the screen.
+      expect(clientH).toBeLessThanOrEqual(capped);
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+
   it('an app description renders markdown too, not just a ticket body', async () => {
     if (!HAS_CHROMIUM) return;
     const { context, page, errors } = await open();
