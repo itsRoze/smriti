@@ -1099,12 +1099,18 @@ export function boardPage(): string {
     cardIdx = 0;
     for (const app of appsWithWork()){
       const all = ticketsIn(app);
-      // The board keeps a day's residue of what you finished: marking a ticket
-      // done refreshes immediately, and a card that evaporates under the cursor
-      // is harsh feedback on the one surface that spans every app. The pages
-      // are records and hide it outright; the board is a dashboard.
+      // Completed work is completed work: the h toggle decides whether it shows,
+      // and nothing else does.
+      //
+      // The board used to keep a day's residue of what you finished, so a card
+      // marked done would not evaporate under the cursor. But that residue sat
+      // OUTSIDE the fold, which meant a shipped ticket stayed on the board with
+      // completed work switched off and no way to dismiss it — the toggle
+      // appeared broken because for those cards it was. Cancelled tickets on the
+      // next line were never given the same exemption, so shipped was the odd
+      // one out. Predictable beats gentle here: press h to see what finished.
       const items = all
-        .filter((t) => t.status !== 'shipped' || recentlyShipped(t))
+        .filter((t) => t.status !== 'shipped')
         .filter((t) => t.status !== 'cancelled')
         .sort(byStatus);
       const projs = projectsIn(app).filter((p) => p.status === 'active');
@@ -1489,10 +1495,6 @@ export function boardPage(): string {
     // mark would be put on a node that no longer exists by the time it shows.
     route(); tapKey('h', 900);
     toast(showCompleted ? 'showing what finished' : 'completed work folded away', 1400);
-  }
-
-  function recentlyShipped(t){
-    return t.status === 'shipped' && (Date.now() - Date.parse(t.updated_at)) < 36e5 * 24;
   }
 
   // The second hand. Rewrites the text of the time elements ONLY — no re-render

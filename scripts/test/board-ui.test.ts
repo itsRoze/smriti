@@ -1009,3 +1009,30 @@ describe('the closing report', () => {
     } finally { await context.close(); }
   }, T);
 });
+
+// The board, specifically. The fold test above runs on an app page, and the
+// exemption that broke this only ever existed on the board — which is exactly
+// why it shipped: the behaviour was tested on the one surface that did not have
+// it. A ticket shipped moments ago stayed on the board with completed work
+// switched off, so the toggle looked broken for precisely the cards you had
+// just finished and most wanted gone.
+describe('the fold, on the board itself', () => {
+  it('a just-shipped ticket is folded away like any other finished work', async () => {
+    if (!HAS_CHROMIUM) return;
+    const { context, page, errors } = await open();
+    try {
+      // "the old importer" was marked done seconds ago by the fixture, so it is
+      // as recent as a shipped ticket can be.
+      const live = (await page.locator('#plots .card .t').allInnerTexts()).join(' | ');
+      expect(live).not.toContain('the old importer');
+      expect(live).not.toContain('a road not taken');
+
+      // ...and h still brings it back, so nothing became unreachable.
+      await page.keyboard.press('h');
+      await page.waitForSelector('.card.done');
+      const revealed = (await page.locator('.card.done .t').allInnerTexts()).join(' | ');
+      expect(revealed).toContain('the old importer');
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+});

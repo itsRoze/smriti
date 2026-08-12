@@ -8,7 +8,7 @@
 
 import { test, expect, beforeAll, afterAll } from 'bun:test';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, existsSync, chmodSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, renameSync, existsSync, chmodSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -20,9 +20,7 @@ const TRACE = join(REPO_ROOT, 'bin', 'smriti-trace');
 let HOME_DIR = '';
 let STUB_BIN = '';
 let LOG = '';
-let CWD_FILE = '';
-let STATUS_FILE = '';
-let PANE_FILE = '';
+let STATE_FILE = '';
 let READ_FILE = '';
 let REPO = '';
 
@@ -33,9 +31,12 @@ let REPO = '';
 // close.
 const HERDR_STUB = `#!/usr/bin/env bash
 printf '%s\\n' "$*" >> "$HERDR_LOG"
-cwd=$(cat "$STUB_CWD_FILE" 2>/dev/null)
-st=$(cat "$STUB_STATUS_FILE" 2>/dev/null)
-pane=$(cat "$STUB_PANE_FILE" 2>/dev/null)
+# ONE open, so a sweep can never read a half-updated session: the harness
+# swaps this file by rename, and an open fd keeps the inode it started with.
+# Three separate files, read separately, let a sweep see a new cwd beside an
+# old pane — which is a state that never exists in reality and made the
+# negative tests intermittently fail under load.
+{ read -r cwd; read -r st; read -r pane; } < "$STUB_STATE_FILE" 2>/dev/null
 case "$1 $2" in
   "agent list")  echo "{\\"result\\":{\\"agents\\":[{\\"agent\\":\\"claude\\",\\"agent_status\\":\\"$st\\",\\"cwd\\":\\"$cwd\\",\\"pane_id\\":\\"$pane\\"}]}}" ;;
   "pane read")   cat "$STUB_READ_FILE" 2>/dev/null ;;
@@ -52,9 +53,7 @@ const env = (extra: Record<string, string> = {}) => ({
   SMRITI_BOARD_SWEEP_MS: '300',
   PATH: `${STUB_BIN}:${process.env.PATH}`,
   HERDR_LOG: LOG,
-  STUB_CWD_FILE: CWD_FILE,
-  STUB_STATUS_FILE: STATUS_FILE,
-  STUB_PANE_FILE: PANE_FILE,
+  STUB_STATE_FILE: STATE_FILE,
   STUB_READ_FILE: READ_FILE,
   ...extra,
 });
@@ -114,26 +113,24 @@ function storeReport(uid: string, body: string, source = 'run') {
 }
 
 // Point the stub's single agent at a worktree, in a given lifecycle state.
+// Written to a temp file and RENAMED over the real one, because rename is
+// atomic: the sweep runs on its own timer and would otherwise catch this
+// mid-update.
 function session(wt: string, status: string, pane: string) {
-  writeFileSync(CWD_FILE, wt);
-  writeFileSync(STATUS_FILE, status);
-  writeFileSync(PANE_FILE, pane);
+  writeFileSync(STATE_FILE + '.tmp', [wt, status, pane].join('\n') + '\n');
+  renameSync(STATE_FILE + '.tmp', STATE_FILE);
 }
 
 beforeAll(() => {
   HOME_DIR = mkdtempSync(join(tmpdir(), 'smriti-close-'));
   STUB_BIN = join(HOME_DIR, 'stubbin');
   LOG = join(HOME_DIR, 'herdr.log');
-  CWD_FILE = join(HOME_DIR, 'stub-cwd');
-  STATUS_FILE = join(HOME_DIR, 'stub-status');
-  PANE_FILE = join(HOME_DIR, 'stub-pane');
+  STATE_FILE = join(HOME_DIR, 'stub-state');
   READ_FILE = join(HOME_DIR, 'stub-read');
   mkdirSync(STUB_BIN, { recursive: true });
   writeFileSync(join(STUB_BIN, 'herdr'), HERDR_STUB);
   chmodSync(join(STUB_BIN, 'herdr'), 0o755);
-  writeFileSync(CWD_FILE, '/nowhere/unrelated');
-  writeFileSync(STATUS_FILE, 'idle');
-  writeFileSync(PANE_FILE, 'w0:p0');
+  writeFileSync(STATE_FILE, ['/nowhere/unrelated', 'idle', 'w0:p0'].join('\n') + '\n');
   writeFileSync(READ_FILE, '');
 
   REPO = join(HOME_DIR, 'repo');
@@ -310,7 +307,7 @@ test('an agent whose cwd is gone is still found, by the pane its run stamped', a
   storeReport(uid, 'built: the thing\n');
   session('', 'idle', 'wL:p1');
   expect(await until(() => closes('wL:p1') > 0)).toBe(true);
-  writeFileSync(CWD_FILE, wt);
+  session(wt, 'working', 'wL:p1');
 });
 
 test('the pane fallback never closes an agent sitting in someone else\'s worktree', async () => {
