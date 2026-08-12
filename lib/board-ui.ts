@@ -102,7 +102,12 @@ export function boardPage(): string {
      bare :root inside one would lose to nothing at all. */
   :root[data-rail="open"]{--rail-w:198px;--rail-pad:20px;--rail-detail:inline;--rail-lab:inline-block;--rail-proj:flex;--rail-just:flex-start;--rail-row-pad:6px;--rail-row-end:12px;--rail-glyph:"\\2039"}
   :root[data-rail="collapsed"]{--rail-w:58px;--rail-pad:0px;--rail-detail:none;--rail-lab:none;--rail-proj:none;--rail-just:center;--rail-row-pad:0px;--rail-row-end:0px;--rail-glyph:"\\203A"}
-  @media (max-width:700px){:root,:root[data-rail]{--rail-w:0px} .rail,.rtab{display:none}}
+  /* :root .rail, not .rail — a media query adds no specificity, and .rail and
+     .rtab both set display in their own rules further down the sheet, so a
+     bare selector here loses on source order and the margin was never actually
+     hidden on a phone: it collapsed to a 0-width sliver with its border still
+     drawn and its tab hanging half off the left edge. */
+  @media (max-width:700px){:root,:root[data-rail]{--rail-w:0px} :root .rail,:root .rtab{display:none}}
 
   .page{display:flex;position:relative;z-index:2;min-height:100vh}
   .rail{
@@ -313,12 +318,21 @@ export function boardPage(): string {
   .slab h1{font-size:32px;font-weight:400;margin:0 0 4px;line-height:1.15;text-wrap:balance}
   .slab .path{font-family:ui-monospace,Menlo,monospace;font-size:11px;color:var(--ink-3);word-break:break-all}
   .slab .path b{color:var(--pine-b);font-weight:400;cursor:pointer}
+  /* A ticket's mono line is its branch, and a PR is something that branch HAS
+     rather than something you do to it — so the link lives here and not in the
+     action stack, which is one fewer button. */
+  .slab .path a{color:var(--pine-b);text-decoration:none;border-bottom:1.5px dotted var(--pine-b)}
   .tally{display:flex;gap:20px;flex-wrap:wrap;margin-top:12px}
   .tally div{font-family:ui-monospace,Menlo,monospace;font-size:10.5px;letter-spacing:.14em;
     text-transform:uppercase;color:var(--ink-3)}
   .tally b{font-family:"Chalkboard SE",cursive;font-size:21px;letter-spacing:0;color:var(--ink);
     display:block;margin-bottom:-2px}
   .tally .warm b{color:var(--orange)}
+  /* Where an app page counts tickets, a ticket counts hours — in the same two
+     colours the trace below uses, so the key is taught at the top of the page
+     and spent at the bottom of it. */
+  .tally .agent b{color:var(--pine-b)}
+  .tally .yours b{color:var(--hi-text)}
 
   .tabs{display:flex;gap:8px;align-items:flex-end;margin-bottom:-2.5px;position:relative;z-index:2}
   .tab{
@@ -333,7 +347,7 @@ export function boardPage(): string {
   .reload:hover{color:var(--ink)}
   /* ── rendered markdown, once ─────────────────────────────────────────
      Every surface that shows lib/md.ts output wears .md: the doc tabs on an
-     app page, the doc viewer in the overlay, and now the three descriptions.
+     app page, the doc viewer on a ticket page, and the three descriptions.
      There used to be two near-copies of this block and they had already
      drifted — the doc pane never got the .tablewrap rule, so a wide table in
      PROJECT.md scrolled the whole page sideways. A third copy for
@@ -449,17 +463,6 @@ export function boardPage(): string {
   .veil{position:fixed;inset:0;z-index:20;background:var(--veil);display:none;align-items:flex-start;justify-content:center;padding:9vh 20px 20px}
   .veil.on{display:flex}
   .panel{width:min(760px,94vw);max-height:80vh;overflow:auto;padding:0;animation:pop .22s cubic-bezier(.2,.9,.3,1.3)}
-  /* The ticket overlay alone is a reading-and-writing surface: a rendered body
-     with headings and tables, and an editor over the top of it. It gets more
-     room than the palette or the help sheet, which are lists. (A real ticket
-     PAGE is the better answer and is its own ticket; this is the cheap half.) */
-  /* The picker sits above every other veil. They all shared one z-index, and
-     #detv comes later in the document — so the moment the picker could be
-     raised FROM the ticket overlay, the ticket was painted over it and ate
-     every click meant for a row. */
-  #palv{z-index:30}
-  #detv{padding-top:6vh}
-  #detv .panel{width:min(1000px,94vw);max-height:86vh}
   @keyframes pop{from{opacity:0;transform:scale(.96) translateY(8px)}}
   .pal .q{padding:16px 20px;font-size:21px;border-bottom:2.5px dashed var(--ink-4);display:flex;gap:8px}
   .pal .q input{
@@ -471,63 +474,15 @@ export function boardPage(): string {
 
   .detail{padding:24px 26px 26px}
   .detail h2{font-size:26px;font-weight:400;margin:0 0 8px;text-wrap:balance}
-  /* ── the ticket's fields, as a pre-printed form ──────────────────────
-     These used to be one dot-separated sentence, which is dense at five
-     fields and has nowhere to put a sixth. A hand-drawn planning board is
-     full of ruled job cards, so: label, rule, value. Rows are emitted even
-     when empty so the block does not reflow between tickets, and #11 and #12
-     can each add one without touching anything else. */
-  .detail .eyebrow{font-family:ui-monospace,Menlo,monospace;font-size:11px;
-    letter-spacing:.22em;color:var(--ink-3);margin-bottom:2px}
-  .fields{display:grid;grid-template-columns:max-content 1fr;gap:0 16px;margin:0 0 20px}
-  .fields dt{font-family:ui-monospace,Menlo,monospace;font-size:9.5px;letter-spacing:.16em;
-    text-transform:uppercase;color:var(--ink-3);align-self:center;
-    padding:6px 0 5px;border-bottom:1px dotted var(--ink-4)}
-  .fields dd{margin:0;font-size:15px;color:var(--ink);line-height:1.35;align-self:center;
-    overflow-wrap:anywhere;padding:6px 0 5px;border-bottom:1px dotted var(--ink-4)}
-  .fields dd.empty{color:var(--ink-3);font-style:italic}
-  .fields dd.wire{font-family:ui-monospace,Menlo,monospace;font-size:12.5px;color:var(--ink-2)}
-  .fields .jump{color:var(--pine-b);cursor:pointer;border-bottom:1.5px dotted var(--pine-b)}
-  .fields .jump:hover{color:var(--ink)}
+  .jump{color:var(--pine-b);cursor:pointer;border-bottom:1.5px dotted var(--pine-b)}
+  .jump:hover{color:var(--ink)}
   /* Status is a rubber stamp on the card rather than a bold word mid-run. */
   .stamp{display:inline-block;font-family:ui-monospace,Menlo,monospace;font-size:9.5px;
     letter-spacing:.14em;text-transform:uppercase;color:var(--orange);
     border:2px solid var(--orange);padding:2px 9px 3px;
     border-radius:9px 13px 8px 12px/12px 8px 13px 9px;transform:rotate(-1.2deg)}
-  /* ── an editable value ───────────────────────────────────────────────
-     The value itself is the target: on a pre-printed form you rewrite what
-     is in the blank. Wash plus a hint in the row's right edge — the same
-     affordance .desc wears — except the hint is the KEY, so a board that is
-     otherwise keyboard-driven teaches the shortcut as you reach for it.
-     Absolutely positioned rather than a third grid column, so a row with no
-     control does not reserve space for one. */
-  .fields dd.edit{position:relative;cursor:pointer;border-radius:8px;
-    padding-left:7px;margin-left:-7px;padding-right:26px;
-    transition:background .12s ease;outline:none}
-  .fields dd.edit:hover,.fields dd.edit:focus-visible{background:rgba(var(--hi-rgb),.34)}
-  .fields dd.edit:focus-visible{box-shadow:0 0 0 2.5px var(--hi)}
-  .fields dd.edit::after{
-    content:attr(data-k);position:absolute;top:50%;right:6px;transform:translateY(-50%);
-    font-family:ui-monospace,Menlo,monospace;font-size:9px;letter-spacing:.14em;
-    text-transform:uppercase;color:var(--ink-3);opacity:0;transition:opacity .12s ease}
-  .fields dd.edit:hover::after,.fields dd.edit:focus-visible::after{opacity:1}
-  /* The one flourish: the stamp straightens as you go to re-stamp it. */
-  .fields dd.edit:hover .stamp,.fields dd.edit:focus-visible .stamp{
-    transform:rotate(0deg) translateY(-1px)}
-  /* Navigation keeps the glyph it already has elsewhere in this app
-     ("open the plan ↗", "open PR ↗"), so it stops competing with the value
-     for the same click and is recognised rather than learned. */
-  .fields .go{font-family:ui-monospace,Menlo,monospace;font-size:11px;color:var(--ink-3);
-    margin-left:7px;cursor:pointer;text-decoration:none}
-  .fields .go:hover,.fields .go:focus-visible{color:var(--pine-b);outline:none}
-  /* A started ticket's app is not greyed out — it is still true, and it keeps
-     full ink. The branch holding it in place is set in the same wire mono the
-     BRANCH row uses two lines down, so the eye ties them together unprompted. */
-  .fields .held{font-family:ui-monospace,Menlo,monospace;font-size:11.5px;
-    color:var(--ink-3);margin-left:9px}
-  .fields .held b{color:var(--ink-2);font-weight:400}
   /* A picker group header, in the same type as a field label, so the picker
-     and the form it edits speak one language. */
+     and the thing it edits speak one language. */
   .pal .grp{font-family:ui-monospace,Menlo,monospace;font-size:9px;letter-spacing:.18em;
     text-transform:uppercase;color:var(--ink-3);padding:11px 20px 4px;
     border-bottom:1px dotted var(--ink-4);margin:0 14px 4px}
@@ -559,7 +514,6 @@ export function boardPage(): string {
   .descedit.on{display:block}
   .descedit:focus{border-color:var(--hi)}
   .btn.danger{border-color:var(--orange);color:var(--orange)}
-  .detail .acts{display:flex;gap:10px;margin-bottom:20px;flex-wrap:wrap}
   .btn{
     font:inherit;font-size:16px;cursor:pointer;color:var(--ink);
     padding:7px 16px 8px;border:2.5px solid var(--ink);background:var(--paper-2);
@@ -601,10 +555,161 @@ export function boardPage(): string {
   .phz .p .nm{min-width:88px;color:var(--ink-3)}
   .phz .p .d{color:var(--ink)}
   .phz .p .yw{color:var(--hi-text)}
-  .phz .p .sw{flex:1;height:5px;border-radius:3px;background:rgba(var(--sh),.10);overflow:hidden;display:flex;max-width:180px}
+  .phz .p .sw{flex:1;height:5px;border-radius:3px;background:rgba(var(--sh),.10);overflow:hidden;display:flex}
   .phz .p .sw i{display:block;height:100%}
   .phz .p .sw i.a{background:var(--pine-c)}
   .phz .p .sw i.y{background:rgba(var(--hi-rgb),.9)}
+
+  /* ── the ticket page ─────────────────────────────────────────────────
+     A ticket is a job card, and this is that card laid flat: a printed head,
+     a hand-written body, a routing stub down the side, and the timesheet the
+     runner produced underneath.
+
+     Two columns, because the overlay's real failure was ORDER rather than
+     width — actions above a long body and the trace below it means acting
+     costs a scroll in both directions. The stub stays put instead. */
+  .tgrid{
+    display:grid;gap:30px 34px;
+    grid-template-columns:minmax(0,1fr) 268px;
+    grid-template-areas:"main stub";
+  }
+  /* NO align-items:start here, however much it looks like it belongs. A grid
+     item defaults to stretching to the row, and that height is the only room a
+     sticky child has to travel in — shrink-wrapping .tstub to its content made
+     the stub scroll away with the body, which is the one thing it exists not
+     to do. .tmain opts out for itself instead. */
+  /* minmax(0,…) AND min-width:0, both. A rendered body holds wide tables and
+     long <pre>, and a grid item's automatic minimum is its content — either
+     guard alone still lets one push the column past the sheet and scroll the
+     whole page sideways. Same failure the shared .md block exists to stop. */
+  .tmain{grid-area:main;min-width:0;align-self:start}
+  .tstub{grid-area:stub;min-width:0}
+  /* Stacking puts the stub FIRST: on a narrow window the disposition of the
+     ticket is still what you came for, and burying it under six hundred words
+     rebuilds the overlay's actual bug in one column. */
+  @media (max-width:940px){
+    .tgrid{grid-template-columns:minmax(0,1fr);grid-template-areas:"stub" "main"}
+    .tstub .stick{position:static;max-height:none;overflow:visible}
+    /* Stacked it stays a CARD at the head of the page rather than a panel
+       stretched across it — 268px of controls spread over 900px reads as a
+       form whose labels have been abandoned at the far end. */
+    .tstub .stub{max-width:440px}
+    .stub .head{justify-content:flex-start;padding-left:22px}
+  }
+  .tstub .stick{
+    position:sticky;top:26px;
+    /* A safety valve, not a design. The stub is short by discipline, but a
+       ticket with a gate link, a PR and every disposition on a short laptop
+       screen would otherwise pin its own bottom out of reach. */
+    max-height:calc(100vh - 52px);overflow:auto;
+    padding:5px;margin:-5px;   /* the scroller must not clip the box shadow */
+  }
+  .tmain .attach{margin:0 0 24px}
+  /* A page-width body deserves page-width reading; 17px was the overlay's
+     compromise with a 1000px panel. */
+  .tmain .desc{font-size:18px;line-height:1.62;margin-bottom:26px}
+  .tmain .trail{margin-bottom:26px}
+  .tmain .runs{margin-bottom:0}
+  /* With a column to spend, the phase bars carry MAGNITUDE: each is drawn
+     against the longest phase in its run, and the unused remainder of the
+     track is the scale. In the overlay every bar filled its own track and was
+     capped at 180px, so an 18-minute plan and a three-hour implement drew
+     identically — a chart that looked like it meant something and did not. */
+  .tmain .run{padding:15px 18px 17px}
+  .tmain .bar{height:16px}
+  .tmain .phz{gap:4px}
+  .tmain .phz .p{gap:12px;padding:2px 0}
+  .tmain .phz .p .nm{min-width:96px}
+  .tmain .phz .p .sw{height:9px;border-radius:5px}
+  .tmain .phz .p .d{min-width:62px;text-align:right}
+  .tmain .phz .p .yw{min-width:80px}
+
+  /* The stub leans the other way from the slab, like two cards set down on a
+     desk — and it is rotated on purpose, so the margin keeps its job as the
+     one straight edge on the board. */
+  .stub{padding:0 0 18px;transform:rotate(.55deg)}
+  .stub .head{display:flex;justify-content:center;padding:24px 18px 10px}
+  .stub .lab{margin:6px 18px 6px}
+  .stub .filed{padding:0 18px}
+  .stub .f{padding:9px 0 8px;border-bottom:1.5px dotted var(--ink-4)}
+  .stub .f:last-child{border-bottom:0}
+  .stub .f .k2{display:block;margin-bottom:1px;font-family:ui-monospace,Menlo,monospace;
+    font-size:9.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--ink-3)}
+  .stub .f .v{font-size:16px;color:var(--ink);line-height:1.3;overflow-wrap:anywhere}
+  .stub .f .v.empty{color:var(--ink-3);font-style:italic}
+  /* ── a field you can write in ─────────────────────────────────────────
+     The value itself is the target: on a filing card you rewrite what is in
+     the blank. Wash plus a hint at the row's right edge — the affordance
+     .desc already wears — except the hint is the KEY, so a board that is
+     otherwise keyboard-driven teaches the shortcut as you reach for it. */
+  .stub .f.edit{position:relative;cursor:pointer;border-radius:9px;
+    padding-left:8px;margin-left:-8px;padding-right:24px;
+    transition:background .12s ease;outline:none}
+  .stub .f.edit:hover,.stub .f.edit:focus-visible{background:rgba(var(--hi-rgb),.34)}
+  .stub .f.edit:focus-visible{box-shadow:0 0 0 2.5px var(--hi)}
+  .stub .f.edit::after{
+    content:attr(data-k);position:absolute;top:50%;right:7px;transform:translateY(-50%);
+    font-family:ui-monospace,Menlo,monospace;font-size:9px;letter-spacing:.14em;
+    text-transform:uppercase;color:var(--ink-3);opacity:0;transition:opacity .12s ease}
+  .stub .f.edit:hover::after,.stub .f.edit:focus-visible::after{opacity:1}
+  /* Navigation keeps the glyph it already has elsewhere on this page
+     ("open the plan ↗", "open PR ↗"), so it stops competing with the value
+     for the same click and is recognised rather than learned. */
+  .stub .f .go{font-family:ui-monospace,Menlo,monospace;font-size:11px;color:var(--ink-3);
+    margin-left:6px;cursor:pointer;text-decoration:none}
+  .stub .f .go:hover,.stub .f .go:focus-visible{color:var(--pine-b);outline:none}
+  /* A started ticket's app is not greyed out — it is still true, and keeps
+     full ink. The branch holding it is set in the same mono as the slab's
+     path line above, which is where the same string already lives. */
+  .stub .f .held{display:block;margin-top:3px;font-family:ui-monospace,Menlo,monospace;
+    font-size:10.5px;color:var(--ink-3);text-transform:none;letter-spacing:0}
+  .stub .f .held b{color:var(--ink-2);font-weight:400}
+  /* The status stamp is a control too. It straightens as you go to re-stamp
+     it — the one flourish, and the same lift .btn:hover already does. */
+  .stub .head.edit{position:relative;cursor:pointer;outline:none}
+  .stub .head.edit .stamp.big{transition:transform .13s ease}
+  .stub .head.edit:hover .stamp.big,.stub .head.edit:focus-visible .stamp.big{
+    transform:rotate(0deg) translateY(-2px)}
+  .stub .head.edit::after{
+    content:attr(data-k);position:absolute;top:26px;right:14px;
+    font-family:ui-monospace,Menlo,monospace;font-size:9px;letter-spacing:.14em;
+    text-transform:uppercase;color:var(--ink-3);opacity:0;transition:opacity .12s ease}
+  .stub .head.edit:hover::after,.stub .head.edit:focus-visible::after{opacity:1}
+  /* Three ranks, not seven buttons in a row: do the work, then file it, then —
+     below a torn edge — destroy it. */
+  .stub .acts{display:grid;gap:9px;padding:18px 18px 0}
+  .stub .acts .btn{width:100%;text-align:center}
+  .stub .acts .go{font-size:18px;padding:10px 16px 11px}
+  .stub .minor{display:flex;gap:8px;flex-wrap:wrap}
+  .stub .minor .btn{width:auto;flex:1 1 auto;font-size:14px;padding:5px 12px 6px}
+  .stub .tear{margin:16px 18px 0;padding-top:12px;border-top:2px dashed var(--ink-4)}
+  .stub .tear .btn{width:100%;font-size:14px;padding:5px 12px 6px}
+
+  /* The page's stamp is a real impression rather than the badge the overlay
+     wore in a table cell: same geometry, three sizes up, struck across the
+     head of the stub. It is the first thing the eye lands on and the one thing
+     you came to check. Colours mirror the card classes exactly — a ticket must
+     not read orange on the board and green on its own page. */
+  .stamp.big{font-size:13px;letter-spacing:.3em;padding:9px 20px 10px;
+    border-width:3px;transform:rotate(-4deg)}
+  .stamp.s-in_progress{color:var(--orange);border-color:var(--orange)}
+  .stamp.s-in_review{color:var(--pine-b);border-color:var(--pine-c)}
+  .stamp.s-ready{color:var(--pine-a);border-color:var(--pine-b)}
+  .stamp.s-idea{color:var(--ink-3);border-color:var(--ink-4);border-style:dashed}
+  .stamp.s-shipped{color:var(--ink-4);border-color:var(--ink-4)}
+  .stamp.s-cancelled{color:var(--ink-4);border-color:var(--ink-4);opacity:.75}
+  /* A stamp lands — once, on arrival. .struck is added only when the VIEW
+     changed, never on a re-render: this page is redrawn about once a second
+     while an agent runs, and an entrance replayed every second is the wound
+     the card stagger already carries. The rotation is repeated in every frame
+     or the animation overrides it and the mark straightens out mid-flight. */
+  @keyframes strike{
+    from{opacity:0;transform:rotate(-4deg) scale(1.75)}
+    60%{opacity:1;transform:rotate(-4deg) scale(.94)}
+    to{opacity:1;transform:rotate(-4deg) scale(1)}
+  }
+  .stamp.big.struck{animation:strike .26s cubic-bezier(.2,.8,.3,1.2) backwards}
+  @media (prefers-reduced-motion:reduce){.stamp.big.struck{animation:none}}
 
   /* pace: medians across runs */
   .pace{padding:22px 26px 26px}
@@ -706,8 +811,6 @@ export function boardPage(): string {
   <div id="palopts"></div>
 </div></div>
 
-<div class="veil" id="detv"><div class="box b2 panel"><div class="detail" id="detbody"></div></div></div>
-
 <div class="veil" id="pacev"><div class="box b4 panel"><div class="pace" id="pacebody"></div></div></div>
 
 <div class="veil" id="helpv"><div class="box b3 panel">
@@ -718,10 +821,11 @@ export function boardPage(): string {
     <div><b>e</b> — edit the description</div><div><b>⌘⏎</b> — save it, <b>esc</b> — abandon</div>
     <div><b>d</b> — mark done</div><div><b>⌘K / /</b> — palette, apps & projects too</div>
     <div><b>a</b> — move it to another app</div><div><b>f</b> — file it into a project</div>
-    <div><b>x</b> — set the status</div><div class="hnote">a, f and x work on an open ticket</div>
+    <div><b>x</b> — set the status</div><div class="hnote">a, f and x work on a ticket page</div>
     <div><b>p</b> — open its project / app</div><div><b>m</b> — pace (medians)</div>
     <div><b>b</b> — the margin, open / collapsed</div><div><b>h</b> — completed work, every group</div>
     <div><b>esc</b> — close, then back up a level</div>
+    <div><b>⏎</b> on a ticket page — start / attach it</div>
     <div><b>t</b> — light / dark</div><div><b>?</b> — this</div>
   </div>
 </div></div>
@@ -737,10 +841,10 @@ export function boardPage(): string {
   let S = { tickets: [], runs: [], documents: [], repositories: [], projects: [], sessions: [] };
   let sel = -1;            // index into flat selectable list
   let flat = [];           // [{id, kind}] in DOM order
-  let detailId = null;
   // The current view, derived from location.hash by route(). Selection is
   // OWNED by the view: flat/sel are rebuilt from whatever the current view
   // drew, so s/d/⏎ can never act on a row belonging to a page you left.
+  // A ticket page draws one ticket and no list, so there the page IS the row.
   let view = { kind: 'board' };
   let lastViewKey = '';
   // Which doc tab an app page is showing, remembered across live re-renders so
@@ -843,7 +947,7 @@ export function boardPage(): string {
 
   // The click-through into a live review. data-plan marks it for the event
   // contract in wire(): a link inside a row that is itself clickable has to
-  // stop that row from also firing, or you get the overlay instead of the plan.
+  // stop that row from also firing, or you land on the ticket instead of the plan.
   function planLink(r){
     if (!r || !httpUrl(r.html_url)) return '';
     return ' · <a class="planlink" data-plan href="' + esc(r.html_url) + '" target="_blank" rel="noopener">open the plan ↗</a>';
@@ -860,6 +964,9 @@ export function boardPage(): string {
   const ticketsIn = (slug) => S.tickets.filter((t) => appOf(t) === slug);
   const ticketsOf = (pid) => S.tickets.filter((t) => Number(t.project_id) === Number(pid));
   const isOpen = (t) => t.status !== 'shipped' && t.status !== 'cancelled';
+  // Its worktree lives in the app's tree, so the app cannot move. One
+  // definition, because the render, the click path and the key path all ask.
+  const isStarted = (t) => Boolean(t && (t.branch || t.worktree_path));
   const appLabel = (slug) => (slug === NO_APP ? 'ideas' : slug.replace(/^itsroze-/, ''));
 
   // Every app that has anything to show, ideas last: they are the least
@@ -1000,6 +1107,11 @@ export function boardPage(): string {
   // because they are replaced wholesale on each SSE refresh.
   function renderRail(){
     let h = '<div class="rlab">apps</div>';
+    // Standing on a ticket marks the app and project it belongs to. The margin
+    // used to know only about the two pages that ARE an app or a project, so
+    // it went blank on the one view you are deepest inside — which is the
+    // opposite of what an index is for.
+    const here = view.kind === 'ticket' ? S.tickets.find((t) => t.id === view.id) : null;
     for (const app of appsWithWork()){
       // One pass over the app's tickets, not three: this redraws with the rest
       // of the page about once a second while an agent is running.
@@ -1009,7 +1121,7 @@ export function boardPage(): string {
       const loose = mine.filter((t) => t.project_id == null).length;
       const ideas = app === NO_APP;
       const hue = hueFor(app);
-      const cur = !ideas && view.kind === 'app' && view.slug === app;
+      const cur = !ideas && ((view.kind === 'app' && view.slug === app) || (here && appOf(here) === app));
 
       // Ideas have no app page to open — the board's own heading guards the
       // same case. Scrolling to the band is the honest destination.
@@ -1022,7 +1134,8 @@ export function boardPage(): string {
         '<span class="n">' + openN + '</span></div>';
 
       for (const p of projs){
-        const on = view.kind === 'project' && Number(view.id) === Number(p.id);
+        const on = (view.kind === 'project' && Number(view.id) === Number(p.id))
+          || Boolean(here && here.project_id != null && Number(here.project_id) === Number(p.id));
         const n = mine.filter((t) => Number(t.project_id) === Number(p.id)).length;
         h += '<div class="rproj' + (on ? ' on' : '') + '" role="button" tabindex="0" data-proj="' + p.id + '">' +
           '<span class="arrow">▸</span><span class="nm">' + esc(p.name) + '</span>' +
@@ -1328,11 +1441,21 @@ export function boardPage(): string {
     const parts = (location.hash || '').replace('#', '').split('/').filter(Boolean);
     if (parts[0] === 'r' && parts[1]) view = { kind: 'app', slug: decodeURIComponent(parts[1]) };
     else if (parts[0] === 'p' && parts[1]) view = { kind: 'project', id: Number(decodeURIComponent(parts[1])) };
+    else if (parts[0] === 't' && parts[1]) view = { kind: 'ticket', id: Number(decodeURIComponent(parts[1])) };
     else view = { kind: 'board' };
 
     const key = view.kind + ':' + (view.slug ?? view.id ?? '');
     const changed = key !== lastViewKey;
     lastViewKey = key;
+    if (changed) trailOpen = null;
+    // The attach command from a start is carried across the navigation it
+    // triggers, and dropped the moment you are looking at anything else — an
+    // unscoped stash surfaces one ticket's command on the next ticket's page.
+    if (!(view.kind === 'ticket' && pendingAttach && pendingAttach.id === view.id)) pendingAttach = null;
+    // Both belong to the view you are on, not to the session: an armed delete
+    // must not survive a navigation, and the document you had open on one
+    // ticket must not spring open on the next.
+    if (!(view.kind === 'ticket' && view.id === armedDelete)) armedDelete = null;
     // Selection is owned by the view: cleared when you move between views, kept
     // when the view you are on simply re-renders (which SSE does about once a
     // second while an agent is running).
@@ -1352,11 +1475,16 @@ export function boardPage(): string {
     renderRail();
     if (view.kind === 'app') renderApp(view.slug);
     else if (view.kind === 'project') renderProject(view.id);
+    else if (view.kind === 'ticket') renderTicket(view.id, changed);
     else renderBoard();
 
     sel = keepRef
       ? flat.findIndex((f) => f.id === keepRef.id && f.kind === keepRef.kind)
       : -1;
+    // A ticket page has exactly one ticket and no list to move within, so the
+    // page is its own selection — which is what keeps s/d/⏎ working there
+    // without teaching them a fourth rule.
+    if (view.kind === 'ticket' && sel < 0 && flat.length) sel = 0;
     paintSel();
   }
   const go = (hash) => { if (location.hash === hash) route(); else location.hash = hash; };
@@ -1386,17 +1514,41 @@ export function boardPage(): string {
       el.addEventListener('click', (e) => { e.stopPropagation(); });
     });
     $$('[data-tid]').forEach((el) => {
-      el.addEventListener('click', () => { const id = Number(el.dataset.tid); if (id) openDetail(id); });
+      el.addEventListener('click', () => { const id = Number(el.dataset.tid); if (id) go('#/t/' + id); });
     });
+    // The ticket page's dispositions and its re-file select. Here rather than
+    // beside the render, because wire() reaches the whole sheet — the by-hand
+    // binding the overlay ended with existed only because a veil was outside
+    // this function's reach.
+    $$('[data-act]').forEach((b) => b.addEventListener('click', () => ticketAct(b)));
+    // The stub's writable fields. The re-file <select> that used to be wired
+    // here is gone: the project row does that job, and does it for a ticket
+    // with no app too.
+    $$('[data-field]').forEach((el) => {
+      const open = () => openFieldPicker(el.dataset.field);
+      el.addEventListener('click', open);
+      el.addEventListener('keydown', (e) => {
+        if (e.target !== el) return;
+        if (e.key !== 'Enter' && e.key !== ' ') return;
+        e.preventDefault(); e.stopPropagation(); open();
+      });
+    });
+    // stopPropagation because the glyph now sits INSIDE the row that opens a
+    // picker — without it, going to the app page would raise the app picker on
+    // the way out.
     $$('[data-app]').forEach((el) => {
       const open = () => { if (el.dataset.app !== NO_APP) go('#/r/' + encodeURIComponent(el.dataset.app)); };
-      el.addEventListener('click', open);
-      el.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' '){ e.preventDefault(); open(); } });
+      el.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); open(); });
+      el.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' '){ e.preventDefault(); e.stopPropagation(); open(); }
+      });
     });
     $$('[data-proj]').forEach((el) => {
       const open = () => go('#/p/' + el.dataset.proj);
-      el.addEventListener('click', open);
-      el.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' '){ e.preventDefault(); open(); } });
+      el.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); open(); });
+      el.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' '){ e.preventDefault(); e.stopPropagation(); open(); }
+      });
     });
     $$('[data-fold]').forEach((el) => el.addEventListener('click', () => {
       const key = el.dataset.fold;
@@ -1408,11 +1560,24 @@ export function boardPage(): string {
       const again = document.querySelector('.sheet [data-fold="' + key + '"]');
       if (again && document.activeElement === document.body) again.focus();
     }));
+    // Back is a LADDER, one rung at a time — ticket → project → app → board —
+    // which is also what Escape means, since it walks back up by clicking this.
+    // It used to know a single step (a project going up to its app), so a
+    // ticket would have skipped its project and landed on the board.
     const back = document.querySelector('.sheet [data-back]');
     if (back) back.addEventListener('click', () => {
       if (view.kind === 'project'){
         const p = projectById(view.id);
         if (p && p.repo_slug){ go('#/r/' + encodeURIComponent(p.repo_slug)); return; }
+      }
+      if (view.kind === 'ticket'){
+        // projectById, not a bare project_id != null: the LABEL falls back to
+        // the app when the project is missing from the payload, and a target
+        // that disagreed would promise the app page and deliver the board.
+        const t = S.tickets.find((x) => x.id === view.id);
+        const p = t && t.project_id != null ? projectById(t.project_id) : null;
+        if (p){ go('#/p/' + p.id); return; }
+        if (t && t.repo_slug){ go('#/r/' + encodeURIComponent(t.repo_slug)); return; }
       }
       go('');
     });
@@ -1427,31 +1592,54 @@ export function boardPage(): string {
     });
     $$('[data-doc]').forEach((el) => el.addEventListener('click', async () => {
       const dv = $('#pagedoc'); if (!dv) return;
-      try { const res = await api('/api/doc/' + el.dataset.doc); dv.innerHTML = res.html; dv.classList.add('on'); }
-      catch (e) { toast('could not read the file: ' + esc(e.message)); }
+      const id = el.dataset.doc;
+      try {
+        const html = trailCache.has(id) ? trailCache.get(id) : (await api('/api/doc/' + id)).html;
+        trailCache.set(id, html);
+        trailOpen = id;
+        const live = $('#pagedoc');
+        if (live){ live.innerHTML = html; live.classList.add('on'); }
+      } catch (e) { toast('could not read the file: ' + esc(e.message)); }
     }));
+    // Re-open whatever you were reading. route() replaces the sheet wholesale
+    // about once a second while an agent runs, and trailHtml emits an empty
+    // viewer every time — so without this the document you opened disappears
+    // out from under you a second later.
+    if (trailOpen && trailCache.has(trailOpen)){
+      const dv = $('#pagedoc');
+      if (dv){ dv.innerHTML = trailCache.get(trailOpen); dv.classList.add('on'); }
+    }
     wireDescEditor();
   }
 
-  // The description editor, shared by both pages — same click-to-edit
-  // affordance a ticket body already has. Its ids are page-specific on purpose:
-  // the detail overlay owns #desc/#descedit, and sharing them made this latch
-  // onto the overlay's nodes whenever the board was showing.
+  // The description editor, shared by all three pages — the app's, the
+  // project's, and now the ticket's body. There used to be a second id pair
+  // (#desc/#descedit) because the ticket lived in an overlay; the two collided
+  // once and saved an app's text into a ticket body. One surface, one pair.
   function wireDescEditor(){
     const d = $('#pagedesc'), ta = $('#pagedescedit');
     if (!d || !ta) return;
-    const current = () => (d.dataset.edit === 'repo'
+    const kind = d.dataset.edit;
+    // Always the CURRENTLY stored text, never the copy captured when the page
+    // was drawn: an agent may have rewritten it since, and this is what decides
+    // whether a PATCH is sent at all.
+    const current = () => (kind === 'repo'
       ? ((repoBySlug(view.slug) || {}).description || '')
-      : ((projectById(Number(d.dataset.pid)) || {}).description || ''));
+      : kind === 'ticket'
+        ? ((S.tickets.find((x) => x.id === Number(d.dataset.ticket)) || {}).body || '')
+        : ((projectById(Number(d.dataset.pid)) || {}).description || ''));
     const save = async () => {
       const next = ta.value.trim();
       ta.classList.remove('on'); d.style.display = '';
       if (next === current().trim()) return;
-      const url = d.dataset.edit === 'repo'
-        ? '/api/repos/' + encodeURIComponent(view.slug)
+      const url = kind === 'repo' ? '/api/repos/' + encodeURIComponent(view.slug)
+        : kind === 'ticket' ? '/api/tickets/' + d.dataset.ticket
         : '/api/projects/' + d.dataset.pid;
+      // A ticket's prose is its body; an app's and a project's is a column
+      // called description. Same box, two field names underneath.
+      const payload = kind === 'ticket' ? { body: next } : { description: next };
       try {
-        await api(url, { method: 'PATCH', body: JSON.stringify({ description: next }) });
+        await api(url, { method: 'PATCH', body: JSON.stringify(payload) });
         toast('description saved'); await refresh();
       } catch (e) { toast('could not save: ' + esc(e.message)); }
     };
@@ -1522,26 +1710,6 @@ export function boardPage(): string {
   }
   function move(d){ if (!flat.length) return; sel = sel < 0 ? 0 : Math.min(flat.length - 1, Math.max(0, sel + d)); tapKey('nav'); paintSel(); }
   function selectedTicket(){ return sel >= 0 && flat[sel] ? S.tickets.find((t) => t.id === flat[sel].id) : null; }
-  // The ticket the keys act on. The overlay wins whenever it is open, because
-  // that is the ticket in front of you — sel is the BOARD's cursor and the
-  // two part company the moment you open a ticket with the mouse: wire() takes
-  // a card click straight to openDetail() without moving sel. Before this,
-  // clicking a ticket and pressing d marked whatever you last arrowed to, or
-  // nothing at all when sel was still -1. board-ui.test.ts:406 documented that
-  // gap as the reason its own test had to open the overlay by keyboard.
-  function activeTicket(){
-    // No fall-through to the board's cursor when the overlay's ticket has gone
-    // — deleted underneath you, or dropped by a refresh. Falling through would
-    // write to whatever the cursor last sat on, which is the very bug this
-    // function exists to prevent, only harder to see because the overlay on
-    // screen still names a different ticket.
-    if (detailId != null) return S.tickets.find((x) => x.id === detailId) || null;
-    return selectedTicket();
-  }
-  // Its worktree lives in the app's tree, so the app cannot move. One
-  // definition, because the render, the click path and the key path all ask —
-  // and three copies would drift the day the CLI's own condition changes.
-  const isStarted = (t) => Boolean(t && (t.branch || t.worktree_path));
 
   // ── api ──────────────────────────────────────────────────────────────
   async function api(path, opts){
@@ -1554,18 +1722,26 @@ export function boardPage(): string {
       // already says which action failed.
       const raw = await r.text().catch(() => '');
       let msg = raw;
-      try { const p = JSON.parse(raw); if (p && typeof p.error === 'string') msg = p.error; } catch (_) {}
+      try { const pj = JSON.parse(raw); if (pj && typeof pj.error === 'string') msg = pj.error; } catch (_) {}
       msg = String(msg || '').replace(/^smriti-[a-z]+:\s*/, '');
       throw new Error(msg || ('HTTP ' + r.status));
     }
     return r.json();
   }
-  // True while a description editor is open. Re-rendering underneath one
-  // destroys the textarea without firing its blur handler, so the text is lost
-  // with no save — worse than showing data a second out of date.
-  function isEditing(){
+  // True while the user is mid-interaction with a control the re-render would
+  // destroy. An editor is the obvious one: re-rendering underneath a textarea
+  // destroys it without firing its blur handler, so the text is lost with no
+  // save — worse than showing data a second out of date.
+  //
+  // A native select is the other. Its popup is drawn by the OS and there is no
+  // event for "the popup is open", so focus is the only signal there is; the
+  // ticket page redraws about once a second while an agent runs, and each redraw
+  // closed the re-file dropdown with no choice made.
+  function isBusy(){
     const ta = document.querySelector('.descedit.on');
-    return Boolean(ta) && document.activeElement === ta;
+    if (ta && document.activeElement === ta) return true;
+    const a = document.activeElement;
+    return Boolean(a && a.tagName === 'SELECT');
   }
 
   // ── descriptions ─────────────────────────────────────────────────────
@@ -1603,14 +1779,14 @@ export function boardPage(): string {
     return true;
   }
   // The guards matter more than the cache. Pages are re-rendered on every SSE
-  // tick and both reuse #pagedesc, and a render started before you clicked
+  // tick and all three reuse #pagedesc, and a render started before you clicked
   // into the editor can land after it opened. So a result is only allowed in
   // while it still belongs where it was sent: same live node, same generation,
   // nothing open over it. Anything late is dropped.
   //
-  // (The detail overlay is NOT rebuilt by the SSE path — refresh() only calls
-  // route(), which redraws the page behind it. #desc goes stale by being
-  // replaced by a later openDetail, which the same guards cover.)
+  // The ticket body used to be exempt, because an overlay was not rebuilt by
+  // the SSE path. As a page it is redrawn like everything else, which is what
+  // makes these guards load-bearing for it rather than merely prudent.
   function descLands(el, seq){
     return el.isConnected                         // the view moved on under us
       && el.dataset.seq === seq                   // a newer paint owns this node
@@ -1693,9 +1869,9 @@ export function boardPage(): string {
     el.addEventListener('keydown', (ev) => {
       if (ev.target !== el) return;               // a link inside keeps its own Enter
       if (ev.key !== 'Enter' && ev.key !== ' ') return;
-      // stopPropagation, not just preventDefault: the global handler treats
-      // Enter with the overlay open as "start this ticket", which cuts a
-      // worktree and spawns a session. Opening an editor must not also do that.
+      // stopPropagation, not just preventDefault: on a ticket page the global
+      // handler treats Enter as "start this ticket", which cuts a worktree and
+      // spawns a session. Opening an editor must not also do that.
       ev.preventDefault();
       ev.stopPropagation();
       startEdit(el, ta);
@@ -1703,7 +1879,7 @@ export function boardPage(): string {
   }
 
   async function refresh(){
-    try { S = await api('/api/state'); if (!isEditing()) route(); }
+    try { S = await api('/api/state'); if (!isBusy()) route(); }
     catch (e) {
       // 503 is the store failing to read; anything else is the server gone.
       const msg = /could not read/.test(String(e.message))
@@ -1713,12 +1889,27 @@ export function boardPage(): string {
     }
   }
 
+  // The two-press delete confirm, and its timer. See ticketAct for why this is
+  // not a data attribute on the button.
+  let armedDelete = null, armTimer = 0;
+  // The paper-trail document you have open, and what it said. A page is
+  // rebuilt by the SSE path and the overlay never was, so a document opened on
+  // a ticket used to vanish a second later; app and project pages had the same
+  // hole. Kept in memory, never localStorage — it is for the read you are in.
+  let trailOpen = null;
+  const trailCache = new Map();     // document id -> rendered html
+  // The attach command produced by a start, carried across the navigation that
+  // start now triggers. Keyed by ticket and dropped by route() the moment you
+  // are looking at anything else — an unscoped stash puts one ticket's command
+  // on the next ticket's page after a later restart.
+  let pendingAttach = null;
+
   async function startTicket(t){
     if (!t) return;
-    // Finished work has nothing to start. The button hid itself for these, and
-    // that was the only mouse route — but the keys reach the OPEN ticket now
-    // rather than the board's cursor, so the guard belongs on the action.
-    if (t.status === 'shipped' || t.status === 'cancelled'){
+    // Finished work has nothing to start. The button hid itself for these and
+    // was the only mouse route; the keys reach the page's ticket, so the guard
+    // belongs on the action rather than on the control.
+    if (!isOpen(t)){
       toast('#' + t.id + ' is ' + esc(STATUS[t.status] || t.status) + ' — set it back to ready first');
       return;
     }
@@ -1727,29 +1918,24 @@ export function boardPage(): string {
     toast(live ? 'finding the session for <b>#' + t.id + '</b>…'
                : 'cutting a worktree for <b>#' + t.id + '</b>…', 8000);
     try {
+      runCache.delete(t.id);          // a start is exactly when the trace moves
       const res = await api('/api/tickets/' + t.id + '/start', { method: 'POST', body: '{}' });
-      openDetail(t.id, res);
+      // Land on the ticket wherever start was pressed from — the board, the
+      // palette, or the page itself. The command has to be somewhere you can
+      // read it long enough to copy, which a toast is not.
+      pendingAttach = { id: t.id, res };
+      go('#/t/' + t.id);
       refresh();
     } catch (e) { toast('could not start: ' + esc(e.message)); }
   }
   async function markDone(t){
     if (!t) return;
-    // Same reason as startTicket: re-shipping a shipped ticket only bumps
-    // updated_at and re-broadcasts, and the button that used to guard this is
-    // gone. Use the status row to move it somewhere else.
+    // Same reason as startTicket: re-shipping only bumps updated_at and
+    // re-broadcasts, and the button that used to guard this is gone. The
+    // stamp is where you move it somewhere else.
     if (t.status === 'shipped'){ toast('#' + t.id + ' is already shipped'); return; }
     tapKey('d');
-    try {
-      await api('/api/tickets/' + t.id + '/done', { method: 'POST', body: '{}' });
-      toast('#' + t.id + ' shipped ✓');
-      await refresh();
-      // refresh() redraws the page behind the overlay and deliberately not the
-      // overlay itself, so shipping from an open ticket left its stamp reading
-      // the old status until you closed and reopened. The button that used to
-      // sit beside this closed the whole overlay instead; the stamp is a live
-      // field now, so it updates in place like every other one.
-      if (detailId === t.id) openDetail(t.id);
-    }
+    try { await api('/api/tickets/' + t.id + '/done', { method: 'POST', body: '{}' }); toast('#' + t.id + ' shipped ✓'); refresh(); }
     catch (e) { toast('could not update: ' + esc(e.message)); }
   }
   async function addTicket(title, where){
@@ -1767,6 +1953,16 @@ export function boardPage(): string {
   // falls back to the selected card's app. Capturing with neither is fine —
   // that is an idea, which is now a first-class place for it to be.
   async function capture(title){
+    if (view.kind === 'ticket'){
+      // Beside the ticket you are reading — its project and its app.
+      const cur = S.tickets.find((x) => x.id === view.id);
+      try { await addTicket(title, {
+        project: cur && cur.project_id != null ? String(cur.project_id) : '',
+        repo: cur && cur.repo_slug ? cur.repo_slug : '',
+      }); }
+      catch (e) { toast('could not add: ' + esc(e.message)); }
+      return;
+    }
     if (view.kind === 'project'){
       const p = projectById(view.id);
       try { await addTicket(title, { project: String(p ? p.id : ''), repo: p && p.repo_slug ? p.repo_slug : '' }); }
@@ -1785,179 +1981,199 @@ export function boardPage(): string {
     catch (e) { toast('could not add: ' + esc(e.message)); }
   }
 
-  // ── detail overlay ───────────────────────────────────────────────────
-  async function openDetail(id, startRes){
+  // ── the ticket page ──────────────────────────────────────────────────
+  // A ticket is a job card and this is that card laid flat. It used to be an
+  // overlay, which cost it a URL, the back button, and any room to grow: the
+  // run trace was already the tallest thing on it, and #11 and #12 each want a
+  // block of their own.
+  //
+  // Almost nothing here is new behaviour — it is the overlay's behaviour on a
+  // surface that has an address. What DID go away is the by-hand binding that
+  // used to close this function: wire() is scoped to .sheet and could not
+  // reach a veil, so the overlay had to bind its own jumps and doc links. On a
+  // page wire() reaches all of it.
+  function renderTicket(id, changed){
     const t = S.tickets.find((x) => x.id === id);
-    if (!t) return;
-    detailId = id;
-    const run = runFor(t);
+    // Same answer a missing project already gives: back to the board rather
+    // than a blank page. A deleted ticket is a link that outlived its subject.
+    if (!t){ location.hash = ''; return; }
     const docs = docsFor(t);
     const proj = t.project_id != null ? projectById(t.project_id) : null;
-    // The number is identity, so it sits above the title rather than being the
-    // first clause of a sentence. Rows below are emitted whether or not they
-    // are filled, so the block does not jump about between tickets. The
-    // document count is gone on purpose: the paper trail is listed in full a
-    // few inches down, and counting it here said the same thing twice.
-    // label is escaped, value is not: value is markup the callers below build
-    // (a stamp, a nav glyph) and have already escaped the text inside. k is
-    // the key that opens this row's picker; it doubles as the hover hint via
-    // the data-k attribute, so the row teaches its own shortcut.
-    const field = (label, value, cls, k, name) =>
-      '<dt>' + esc(label) + '</dt><dd' + (cls ? ' class="' + cls + '"' : '') +
-      (k ? ' data-k="' + k + '" data-field="' + name + '" tabindex="0" role="button"' : '') +
-      '>' + value + '</dd>';
-    // ↗ already means "opens elsewhere" on this page (open the plan ↗, open
-    // PR ↗). Navigation moves onto it so the value itself is free to be the
-    // edit target — editing has no other route, while the app and project
-    // pages are also reachable from the margin.
-    const goGlyph = (attr, val, what) =>
-      '<a class="go" href="#" ' + attr + '="' + esc(String(val)) + '" title="open ' + esc(what) + '" aria-label="open ' + esc(what) + '">↗</a>';
-    // Its worktree lives inside the app's tree, so a started ticket cannot
-    // change apps — bin/smriti-ticket refuses it. The row states that instead
-    // of offering a picker that would fail on submit.
-    const started = isStarted(t);
-    const appVal = t.repo_slug
-      ? esc(appLabel(t.repo_slug)) + goGlyph('data-app', t.repo_slug, appLabel(t.repo_slug))
-      : 'no app yet';
-    const projVal = proj
-      ? esc(proj.name) + goGlyph('data-proj', proj.id, proj.name)
-      : '— loose in ' + esc(t.repo_slug ? appLabel(t.repo_slug) : 'no app');
-    let h = '<div class="eyebrow">#' + t.id + '</div>' +
-      '<h2>' + esc(t.title) + '</h2>' +
-      '<dl class="fields">' +
-      (started
-        // started is branch OR worktree_path, so name the branch when there is
-        // one and fall back to the tree itself rather than rendering an empty
-        // bold at the end of the sentence.
-        ? field('app', appVal + '<span class="held">held by <b>' +
-                  (t.branch ? esc(t.branch) : 'its worktree') + '</b></span>',
-                t.repo_slug ? '' : 'empty')
-        : field('app', appVal, 'edit' + (t.repo_slug ? '' : ' empty'), 'a', 'app')) +
-      field('project', projVal, 'edit' + (proj ? '' : ' empty'), 'f', 'project') +
-      field('status', '<span class="stamp">' + esc(STATUS[t.status] || t.status) + '</span>', 'edit', 'x', 'status') +
-      field('branch', t.branch ? esc(t.branch) : 'not started yet', t.branch ? 'wire' : 'empty') +
-      '</dl>';
-    h += descBox('id="desc" data-act="editdesc"', t.body, 'add a description…');
-    h += '<textarea class="descedit" id="descedit" placeholder="what this actually is, and why">' + esc(t.body || '') + '</textarea>';
-    h += '<div class="acts">';
-    // "attach" is only honest if a session actually exists. Basing it on the
-    // ticket being in_progress got it wrong the moment a session was killed:
-    // the worktree and branch survive, so the board offered to attach to
-    // nothing. herdr is the authority on whether there is something to join.
+    const app = appOf(t);
     const live = Boolean(sessionFor(t));
-    if (t.status !== 'shipped' && t.status !== 'cancelled')
-      h += '<button class="btn go" data-act="start">' + (live ? 'attach ⏎' : 'start ⏎') + '</button>';
-    if (live) h += '<button class="btn" data-act="restart">restart session</button>';
-    // mark done / cancel / bring it back used to live here. All three were one
-    // thing — a status write — and status now has a row of its own, so they
-    // were three buttons competing with the one action that is not just a
-    // status change. d still ships a ticket in a keystroke.
-    h += '<button class="btn danger" data-act="delete">delete</button>';
-    // The same click-through as the waiting band, where you land when you open
-    // the ticket instead of the row. httpUrl is shared with planLink: esc()
-    // escapes HTML but does not validate a scheme, and without the allowlist
-    // md.ts applies to document links a stored javascript: url would run
-    // against this page's own authenticated API when clicked.
     const gate = gateFor(t);   // already scheme-checked
-    if (gate)
-      h += '<a class="btn go" href="' + esc(gate.html_url) + '" target="_blank" rel="noopener">open the plan ↗</a>';
-    if (t.pr_url && httpUrl(t.pr_url))
-      h += '<a class="btn" href="' + esc(t.pr_url) + '" target="_blank" rel="noopener">open PR ↗</a>';
-    h += '</div>';
-    // The re-file <select> that used to sit here has moved up into the
-    // PROJECT row, which can also do it for a ticket with no app yet — the
-    // case this dropdown could never reach, since it only rendered when the
-    // ticket already had one.
-    if (docs.length){
-      h += '<div class="trail">' + docs.map((d) =>
-        '<div class="doc" data-doc="' + d.id + '"><span class="tag">' + esc(d.type) + '</span><span>' + esc(d.path.split('/').pop()) + '</span></div>'
-      ).join('') + '</div><div class="docview md" id="docview"></div>';
-    }
-    h += '<div class="runs" id="runs"></div>';
+    const open = isOpen(t);
+
+    $('#eye').innerHTML = 'ticket · <b>#' + t.id + '</b>';
+    $('#waitwrap').innerHTML = '';
+
+    // Up one level, not out to the board: a filed ticket belongs among its
+    // siblings, and that is where you were going next anyway.
+    let h = '<button class="back" data-back><span class="arr">←</span> ' +
+      esc(proj ? proj.name : (t.repo_slug ? appLabel(app) : 'the board')) + '</button>';
+
+    // The head of the card. The number IS the monogram — the tile the app and
+    // project pages give their initials — so the page says which band it came
+    // from before you read a word, and the separate #id eyebrow goes away.
+    // The mono line is the branch, which is the same register as an app's path.
+    const hue = hueFor(app);
+    const runs = (runCache.get(t.id) || {}).runs || ticketRuns(t.id);
+    h += '<div class="box slab">' +
+      '<div class="bigsig" style="color:' + hue + ';border-color:' + hue + '">#' + t.id + '</div>' +
+      '<div class="who"><h1>' + esc(t.title) + '</h1>' +
+      '<div class="path">' + (t.branch ? esc(t.branch) : '<i>not started yet</i>') +
+        (t.pr_url && httpUrl(t.pr_url)
+          ? ' · <a href="' + esc(t.pr_url) + '" target="_blank" rel="noopener">open PR ↗</a>' : '') +
+      '</div><div class="tally" id="ttally">' + tallyTime(runs) + '</div>' +
+      '</div></div>';
+
+    h += '<div class="tgrid"><div class="tmain">';
+    // The attach command goes at the TOP of the wide column, not in the stub:
+    // it is a long mono line that would break into five ragged pieces at 268px,
+    // and the button that produced it is still on screen anyway.
     h += '<div class="attach" id="attach"></div>';
-    $('#detbody').innerHTML = h;
-    $('#detv').classList.add('on');
+    h += '<div class="lab">what this is</div>';
+    // data-ticket, NOT data-tid: that attribute is the card contract, and
+    // wire() makes anything wearing it navigate to its ticket. On the
+    // description that fired on the same click as the editor, re-rendered the
+    // page out from under it, and left the textarea open on a detached node.
+    h += descBox('id="pagedesc" data-edit="ticket" data-ticket="' + t.id + '"', t.body, 'add a description…');
+    h += '<textarea class="descedit" id="pagedescedit" placeholder="what this actually is, and why">' +
+      esc(t.body || '') + '</textarea>';
+    h += trailHtml(docs);
+    h += '<div class="lab">where the time went</div><div class="runs" id="runs"></div>';
+    h += '</div>';
+
+    // The stub: where this is filed, and everything you can do to it, in one
+    // column that does not scroll away behind a six-hundred-word body.
+    h += '<div class="tstub"><div class="stick"><div class="box b4 stub">';
+    // The stamp is the status control: x re-stamps it. role/tabindex make it
+    // reachable, and onCtl in the key handler keeps its own Enter from also
+    // firing the page's.
+    h += '<div class="head edit" data-k="x" data-field="status" role="button" tabindex="0">' +
+      '<span class="stamp big s-' + esc(t.status) + (changed ? ' struck' : '') + '">' +
+      esc(STATUS[t.status] || t.status) + '</span></div>';
+    // ↗ already means "opens elsewhere" on this page, so navigation moves onto
+    // it and leaves the value free to be the edit target — editing has no
+    // other route, while the app and project pages also sit in the margin.
+    const goGlyph = (attr, val, what) =>
+      '<a class="go" href="#" ' + attr + '="' + esc(String(val)) + '" title="open ' + esc(what) +
+      '" aria-label="open ' + esc(what) + '">↗</a>';
+    // Its worktree lives in the app's tree, so a started ticket cannot change
+    // apps — bin/smriti-ticket refuses it. The row states that rather than
+    // offering a picker that would fail on submit.
+    const held = isStarted(t);
+    h += '<div class="lab">filed under</div><div class="filed">' +
+      '<div class="f' + (held ? '' : ' edit') + '"' +
+        (held ? '' : ' data-k="a" data-field="app" role="button" tabindex="0"') + '>' +
+        '<span class="k2">app</span><span class="v' + (t.repo_slug ? '' : ' empty') + '">' +
+        (t.repo_slug ? esc(appLabel(t.repo_slug)) + goGlyph('data-app', t.repo_slug, appLabel(t.repo_slug))
+                     : 'no app yet') +
+        (held ? '<span class="held">held by <b>' +
+                  (t.branch ? esc(t.branch) : 'its worktree') + '</b></span>' : '') +
+        '</span></div>' +
+      '<div class="f edit" data-k="f" data-field="project" role="button" tabindex="0">' +
+        '<span class="k2">project</span><span class="v' + (proj ? '' : ' empty') + '">' +
+        (proj ? esc(proj.name) + goGlyph('data-proj', proj.id, proj.name)
+              : 'loose in the app') + '</span></div>' +
+      '</div>';
+    // The re-file <select> that used to sit here has moved up into the project
+    // row, which can also do it for a ticket with no app yet — the case a
+    // dropdown rendered only if (t.repo_slug) could never reach.
+    h += '<div class="acts">';
+    if (open) h += '<button class="btn go" data-act="start">' + (live ? 'attach ⏎' : 'start ⏎') + '</button>';
+    // A gate IS the primary action while it is open, so it ranks with start
+    // rather than with the dispositions. httpUrl is shared with planLink:
+    // esc() escapes HTML but does not validate a scheme, and without the
+    // allowlist md.ts applies to document links a stored javascript: url would
+    // run against this page's own authenticated API when clicked.
+    if (gate) h += '<a class="btn go" href="' + esc(gate.html_url) + '" target="_blank" rel="noopener">open the plan ↗</a>';
+    h += '<div class="minor">';
+    if (live) h += '<button class="btn" data-act="restart">restart</button>';
+    // mark done / cancel / bring it back used to live here. All three were one
+    // thing — a status write — and the stamp above is that control now, so
+    // they were three buttons competing with the one action that is not just a
+    // status change. d still ships a ticket in a keystroke.
+    h += '</div></div>';
+    h += '<div class="tear"><button class="btn danger" data-act="delete">' +
+      (armedDelete === t.id ? 'really delete?' : 'delete') + '</button></div>';
+    h += '</div></div></div></div>';
+
+    $('#plots').innerHTML = h;
+    flat.push({ id: t.id, kind: 'card' });
+    wire();
     loadRuns(t.id);
-    if (startRes) showAttach(startRes);
-    const saveDesc = async () => {
-      const ta = $('#descedit');
-      const next = ta.value.trim();
-      ta.classList.remove('on'); $('#desc').style.display = '';
-      // Compare against the CURRENT stored body, not the one captured when the
-      // overlay was drawn. The overlay is not rebuilt by the SSE path, so the
-      // captured ticket goes stale the moment an agent rewrites it — and
-      // this decides whether a PATCH is sent at all.
-      const live = (S.tickets.find((x) => x.id === t.id) || t).body || '';
-      if (next === live.trim()) return;
-      try {
-        await api('/api/tickets/' + t.id, { method: 'PATCH', body: JSON.stringify({ body: next }) });
-        toast('description saved'); await refresh(); openDetail(t.id);
-      } catch (e) { toast('could not save: ' + esc(e.message)); }
-    };
-    wireDescEdit($('#desc'), $('#descedit'), saveDesc);
-    paintDesc($('#desc'), t.body);
-    $('#detbody').querySelectorAll('[data-act]').forEach((b) => b.addEventListener('click', async (ev) => {
-      const act = b.dataset.act;
-      if (act === 'start') startTicket(t);
-      if (act === 'editdesc'){
-        if (editBlocked(ev, b)) return;
-        startEdit(b, $('#descedit'));
-      }
-      if (act === 'restart'){
-        toast('restarting the session for <b>#' + t.id + '</b>…', 8000);
-        try {
-          const res = await api('/api/tickets/' + t.id + '/restart', { method: 'POST', body: '{}' });
-          openDetail(t.id, res); refresh();
-        } catch (e) { toast('could not restart: ' + esc(e.message)); }
-      }
-      if (act === 'delete'){
-        if (b.dataset.armed !== '1'){
-          b.dataset.armed = '1'; b.textContent = 'really delete?';
-          setTimeout(() => { b.dataset.armed = '0'; b.textContent = 'delete'; }, 4000);
-          return;
-        }
-        try { await api('/api/tickets/' + t.id, { method: 'DELETE' }); toast('#' + t.id + ' deleted'); closeAll(); refresh(); }
-        catch (e) { toast('could not delete: ' + esc(e.message)); }
-      }
-    }));
-    $('#detbody').querySelectorAll('[data-doc]').forEach((el) => el.addEventListener('click', async () => {
-      const dv = $('#docview');
-      try {
-        const res = await api('/api/doc/' + el.dataset.doc);
-        dv.innerHTML = res.html; dv.classList.add('on');
-      } catch (e) { toast('could not read the file: ' + esc(e.message)); }
-    }));
-    // The overlay binds its own navigation: wire() is scoped to .sheet, so
-    // these would otherwise never get a handler. stopPropagation because the
-    // glyph now sits INSIDE the row that opens a picker — without it, going to
-    // the app page would raise the app picker on the way out.
-    $('#detbody').querySelectorAll('[data-app]').forEach((el) => el.addEventListener('click', (ev) => {
-      ev.preventDefault(); ev.stopPropagation();
-      closeAll(); go('#/r/' + encodeURIComponent(el.dataset.app));
-    }));
-    $('#detbody').querySelectorAll('[data-proj]').forEach((el) => el.addEventListener('click', (ev) => {
-      ev.preventDefault(); ev.stopPropagation();
-      closeAll(); go('#/p/' + el.dataset.proj);
-    }));
-    $('#detbody').querySelectorAll('[data-field]').forEach((el) => {
-      // Read the ticket fresh at the moment of the click: an agent may have
-      // rewritten it since the overlay was drawn, and the picker's "current"
-      // marker and its app scoping both depend on being right about that.
-      const open = () => openFieldPicker(el.dataset.field, t.id);
-      el.addEventListener('click', open);
-      el.addEventListener('keydown', (ev) => {
-        if (ev.target !== el) return;
-        if (ev.key !== 'Enter' && ev.key !== ' ') return;
-        // stopPropagation, not just preventDefault: the global handler reads
-        // Enter with the overlay open as "start this ticket".
-        ev.preventDefault(); ev.stopPropagation(); open();
-      });
-    });
+    if (pendingAttach && pendingAttach.id === t.id) showAttach(pendingAttach.res);
   }
 
-  // ── the fields block's three pickers ─────────────────────────────────
-  function openFieldPicker(which, id){
-    const t = S.tickets.find((x) => x.id === id);
+  const ticketRuns = (id) => S.runs.filter((r) => r.ticket_id === id);
+  // Where an app page counts tickets, a ticket counts hours. Painted first from
+  // the runs already on hand — /api/state carries a recency-bounded window, so
+  // that is right in almost every case — and corrected by loadRuns, which is
+  // the one read that promises every run.
+  function tallyTime(runs){
+    if (!runs.length) return '<div><b>—</b> not started yet</div>';
+    let total = 0, agent = 0, you = 0;
+    for (const r of runs){ total += runSecs(r); agent += r.agent_s || 0; you += r.you_s || 0; }
+    return '<div><b>' + fmtDur(total) + '</b> total</div>' +
+      '<div class="agent"><b>' + fmtDur(agent) + '</b> agent time</div>' +
+      (you > 0 ? '<div class="yours"><b>' + fmtDur(you) + '</b> your time</div>' : '');
+  }
+
+  // The dispositions. Every one of these was in the overlay and every one of
+  // them comes along — including the two-press delete confirm, which is the
+  // only thing standing between a misclick and a ticket that is gone.
+  async function ticketAct(b){
+    const t = view.kind === 'ticket' ? S.tickets.find((x) => x.id === view.id) : null;
+    if (!t) return;
+    const act = b.dataset.act;
+    if (act === 'start') startTicket(t);
+    if (act === 'restart'){
+      toast('restarting the session for <b>#' + t.id + '</b>…', 8000);
+      try {
+        runCache.delete(t.id);
+        const res = await api('/api/tickets/' + t.id + '/restart', { method: 'POST', body: '{}' });
+        // Rendered HERE rather than left to refresh(): refresh() skips the
+        // re-render while an editor is open and swallows a failed read, and a
+        // restart whose attach command never appears is a restart you cannot use.
+        pendingAttach = { id: t.id, res };
+        go('#/t/' + t.id);
+        refresh();
+      } catch (e) { toast('could not restart: ' + esc(e.message)); }
+    }
+    if (act === 'delete'){
+      // Armed in a module variable, not on the button. The button is a node
+      // route() replaces on every SSE tick, so a ticket with a running agent
+      // lost its armed state within the confirm window — the label silently
+      // reverted and delete could never be completed. renderTicket reads this
+      // back, so the confirm survives the redraw that used to eat it.
+      if (armedDelete !== t.id){
+        armedDelete = t.id; b.textContent = 'really delete?';
+        clearTimeout(armTimer);
+        armTimer = setTimeout(() => {
+          armedDelete = null;
+          const again = document.querySelector('.sheet [data-act="delete"]');
+          if (again) again.textContent = 'delete';
+        }, 4000);
+        return;
+      }
+      clearTimeout(armTimer); armedDelete = null;
+      // Out to the board first: the page you are standing on is about to stop
+      // having a subject, and route() would bounce you anyway.
+      try { await api('/api/tickets/' + t.id, { method: 'DELETE' }); toast('#' + t.id + ' deleted'); go(''); refresh(); }
+      catch (e) { toast('could not delete: ' + esc(e.message)); }
+    }
+  }
+  // ── the stub's three pickers ─────────────────────────────────────────
+  // The ticket the page is showing. Everything below reads it fresh at the
+  // moment of the click: an agent may have rewritten it since the page was
+  // drawn, and both the "current" marker and the app scoping depend on being
+  // right about that.
+  const pageTicket = () =>
+    (view.kind === 'ticket' ? S.tickets.find((x) => x.id === view.id) : null) || null;
+
+  function openFieldPicker(which){
+    const t = pageTicket();
     if (!t) return;
     if (which === 'app'){
       if (isStarted(t)) return;   // held by its worktree
@@ -1966,19 +2182,14 @@ export function boardPage(): string {
     else if (which === 'project') pickProject(t);
     else if (which === 'status') pickStatus(t);
   }
-  // All three end the same way: write through the CLI, then rebuild the
-  // overlay. refresh() redraws the page BEHIND the overlay and deliberately
-  // not the overlay itself, so without the openDetail() the row you just
-  // changed would keep its old value until you closed and reopened.
-  async function writeField(id, msg, run){
+  // All three end the same way: write through the CLI, then redraw. refresh()
+  // re-runs route(), which re-renders the ticket page in place — so unlike the
+  // overlay this replaced, there is nothing extra to re-open.
+  async function writeField(msg, run){
     try {
       await run();
       toast(msg);
       await refresh();
-      // Only if you are still standing on it. The write and the refresh are
-      // both awaited, and leaving the ticket in between is easy — without this
-      // the overlay you just dismissed pops back over the board.
-      if (detailId === id) openDetail(id);
     } catch (e) { toast(esc(e.message)); }
   }
   const patchTicket = (id, body) =>
@@ -1986,11 +2197,11 @@ export function boardPage(): string {
 
   function pickApp(t){
     tapKey('a');
-    // S.repositories, not appsWithWork(): this is the full list of apps you
-    // have ever stood in, and filing something into an app that has no tickets
-    // yet is exactly the move being made here.
+    // S.repositories, not appsWithWork(): this is every app you have stood in,
+    // and filing something into one that has no tickets yet is exactly the
+    // move being made here.
     pickOpen({
-      cue: 'move to', placeholder: 'which app?', keepOpen: true,
+      cue: 'move to', placeholder: 'which app?',
       build: (q) => {
         const ql = q.trim().toLowerCase();
         const rows = (S.repositories || [])
@@ -1998,12 +2209,12 @@ export function boardPage(): string {
           .map((r) => ({
             label: r.name || r.slug,
             r: r.slug === t.repo_slug ? 'current' : ((r.counts && r.counts.open) || 0) + ' open',
-            act: () => writeField(t.id, 'moved to ' + esc(appLabel(r.slug)),
+            act: () => writeField('moved to ' + esc(appLabel(r.slug)),
               () => patchTicket(t.id, { repo: r.slug })),
           }));
         if (t.repo_slug && 'no app'.includes(ql))
           rows.push({ label: 'no app', r: 'back to an idea',
-            act: () => writeField(t.id, 'back to an idea, in no app',
+            act: () => writeField('back to an idea, in no app',
               () => patchTicket(t.id, { repo: '' })) });
         return rows;
       },
@@ -2015,7 +2226,7 @@ export function boardPage(): string {
     const active = (S.projects || []).filter((p) => p.status === 'active');
     // With an app, the choice is scoped to it. WITHOUT one, every app's
     // projects are offered and grouped — because a project settles the app
-    // too, so this one pick files a captured idea completely.
+    // too, so one pick files a captured idea completely.
     const pool = t.repo_slug
       ? active.filter((p) => (p.repo_slug || NO_APP) === t.repo_slug)
       : active.slice().sort((a, b) =>
@@ -2023,7 +2234,6 @@ export function boardPage(): string {
     pickOpen({
       cue: 'file into',
       placeholder: t.repo_slug ? 'which project?' : 'which project? its app comes too',
-      keepOpen: true,
       build: (q) => {
         const ql = q.trim().toLowerCase();
         const rows = pool
@@ -2032,16 +2242,15 @@ export function boardPage(): string {
             label: p.name,
             group: t.repo_slug ? '' : appLabel(p.repo_slug || NO_APP),
             r: Number(t.project_id) === Number(p.id) ? 'current' : (p.open || 0) + ' open',
-            act: () => writeField(t.id, 'filed into ' + esc(p.name),
+            act: () => writeField('filed into ' + esc(p.name),
               () => patchTicket(t.id, { project: String(p.id) })),
           }));
         if (t.project_id != null && 'leave it loose'.includes(ql))
           rows.push({ label: 'leave it loose', group: t.repo_slug ? '' : '— or —', r: 'no project',
-            act: () => writeField(t.id, 'now loose in ' + esc(appLabel(t.repo_slug || NO_APP)),
+            act: () => writeField('now loose in ' + esc(appLabel(t.repo_slug || NO_APP)),
               () => patchTicket(t.id, { project: null })) });
-        // An app with no projects yet would otherwise render a blank panel,
+        // An app with no projects yet would otherwise draw a blank panel,
         // which reads as a failure to load rather than as an empty shelf.
-        // Says which app, because that is the thing that has none.
         if (!rows.length && !pool.length)
           rows.push({ label: (t.repo_slug ? appLabel(t.repo_slug) : 'no app') + ' has no projects yet',
             r: 'smriti project add', act: () => {} });
@@ -2057,7 +2266,7 @@ export function boardPage(): string {
     // the usage string said otherwise.
     const VALUES = Object.keys(STATUS);
     pickOpen({
-      cue: 'set status', placeholder: 'idea, ready, building…', keepOpen: true,
+      cue: 'set status', placeholder: 'idea, ready, building…',
       build: (q) => {
         const ql = q.trim().toLowerCase();
         return VALUES
@@ -2067,7 +2276,7 @@ export function boardPage(): string {
             // The raw value the CLI takes, so the picker teaches
             // "smriti ticket status <id> in_review" while you use it.
             r: v === t.status ? 'current' : v,
-            act: () => writeField(t.id, '#' + t.id + ' → ' + STATUS[v],
+            act: () => writeField('#' + t.id + ' → ' + STATUS[v],
               () => api('/api/tickets/' + t.id + '/status',
                 { method: 'POST', body: JSON.stringify({ status: v }) })),
           }));
@@ -2078,36 +2287,91 @@ export function boardPage(): string {
   // Fetched PER TICKET rather than filtered out of S.runs: /api/state carries
   // a recency-bounded window (enough to draw cards), so an older run would
   // simply be missing here — the one place that promises every run.
+  //
+  // And REMEMBERED, because the surface changed under it. The overlay was
+  // built once and never rebuilt; a page is redrawn on every SSE tick, about
+  // once a second while an agent runs. This is two rounds of fetching — the
+  // run list, then a call per run — and each spawns sqlite behind the server.
+  // Both rounds are cached together, as the assembled html: caching the list
+  // alone still costs a call per run on the next redraw, and caching only the
+  // breakdowns flashes an empty trace while the list comes back. The "no runs"
+  // answer is cached too, or a ticket that has never run re-asks forever.
+  const runCache = new Map();     // ticket id -> { at, live, runs, html }
+  // One load per ticket at a time. The chain is 1 + N sqlite-backed requests
+  // and easily outlasts one SSE tick, and until it finishes there is nothing in
+  // the cache to short-circuit the next call — so without this, five ticks into
+  // a four-run ticket there are twenty-five requests in flight for one page.
+  const runInFlight = new Set();
+  const RUN_TTL_MS = 10000;
+
   async function loadRuns(ticketId){
     const box = $('#runs');
     if (!box) return;
-    let runs;
-    try { runs = (await api('/api/runs?ticket=' + ticketId)).runs || []; }
-    catch (e) {
-      // A ticket with no runs comes back as an empty list, not an error — so
-      // the only things reaching here are a broken store or a dead server.
-      // Swallowing them renders "never run" for "cannot read", which is the
-      // same lie the 503 on /api/state exists to prevent.
-      toast('could not read the trace: ' + esc(e.message), 5000);
-      return;
+    const hit = runCache.get(ticketId);
+    if (hit){
+      if (box.innerHTML !== hit.html) box.innerHTML = hit.html;
+      // A trace only moves while a run is open, and /api/state already reports
+      // that for free on every tick — so a run started from a terminal is
+      // noticed without polling this endpoint for tickets that are simply
+      // finished. The elapsed clock keeps up in between on its own: tick()
+      // rewrites [data-live] text without a re-render.
+      const moving = hit.live || S.runs.some((r) => r.ticket_id === ticketId && !r.ended_at);
+      if (!moving || Date.now() - hit.at < RUN_TTL_MS) return;
     }
-    if (!runs.length) return;
-    box.innerHTML = runs.map((r) => runShell(r)).join('');
-    // Concurrently, not one after another: each of these spawns sqlite behind
-    // the server, and awaiting them in sequence made opening a ticket with
-    // several runs take as long as all of them put together.
-    await Promise.all(runs.map(async (r) => {
-      try {
-        const d = await api('/api/run/' + r.run_uid);
-        // The overlay may have been closed or reopened while this was in
-        // flight; writing into a detached node is harmless, missing one is not.
-        const el = box.querySelector('[data-run="' + r.run_uid + '"] .bd');
-        if (el) el.innerHTML = phaseBreakdown(d.phases || [], d.totals || {});
-      } catch {}
-    }));
+    if (runInFlight.has(ticketId)) return;
+    runInFlight.add(ticketId);
+    try {
+      let runs;
+      try { runs = (await api('/api/runs?ticket=' + ticketId)).runs || []; }
+      catch (e) {
+        // A ticket with no runs comes back as an empty list, not an error — so
+        // the only things reaching here are a broken store or a dead server.
+        // Swallowing them renders "never run" for "cannot read", which is the
+        // same lie the 503 on /api/state exists to prevent. Only worth saying
+        // once, though: a stale trace is already on screen from the cache.
+        if (!hit) toast('could not read the trace: ' + esc(e.message), 5000);
+        return;
+      }
+      const here = () => (view.kind === 'ticket' && view.id === ticketId ? $('#runs') : null);
+      if (!runs.length){
+        const empty = '<div class="box b3"><div class="nothing">no runs yet' +
+          '<div class="cmd">press s to cut a worktree and start</div></div></div>';
+        runCache.set(ticketId, { at: Date.now(), live: false, runs, html: empty });
+        const el = here();
+        if (el && el.innerHTML !== empty) el.innerHTML = empty;
+        paintTally(ticketId, runs);
+        return;
+      }
+      // Shells first ONLY when there is nothing cached to lose. On a refresh
+      // the stale trace stands until the new one is complete — painting bare
+      // shells would blank the phase rows every ten seconds and collapse the
+      // page height under whoever is reading them.
+      if (!hit){ const el = here(); if (el) el.innerHTML = runs.map((r) => runShell(r)).join(''); }
+      // Concurrently, not one after another: each of these spawns sqlite behind
+      // the server, and awaiting them in sequence made opening a ticket with
+      // several runs take as long as all of them put together.
+      const bodies = await Promise.all(runs.map(async (r) => {
+        try { const d = await api('/api/run/' + r.run_uid); return phaseBreakdown(d.phases || [], d.totals || {}); }
+        catch { return ''; }
+      }));
+      const html = runs.map((r, i) => runShell(r, bodies[i])).join('');
+      runCache.set(ticketId, { at: Date.now(), live: runs.some((r) => !r.ended_at), runs, html });
+      // The view may have moved on while those were in flight; the cache is
+      // still worth keeping, the paint is not.
+      const el = here();
+      if (el && el.innerHTML !== html) el.innerHTML = html;
+      paintTally(ticketId, runs);
+    } finally { runInFlight.delete(ticketId); }
+  }
+  // The header tally, corrected once every run is known. /api/state's window is
+  // bounded, so the first paint can undercount a ticket with a long history.
+  function paintTally(ticketId, runs){
+    if (!(view.kind === 'ticket' && view.id === ticketId)) return;
+    const el = $('#ttally');
+    if (el) el.innerHTML = tallyTime(runs);
   }
 
-  function runShell(r){
+  function runShell(r, body){
     const secs = runSecs(r);
     const live = !r.ended_at;
     const you = r.you_s || 0;
@@ -2121,7 +2385,7 @@ export function boardPage(): string {
       '<span>' + esc(r.skill) + '</span><span>' + esc(r.status) + '</span>' +
       '<span class="tot"' + (live ? ' data-live="dur" data-since="' + esc(r.started_at) + '"' : '') + '>' +
       fmtDur(secs) + '</span>' + split + '</div>' +
-      '<div class="bd"></div></div>';
+      '<div class="bd">' + (body || '') + '</div></div>';
   }
 
   // A stacked bar over the phases in order, then the same numbers as rows.
@@ -2135,10 +2399,16 @@ export function boardPage(): string {
       (p.agent_s > 0 ? '<i class="a" style="width:' + pct(p.agent_s) + '" title="' + esc(p.phase) + ' — agent"></i>' : '') +
       (p.you_s > 0 ? '<i class="y" style="width:' + pct(p.you_s) + '" title="' + esc(p.phase) + ' — you"></i>' : '')
     ).join('') + '</div>';
+    // Each phase's lane is drawn against the LONGEST phase in the run, not
+    // filled to its own width and split by ratio. Filled bars carried a ratio
+    // and no magnitude, which is why they had to be capped at 180px — an
+    // 18-minute plan and a three-hour implement drew identically, and the
+    // unused remainder of the track now IS the scale.
+    const maxP = Math.max(...phases.map((p) => p.total_s || 0)) || 1;
     const rows = phases.map((p) => {
       const t = p.total_s || 0;
-      const aw = t ? (100 * (p.agent_s || 0) / t).toFixed(2) + '%' : '0%';
-      const yw = t ? (100 * (p.you_s || 0) / t).toFixed(2) + '%' : '0%';
+      const aw = (100 * (p.agent_s || 0) / maxP).toFixed(2) + '%';
+      const yw = (100 * (p.you_s || 0) / maxP).toFixed(2) + '%';
       return '<div class="p"><span class="nm">' + esc(p.phase) + '</span>' +
         '<span class="sw"><i class="a" style="width:' + aw + '"></i><i class="y" style="width:' + yw + '"></i></span>' +
         '<span class="d">' + fmtDur(t) + '</span>' +
@@ -2226,13 +2496,12 @@ export function boardPage(): string {
 
   // ── picker ───────────────────────────────────────────────────────────
   // One picker, several jobs. It was the command palette; it is now
-  // parameterised, because the fields block needs the same list-with-a-filter
+  // parameterised, because the stub's fields need the same list-with-a-filter
   // and a second one would mean a second keymap branch and a second set of
   // styles in a file nothing type-checks.
   //
   // A caller supplies build(q) returning rows — so ranking and any cap stay
-  // the caller's policy, not the widget's — and keepOpen when the ticket
-  // overlay behind it must survive the choice. Rows may carry a group, which
+  // the caller's policy, not the widget's — and rows may carry a group, which
   // the project picker needs: on a ticket with no app it lists every app's
   // projects and has to say which is which.
   let palSel = 0, palItems = [], picker = null;
@@ -2249,20 +2518,9 @@ export function boardPage(): string {
     palRender('');
     q.focus();
   }
-  // Closes the picker ALONE. closeAll() takes every veil down with it, which
-  // is what made the palette unusable from inside the ticket overlay.
-  // Blurring is not decoration. Hiding the veil takes the query input out of
-  // the page, but the browser only moves focus off it on a later frame — and
-  // until it does, activeElement is still an INPUT, so the global handler's
-  // typing guard swallows every key. Closing a picker and immediately pressing
-  // another key found a dead keyboard.
-  function blurQuery(){ const q = $('#palq'); if (q && document.activeElement === q) q.blur(); }
-  function pickClose(){ $('#palv').classList.remove('on'); picker = null; blurQuery(); }
   function pickCommit(i){
     const it = palItems[i];
-    const keep = picker && picker.keepOpen;
-    pickClose();
-    if (!keep) closeAll();
+    closeAll();
     if (it) it.act();
   }
   function palRender(q){
@@ -2290,7 +2548,8 @@ export function boardPage(): string {
     const palItems = [];
     if (q.trim()){
       const into = view.kind === 'project' ? ' into this project'
-        : view.kind === 'app' ? ' into ' + appLabel(view.slug) : '';
+        : view.kind === 'app' ? ' into ' + appLabel(view.slug)
+        : view.kind === 'ticket' ? ' beside this one' : '';
       palItems.push({ label: 'New ticket — “' + q.trim() + '”' + into, r: '⏎', act: () => capture(q.trim()) });
     }
     // Apps and projects are searchable too — on a board with several apps,
@@ -2309,47 +2568,54 @@ export function boardPage(): string {
     }
     for (const t of S.tickets){
       if (!ql || t.title.toLowerCase().includes(ql) || String(t.id) === ql){
-        palItems.push({ label: '#' + t.id + ' ' + t.title, r: STATUS[t.status] || t.status, act: () => openDetail(t.id) });
+        palItems.push({ label: '#' + t.id + ' ' + t.title, r: STATUS[t.status] || t.status, act: () => go('#/t/' + t.id) });
         if (palItems.length > 9) break;
       }
     }
     const first = S.tickets.find((t) => t.status === 'ready');
     if (!ql && first) palItems.push({ label: 'Start #' + first.id + ' — cut worktree & open a session', r: '⌥⏎', act: () => startTicket(first) });
     // The ten-row cap is this caller's ranking policy — the palette is a
-    // shortlist over everything you own. The field pickers below deliberately
-    // do not cap: a list of your apps is short and must be complete.
+    // shortlist over everything you own. The field pickers deliberately do not
+    // cap: a list of your apps is short and must be complete.
     return palItems;
   }
 
   function closeAll(){
-    ['palv','detv','helpv','pacev'].forEach((id) => $('#' + id).classList.remove('on'));
-    detailId = null;
+    ['palv','helpv','pacev'].forEach((id) => $('#' + id).classList.remove('on'));
     picker = null;
-    blurQuery();
+    // Hiding the veil takes the query input out of the page, but the browser
+    // only moves focus off it on a later frame — and until it does,
+    // activeElement is still an INPUT, so the typing guard swallows every key.
+    // Closing a picker and immediately pressing another key found a dead
+    // keyboard.
+    const q = $('#palq');
+    if (q && document.activeElement === q) q.blur();
   }
 
   // ── keyboard ─────────────────────────────────────────────────────────
   document.addEventListener('keydown', (e) => {
     const inPal = $('#palv').classList.contains('on');
-    const typing = e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA');
-    // A focused link owns its own Enter. Without this the board's Enter would
-    // also fire — starting or attaching the ticket behind the link you were
-    // actually trying to follow.
-    const onLink = e.target && typeof e.target.closest === 'function' && e.target.closest('a[href]');
+    // SELECT belongs here with INPUT and TEXTAREA: a native select is TYPED
+    // into — s jumps to the first option starting with s — and without this
+    // that keystroke also started the ticket, while ArrowDown/Up were
+    // preventDefault-ed out from under the dropdown so it could not be
+    // navigated by keyboard at all.
+    const typing = e.target &&
+      (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT');
+    // A focused CONTROL owns its own Enter and Space — a link, a button, or
+    // anything wearing role="button". Without this the global handler fires as
+    // well: following a link would also start the ticket behind it, and on a
+    // ticket page — where the page itself is the selection, so selectedTicket()
+    // is never null — activating any button in the stub by keyboard would ALSO
+    // cut a worktree and spawn a session.
+    const onCtl = e.target && typeof e.target.closest === 'function' &&
+      e.target.closest('a[href],button,[role="button"]');
 
-    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k'){
-      e.preventDefault();
-      if (picker){ const keep = picker.keepOpen; pickClose(); if (!keep) closeAll(); }
-      else palOpen();
-      return;
-    }
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k'){ e.preventDefault(); inPal ? closeAll() : palOpen(); return; }
     if (e.key === 'Escape'){
-      // A picker raised over the ticket gives the ticket back rather than
-      // taking it down too — you were editing one field, not leaving.
-      if (picker && picker.keepOpen){ pickClose(); return; }
-      // On a page with nothing open, esc is "go back up" rather than a no-op:
-      // project → its app → the board.
-      const anyOpen = ['palv','detv','helpv'].some((id) => $('#' + id).classList.contains('on'));
+      // On a page with nothing open, esc is "go back up" rather than a no-op,
+      // one rung at a time: ticket → its project → its app → the board.
+      const anyOpen = ['palv','helpv','pacev'].some((id) => $('#' + id).classList.contains('on'));
       closeAll();
       if (!anyOpen && view.kind !== 'board'){
         const b = document.querySelector('.sheet [data-back]');
@@ -2365,22 +2631,25 @@ export function boardPage(): string {
       return;
     }
     if (typing) return;
-    if (onLink && (e.key === 'Enter' || e.key === ' ')) return;
-    // A modifier means the key belongs to the browser or the OS, not the
-    // board: ⌘F is find, ⌘A is select all, ⌘X is cut. The single-letter keys
-    // below must not answer for them — and a and f in particular land on the
-    // detail overlay, which is the one surface with prose you would reach for
-    // find or select-all on. (⌘K is handled above, before this point.)
+    if (onCtl && (e.key === 'Enter' || e.key === ' ')) return;
+    // A modifier means the key belongs to the browser or the OS — Cmd+F is
+    // find, Cmd+A is select all, Cmd+X is cut. The single-letter keys below
+    // must not answer for them, and a/f/x land on the ticket page, which is
+    // the one surface with prose you would reach for those on. (Cmd+K is
+    // handled above, before this point.)
     if (e.metaKey || e.ctrlKey) return;
 
-    // activeTicket, not selectedTicket: with the overlay open these keys mean
-    // "do this to the ticket I am looking at". Board navigation below still
-    // drives sel alone, so the view-owns-the-keyboard invariant is untouched.
-    const t = activeTicket();
+    const t = selectedTicket();
     switch (e.key){
       case 'ArrowDown': case 'j': e.preventDefault(); move(1); break;
       case 'ArrowUp': case 'k': e.preventDefault(); move(-1); break;
-      case 'Enter': tapKey('Enter'); if (detailId && t) startTicket(t); else if (t) openDetail(t.id); break;
+      // On a ticket page ⏎ starts or attaches it — what it meant with the
+      // overlay open, now carried by the page rather than by a module flag.
+      // Everywhere else it opens what is selected.
+      case 'Enter': tapKey('Enter');
+        if (view.kind === 'ticket' && t) startTicket(t);
+        else if (t) go('#/t/' + t.id);
+        break;
       case 's': startTicket(t); break;
       case 'd': markDone(t); break;
       case 'c': case '/': e.preventDefault(); tapKey('c'); palOpen(); break;
@@ -2392,32 +2661,34 @@ export function boardPage(): string {
       case 'r': refresh(); toast('refreshed'); break;
       // e edits whichever description is in front of you. Until now the only
       // way into an editor was a mouse click, on a board that is otherwise
-      // entirely keyboard-driven.
+      // entirely keyboard-driven. One id pair since the ticket became a page,
+      // so there is nothing left to branch on.
       //
-      // Only the detail overlay has a description behind it. help and pace do
-      // not, and focusing a textarea underneath one of those puts every
-      // keystroke somewhere invisible AND stops refresh() re-rendering, since
-      // isEditing() then reports true.
+      // help and pace have no description behind them, and focusing a textarea
+      // underneath one of those puts every keystroke somewhere invisible AND
+      // stops refresh() re-rendering, since isBusy() then reports true.
       case 'e': {
         if (['helpv', 'pacev'].some((id) => $('#' + id).classList.contains('on'))) break;
-        const opened = $('#detv').classList.contains('on')
-          ? startEdit($('#desc'), $('#descedit'))
-          : startEdit($('#pagedesc'), $('#pagedescedit'));
+        const opened = startEdit($('#pagedesc'), $('#pagedescedit'));
         // Only claim the key when it did something — the footer chip flashing
         // on a view with no description reads as "that worked".
         if (opened){ e.preventDefault(); tapKey('e'); }
         break;
       }
-      // The fields block, from the keyboard. Only with the overlay open: these
-      // act on one ticket's filing, and there is no such thing on a board.
-      case 'a': if (detailId && t && !isStarted(t)){ e.preventDefault(); pickApp(t); } break;
-      case 'f': if (detailId && t){ e.preventDefault(); pickProject(t); } break;
-      case 'x': if (detailId && t){ e.preventDefault(); pickStatus(t); } break;
-      // p opens the app of whatever is selected — the one key that navigates
-      // between the two levels without reaching for the mouse.
+      // p goes up one level from whatever you are on — the one key that
+      // navigates between the levels without reaching for the mouse.
+      // The stub's fields. Only on a ticket page: these act on one ticket's
+      // filing, and there is no such thing on a board or an app page.
+      case 'a': if (view.kind === 'ticket' && t && !isStarted(t)){ e.preventDefault(); pickApp(t); } break;
+      case 'f': if (view.kind === 'ticket' && t){ e.preventDefault(); pickProject(t); } break;
+      case 'x': if (view.kind === 'ticket' && t){ e.preventDefault(); pickStatus(t); } break;
       case 'p': {
         tapKey('p');
-        if (view.kind === 'board' && t && t.project_id != null) go('#/p/' + t.project_id);
+        if (view.kind === 'ticket' && t){
+          if (t.project_id != null) go('#/p/' + t.project_id);
+          else if (t.repo_slug) go('#/r/' + encodeURIComponent(t.repo_slug));
+        }
+        else if (view.kind === 'board' && t && t.project_id != null) go('#/p/' + t.project_id);
         else if (view.kind === 'board' && t && t.repo_slug) go('#/r/' + encodeURIComponent(t.repo_slug));
         else if (view.kind === 'project'){
           const pr = projectById(view.id);
@@ -2445,14 +2716,7 @@ export function boardPage(): string {
   });
   $('#rtab').addEventListener('click', toggleRail);
   $('#palq').addEventListener('input', (e) => palRender(e.target.value));
-  document.querySelectorAll('.veil').forEach((v) => v.addEventListener('click', (e) => {
-    if (e.target !== v) return;
-    // The backdrop of a picker raised over the ticket hands the ticket back,
-    // exactly as Escape does. Without this it was the one route that closed
-    // both, losing the ticket you were part-way through editing.
-    if (v.id === 'palv' && picker && picker.keepOpen){ pickClose(); return; }
-    closeAll();
-  }));
+  document.querySelectorAll('.veil').forEach((v) => v.addEventListener('click', (e) => { if (e.target === v) closeAll(); }));
 
   // ── live updates ─────────────────────────────────────────────────────
   try {
@@ -2469,7 +2733,7 @@ export function boardPage(): string {
   // cheapest moment to notice the server died while the laptop slept. Repo
   // files are not watched, so this is also when an edited PROJECT.md shows up.
   document.addEventListener('visibilitychange', () => {
-    if (!document.hidden){ docCache.clear(); mdFailed.clear(); refresh(); }
+    if (!document.hidden){ docCache.clear(); mdFailed.clear(); runCache.clear(); refresh(); }
   });
   // Visibility-aware heartbeat: keeps the server alive only while the tab is
   // actually being looked at, so a backgrounded tab lets it idle out.
