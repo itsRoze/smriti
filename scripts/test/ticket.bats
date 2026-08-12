@@ -672,6 +672,31 @@ seed_commit() { echo seed > f && git add f && git commit -q -m init; }
   [ "$(tdb "SELECT project_id FROM tickets WHERE id=1;")" = "$pid" ]
 }
 
+@test "edit --project: a shared slug resolves in the ticket's own app, not the shell's" {
+  # A project slug is only unique within an app. Resolving it against the app
+  # you happen to be STANDING IN silently relocated the ticket whenever two
+  # apps shared a project name — an app move nobody asked for.
+  "$PROJECT" add "Shared Name" >/dev/null
+  "$CLI" add "lives here" --project shared-name >/dev/null
+  [ "$(tdb "SELECT repo_slug FROM tickets WHERE id=1;")" = "test-demo" ]
+
+  other="$WORK/other"
+  mkdir -p "$other"
+  ( cd "$other" && git init -q -b main && git remote add origin "https://github.com/test/other.git" )
+  ( cd "$other" && "$PROJECT" add "Shared Name" >/dev/null )
+
+  run bash -c "cd '$other' && '$CLI' edit 1 --project shared-name"
+  [ "$status" -eq 0 ]
+  [ "$(tdb "SELECT repo_slug FROM tickets WHERE id=1;")" = "test-demo" ]
+  [ "$(tdb "SELECT repo_slug FROM projects WHERE id=(SELECT project_id FROM tickets WHERE id=1);")" = "test-demo" ]
+
+  # Moving between apps is what --repo is for, and naming it still works —
+  # it just has to be said out loud.
+  run bash -c "cd '$other' && '$CLI' edit 1 --repo test-other --project shared-name"
+  [ "$status" -eq 0 ]
+  [ "$(tdb "SELECT repo_slug FROM tickets WHERE id=1;")" = "test-other" ]
+}
+
 @test "status: takes all six values, cancelled included" {
   "$CLI" add "x" >/dev/null
   # cancelled has always been in VALID_STATUSES; only the usage string said

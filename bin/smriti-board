@@ -717,28 +717,16 @@ async function cmdServer(): Promise<never> {
         return json({ ok: true });
       }
 
-      const revive = url.pathname.match(/^\/api\/tickets\/(\d+)\/revive$/);
-      if (revive && req.method === 'POST') {
-        touch();
-        const r = sh(TICKET, ['status', revive[1], 'ready']);
-        if (!r.ok) return json({ error: r.errOut || 'could not revive' }, 500);
-        broadcast();
-        return json({ ok: true });
-      }
-
-      const cancel = url.pathname.match(/^\/api\/tickets\/(\d+)\/cancel$/);
-      if (cancel && req.method === 'POST') {
-        touch();
-        const r = sh(TICKET, ['cancel', cancel[1]]);
-        if (!r.ok) return json({ error: r.errOut || 'could not cancel' }, 500);
-        broadcast();
-        return json({ ok: true });
-      }
-
-      // The general form of the three above. Kept as its own route rather than
-      // a field on PATCH: `edit` and `status` are separate CLI verbs, so a
-      // PATCH carrying status alongside repo would have to run two of them in
-      // sequence with nothing transactional around the pair.
+      // /revive and /cancel used to sit here, one hardcoding `status ready`
+      // and the other the `cancel` verb. They were the buttons' routes, and
+      // the buttons became rows on the status picker — which posts here with
+      // the value it wants. Two spellings of "write a status" that nothing
+      // called were two more places to keep in step with validate_status.
+      //
+      // Kept as its own route rather than a field on PATCH: `edit` and
+      // `status` are separate CLI verbs, so a PATCH carrying status alongside
+      // repo would have to run two of them in sequence with nothing
+      // transactional around the pair.
       const setStatus = url.pathname.match(/^\/api\/tickets\/(\d+)\/status$/);
       if (setStatus && req.method === 'POST') {
         touch();
