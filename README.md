@@ -208,15 +208,24 @@ Clicking an app heading opens its **app page** (`#/r/<slug>`): description,
 tickets and its whole paper trail. Clicking a project opens its **project
 page** (`#/p/<id>`) — the same shape, minus the document tabs, because
 `DESIGN.md` describes the codebase rather than one body of work inside it.
-Both are real URLs: reload, deep-link, and the browser back button all work.
+And a ticket opens its own **ticket page** (`#/t/<id>`). All three are real
+URLs: reload, deep-link, and the browser back button all work.
 
 The repo documents are read from disk when you open the page. Nothing watches
 your editor, so `↻` on the pane re-reads them.
 
-A ticket opens with its description inline — click to edit, `⌘⏎` to save.
-Work you have decided against gets **cancelled** (reversible, keeps its paper
-trail); work that should never have existed gets **deleted** (the ticket and
-its index rows go, the markdown on disk never does).
+A ticket page is laid out as the job card it is: the description, the paper
+trail and the run trace in a reading column, beside a stub that stays put as
+you scroll — where it is filed, and everything you can do to it. The
+description is click-to-edit, `⌘⏎` to save, and markdown is the source of
+truth, so `smriti ticket add --body` round-trips byte for byte. Work you have
+decided against gets **cancelled** (reversible, keeps its paper trail); work
+that should never have existed gets **deleted** (the ticket and its index rows
+go, the markdown on disk never does).
+
+`esc` walks back up one rung at a time — ticket, project, app, board — and on a
+ticket page the page itself is the selection, so `s`, `d`, `e` and `p` act on
+the ticket in front of you without a highlight to aim at.
 
 Starting a ticket cuts its worktree and opens a Claude Code session via
 **[herdr](https://herdr.dev)**, then shows the exact attach command — the
