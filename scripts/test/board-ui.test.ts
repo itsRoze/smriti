@@ -401,6 +401,70 @@ describe('board UI', () => {
     } finally { await context.close(); }
   }, T);
 
+  // The page being its own selection has a sharp edge: selectedTicket() is
+  // never null there, so anything that reaches the global handler acts on a
+  // real ticket. Both of these cut a git worktree and spawn an agent session
+  // when they regress, which is why they are pinned rather than reasoned about.
+  it('keyboard-activating a stub button does not also start the ticket', async () => {
+    if (!HAS_CHROMIUM) return;
+    const { context, page, errors } = await open();
+    try {
+      let starts = 0;
+      await page.route('**/api/tickets/*/start', (route) => { starts++; route.abort(); });
+      await page.goto(url.split('?')[0] + '#/t/' + MD_TICKET, { waitUntil: 'domcontentloaded' });
+      await page.waitForSelector('.stub');
+
+      // The two-press confirm is a disposition you reach by keyboard like any
+      // other, and pressing it must not ALSO run the global Enter branch.
+      const del = page.locator('.stub [data-act="delete"]');
+      await del.focus();
+      await page.keyboard.press('Enter');
+      await page.waitForSelector('.stub [data-act="delete"]:has-text("really delete?")');
+      expect(starts).toBe(0);
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+
+  it('typing into the re-file select does not start or finish the ticket', async () => {
+    if (!HAS_CHROMIUM) return;
+    const { context, page, errors } = await open();
+    try {
+      let hits = 0;
+      await page.route('**/api/tickets/*/start', (route) => { hits++; route.abort(); });
+      await page.route('**/api/tickets/*/done', (route) => { hits++; route.abort(); });
+      await page.goto(url.split('?')[0] + '#/t/' + idOf('index the corpus'), { waitUntil: 'domcontentloaded' });
+      await page.waitForSelector('#refile');
+
+      // A native select is typed into: s jumps to an option beginning with s.
+      // Those keystrokes used to reach the board's own s and d.
+      await page.locator('#refile').focus();
+      await page.keyboard.press('s');
+      await page.keyboard.press('d');
+      await page.waitForTimeout(400);
+      expect(hits).toBe(0);
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+
+  it('a redraw does not disarm the delete confirm', async () => {
+    if (!HAS_CHROMIUM) return;
+    const { context, page, errors } = await open();
+    try {
+      await page.goto(url.split('?')[0] + '#/t/' + MD_TICKET, { waitUntil: 'domcontentloaded' });
+      await page.waitForSelector('.stub');
+      await page.locator('.stub [data-act="delete"]').click();
+      await page.waitForSelector('.stub [data-act="delete"]:has-text("really delete?")');
+
+      // The redraw an SSE tick would have caused. The armed state used to live
+      // on the button, so this silently reverted the label and delete could
+      // never be completed on a ticket whose agent was running.
+      await page.evaluate(() => window.dispatchEvent(new HashChangeEvent('hashchange')));
+      await page.waitForTimeout(200);
+      expect(await page.locator('.stub [data-act="delete"]').innerText()).toBe('really delete?');
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+
   it('esc climbs the whole ladder — ticket, project, app, board', async () => {
     if (!HAS_CHROMIUM) return;
     const { context, page, errors } = await open();

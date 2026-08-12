@@ -558,7 +558,7 @@ export function boardPage(): string {
   .phz .p .nm{min-width:88px;color:var(--ink-3)}
   .phz .p .d{color:var(--ink)}
   .phz .p .yw{color:var(--hi-text)}
-  .phz .p .sw{flex:1;height:5px;border-radius:3px;background:rgba(var(--sh),.10);overflow:hidden;display:flex;max-width:180px}
+  .phz .p .sw{flex:1;height:5px;border-radius:3px;background:rgba(var(--sh),.10);overflow:hidden;display:flex}
   .phz .p .sw i{display:block;height:100%}
   .phz .p .sw i.a{background:var(--pine-c)}
   .phz .p .sw i.y{background:rgba(var(--hi-rgb),.9)}
@@ -623,7 +623,7 @@ export function boardPage(): string {
   .tmain .phz{gap:4px}
   .tmain .phz .p{gap:12px;padding:2px 0}
   .tmain .phz .p .nm{min-width:96px}
-  .tmain .phz .p .sw{max-width:none;flex:1;height:9px;border-radius:5px}
+  .tmain .phz .p .sw{height:9px;border-radius:5px}
   .tmain .phz .p .d{min-width:62px;text-align:right}
   .tmain .phz .p .yw{min-width:80px}
 
@@ -663,7 +663,7 @@ export function boardPage(): string {
   .stamp.s-in_review{color:var(--pine-b);border-color:var(--pine-c)}
   .stamp.s-ready{color:var(--pine-a);border-color:var(--pine-b)}
   .stamp.s-idea{color:var(--ink-3);border-color:var(--ink-4);border-style:dashed}
-  .stamp.s-shipped{color:var(--pine-a);border-color:var(--pine-a)}
+  .stamp.s-shipped{color:var(--ink-4);border-color:var(--ink-4)}
   .stamp.s-cancelled{color:var(--ink-4);border-color:var(--ink-4);opacity:.75}
   /* A stamp lands — once, on arrival. .struck is added only when the VIEW
      changed, never on a re-render: this page is redrawn about once a second
@@ -1407,10 +1407,15 @@ export function boardPage(): string {
     const key = view.kind + ':' + (view.slug ?? view.id ?? '');
     const changed = key !== lastViewKey;
     lastViewKey = key;
+    if (changed) trailOpen = null;
     // The attach command from a start is carried across the navigation it
     // triggers, and dropped the moment you are looking at anything else — an
     // unscoped stash surfaces one ticket's command on the next ticket's page.
     if (!(view.kind === 'ticket' && pendingAttach && pendingAttach.id === view.id)) pendingAttach = null;
+    // Both belong to the view you are on, not to the session: an armed delete
+    // must not survive a navigation, and the document you had open on one
+    // ticket must not spring open on the next.
+    if (!(view.kind === 'ticket' && view.id === armedDelete)) armedDelete = null;
     // Selection is owned by the view: cleared when you move between views, kept
     // when the view you are on simply re-renders (which SSE does about once a
     // second while an agent is running).
@@ -1509,8 +1514,12 @@ export function boardPage(): string {
         if (p && p.repo_slug){ go('#/r/' + encodeURIComponent(p.repo_slug)); return; }
       }
       if (view.kind === 'ticket'){
+        // projectById, not a bare project_id != null: the LABEL falls back to
+        // the app when the project is missing from the payload, and a target
+        // that disagreed would promise the app page and deliver the board.
         const t = S.tickets.find((x) => x.id === view.id);
-        if (t && t.project_id != null){ go('#/p/' + t.project_id); return; }
+        const p = t && t.project_id != null ? projectById(t.project_id) : null;
+        if (p){ go('#/p/' + p.id); return; }
         if (t && t.repo_slug){ go('#/r/' + encodeURIComponent(t.repo_slug)); return; }
       }
       go('');
@@ -1526,9 +1535,23 @@ export function boardPage(): string {
     });
     $$('[data-doc]').forEach((el) => el.addEventListener('click', async () => {
       const dv = $('#pagedoc'); if (!dv) return;
-      try { const res = await api('/api/doc/' + el.dataset.doc); dv.innerHTML = res.html; dv.classList.add('on'); }
-      catch (e) { toast('could not read the file: ' + esc(e.message)); }
+      const id = el.dataset.doc;
+      try {
+        const html = trailCache.has(id) ? trailCache.get(id) : (await api('/api/doc/' + id)).html;
+        trailCache.set(id, html);
+        trailOpen = id;
+        const live = $('#pagedoc');
+        if (live){ live.innerHTML = html; live.classList.add('on'); }
+      } catch (e) { toast('could not read the file: ' + esc(e.message)); }
     }));
+    // Re-open whatever you were reading. route() replaces the sheet wholesale
+    // about once a second while an agent runs, and trailHtml emits an empty
+    // viewer every time — so without this the document you opened disappears
+    // out from under you a second later.
+    if (trailOpen && trailCache.has(trailOpen)){
+      const dv = $('#pagedoc');
+      if (dv){ dv.innerHTML = trailCache.get(trailOpen); dv.classList.add('on'); }
+    }
     wireDescEditor();
   }
 
@@ -1637,12 +1660,20 @@ export function boardPage(): string {
     if (!r.ok) throw new Error((await r.text().catch(() => '')) || ('HTTP ' + r.status));
     return r.json();
   }
-  // True while a description editor is open. Re-rendering underneath one
-  // destroys the textarea without firing its blur handler, so the text is lost
-  // with no save — worse than showing data a second out of date.
-  function isEditing(){
+  // True while the user is mid-interaction with a control the re-render would
+  // destroy. An editor is the obvious one: re-rendering underneath a textarea
+  // destroys it without firing its blur handler, so the text is lost with no
+  // save — worse than showing data a second out of date.
+  //
+  // A native select is the other. Its popup is drawn by the OS and there is no
+  // event for "the popup is open", so focus is the only signal there is; the
+  // ticket page redraws about once a second while an agent runs, and each redraw
+  // closed the re-file dropdown with no choice made.
+  function isBusy(){
     const ta = document.querySelector('.descedit.on');
-    return Boolean(ta) && document.activeElement === ta;
+    if (ta && document.activeElement === ta) return true;
+    const a = document.activeElement;
+    return Boolean(a && a.tagName === 'SELECT');
   }
 
   // ── descriptions ─────────────────────────────────────────────────────
@@ -1780,7 +1811,7 @@ export function boardPage(): string {
   }
 
   async function refresh(){
-    try { S = await api('/api/state'); if (!isEditing()) route(); }
+    try { S = await api('/api/state'); if (!isBusy()) route(); }
     catch (e) {
       // 503 is the store failing to read; anything else is the server gone.
       const msg = /could not read/.test(String(e.message))
@@ -1790,6 +1821,15 @@ export function boardPage(): string {
     }
   }
 
+  // The two-press delete confirm, and its timer. See ticketAct for why this is
+  // not a data attribute on the button.
+  let armedDelete = null, armTimer = 0;
+  // The paper-trail document you have open, and what it said. A page is
+  // rebuilt by the SSE path and the overlay never was, so a document opened on
+  // a ticket used to vanish a second later; app and project pages had the same
+  // hole. Kept in memory, never localStorage — it is for the read you are in.
+  let trailOpen = null;
+  const trailCache = new Map();     // document id -> rendered html
   // The attach command produced by a start, carried across the navigation that
   // start now triggers. Keyed by ticket and dropped by route() the moment you
   // are looking at anything else — an unscoped stash puts one ticket's command
@@ -1883,7 +1923,7 @@ export function boardPage(): string {
     const app = appOf(t);
     const live = Boolean(sessionFor(t));
     const gate = gateFor(t);   // already scheme-checked
-    const open = t.status !== 'shipped' && t.status !== 'cancelled';
+    const open = isOpen(t);
 
     $('#eye').innerHTML = 'ticket · <b>#' + t.id + '</b>';
     $('#waitwrap').innerHTML = '';
@@ -1933,11 +1973,13 @@ export function boardPage(): string {
     h += '<div class="lab">filed under</div><div class="filed">' +
       '<div class="f"><span class="k2">app</span><span class="v' + (t.repo_slug ? '' : ' empty') + '">' +
         (t.repo_slug
-          ? '<span class="jump" data-app="' + esc(t.repo_slug) + '">' + esc(appLabel(t.repo_slug)) + '</span>'
+          ? '<span class="jump" role="button" tabindex="0" data-app="' + esc(t.repo_slug) + '">' +
+            esc(appLabel(t.repo_slug)) + '</span>'
           : 'no app yet') + '</span></div>' +
       '<div class="f"><span class="k2">project</span><span class="v' + (proj ? '' : ' empty') + '">' +
         (proj
-          ? '<span class="jump" data-proj="' + proj.id + '">' + esc(proj.name) + '</span>'
+          ? '<span class="jump" role="button" tabindex="0" data-proj="' + proj.id + '">' +
+            esc(proj.name) + '</span>'
           : 'loose in the app') + '</span></div>' +
       '</div>';
     // Re-filing, the other half of "tickets attached to projects": only offered
@@ -1968,7 +2010,8 @@ export function boardPage(): string {
     if (t.status !== 'cancelled') h += '<button class="btn" data-act="cancel">cancel</button>';
     else h += '<button class="btn" data-act="revive">bring it back</button>';
     h += '</div></div>';
-    h += '<div class="tear"><button class="btn danger" data-act="delete">delete</button></div>';
+    h += '<div class="tear"><button class="btn danger" data-act="delete">' +
+      (armedDelete === t.id ? 'really delete?' : 'delete') + '</button></div>';
     h += '</div></div></div></div>';
 
     $('#plots').innerHTML = h;
@@ -2006,7 +2049,11 @@ export function boardPage(): string {
       try {
         runCache.delete(t.id);
         const res = await api('/api/tickets/' + t.id + '/restart', { method: 'POST', body: '{}' });
+        // Rendered HERE rather than left to refresh(): refresh() skips the
+        // re-render while an editor is open and swallows a failed read, and a
+        // restart whose attach command never appears is a restart you cannot use.
         pendingAttach = { id: t.id, res };
+        go('#/t/' + t.id);
         refresh();
       } catch (e) { toast('could not restart: ' + esc(e.message)); }
     }
@@ -2021,11 +2068,22 @@ export function boardPage(): string {
       refresh();
     }
     if (act === 'delete'){
-      if (b.dataset.armed !== '1'){
-        b.dataset.armed = '1'; b.textContent = 'really delete?';
-        setTimeout(() => { b.dataset.armed = '0'; b.textContent = 'delete'; }, 4000);
+      // Armed in a module variable, not on the button. The button is a node
+      // route() replaces on every SSE tick, so a ticket with a running agent
+      // lost its armed state within the confirm window — the label silently
+      // reverted and delete could never be completed. renderTicket reads this
+      // back, so the confirm survives the redraw that used to eat it.
+      if (armedDelete !== t.id){
+        armedDelete = t.id; b.textContent = 'really delete?';
+        clearTimeout(armTimer);
+        armTimer = setTimeout(() => {
+          armedDelete = null;
+          const again = document.querySelector('.sheet [data-act="delete"]');
+          if (again) again.textContent = 'delete';
+        }, 4000);
         return;
       }
+      clearTimeout(armTimer); armedDelete = null;
       // Out to the board first: the page you are standing on is about to stop
       // having a subject, and route() would bounce you anyway.
       try { await api('/api/tickets/' + t.id, { method: 'DELETE' }); toast('#' + t.id + ' deleted'); go(''); refresh(); }
@@ -2058,6 +2116,11 @@ export function boardPage(): string {
   // breakdowns flashes an empty trace while the list comes back. The "no runs"
   // answer is cached too, or a ticket that has never run re-asks forever.
   const runCache = new Map();     // ticket id -> { at, live, runs, html }
+  // One load per ticket at a time. The chain is 1 + N sqlite-backed requests
+  // and easily outlasts one SSE tick, and until it finishes there is nothing in
+  // the cache to short-circuit the next call — so without this, five ticks into
+  // a four-run ticket there are twenty-five requests in flight for one page.
+  const runInFlight = new Set();
   const RUN_TTL_MS = 10000;
 
   async function loadRuns(ticketId){
@@ -2074,47 +2137,50 @@ export function boardPage(): string {
       const moving = hit.live || S.runs.some((r) => r.ticket_id === ticketId && !r.ended_at);
       if (!moving || Date.now() - hit.at < RUN_TTL_MS) return;
     }
-    let runs;
-    try { runs = (await api('/api/runs?ticket=' + ticketId)).runs || []; }
-    catch (e) {
-      // A ticket with no runs comes back as an empty list, not an error — so
-      // the only things reaching here are a broken store or a dead server.
-      // Swallowing them renders "never run" for "cannot read", which is the
-      // same lie the 503 on /api/state exists to prevent. Only worth saying
-      // once, though: a stale trace is already on screen from the cache.
-      if (!hit) toast('could not read the trace: ' + esc(e.message), 5000);
-      return;
-    }
-    const stale = () => !(view.kind === 'ticket' && view.id === ticketId) || !$('#runs');
-    if (!runs.length){
-      const empty = '<div class="box b3"><div class="nothing">no runs yet' +
-        '<div class="cmd">press s to cut a worktree and start</div></div></div>';
-      runCache.set(ticketId, { at: Date.now(), live: false, runs, html: empty });
-      if (!stale() && $('#runs').innerHTML !== empty) $('#runs').innerHTML = empty;
+    if (runInFlight.has(ticketId)) return;
+    runInFlight.add(ticketId);
+    try {
+      let runs;
+      try { runs = (await api('/api/runs?ticket=' + ticketId)).runs || []; }
+      catch (e) {
+        // A ticket with no runs comes back as an empty list, not an error — so
+        // the only things reaching here are a broken store or a dead server.
+        // Swallowing them renders "never run" for "cannot read", which is the
+        // same lie the 503 on /api/state exists to prevent. Only worth saying
+        // once, though: a stale trace is already on screen from the cache.
+        if (!hit) toast('could not read the trace: ' + esc(e.message), 5000);
+        return;
+      }
+      const here = () => (view.kind === 'ticket' && view.id === ticketId ? $('#runs') : null);
+      if (!runs.length){
+        const empty = '<div class="box b3"><div class="nothing">no runs yet' +
+          '<div class="cmd">press s to cut a worktree and start</div></div></div>';
+        runCache.set(ticketId, { at: Date.now(), live: false, runs, html: empty });
+        const el = here();
+        if (el && el.innerHTML !== empty) el.innerHTML = empty;
+        paintTally(ticketId, runs);
+        return;
+      }
+      // Shells first ONLY when there is nothing cached to lose. On a refresh
+      // the stale trace stands until the new one is complete — painting bare
+      // shells would blank the phase rows every ten seconds and collapse the
+      // page height under whoever is reading them.
+      if (!hit){ const el = here(); if (el) el.innerHTML = runs.map((r) => runShell(r)).join(''); }
+      // Concurrently, not one after another: each of these spawns sqlite behind
+      // the server, and awaiting them in sequence made opening a ticket with
+      // several runs take as long as all of them put together.
+      const bodies = await Promise.all(runs.map(async (r) => {
+        try { const d = await api('/api/run/' + r.run_uid); return phaseBreakdown(d.phases || [], d.totals || {}); }
+        catch { return ''; }
+      }));
+      const html = runs.map((r, i) => runShell(r, bodies[i])).join('');
+      runCache.set(ticketId, { at: Date.now(), live: runs.some((r) => !r.ended_at), runs, html });
+      // The view may have moved on while those were in flight; the cache is
+      // still worth keeping, the paint is not.
+      const el = here();
+      if (el && el.innerHTML !== html) el.innerHTML = html;
       paintTally(ticketId, runs);
-      return;
-    }
-    if (stale()) return;
-    $('#runs').innerHTML = runs.map((r) => runShell(r)).join('');
-    // Concurrently, not one after another: each of these spawns sqlite behind
-    // the server, and awaiting them in sequence made opening a ticket with
-    // several runs take as long as all of them put together.
-    const bodies = await Promise.all(runs.map(async (r) => {
-      try { const d = await api('/api/run/' + r.run_uid); return phaseBreakdown(d.phases || [], d.totals || {}); }
-      catch { return ''; }
-    }));
-    // The view may have moved on while those were in flight; writing into a
-    // detached node is harmless, caching a half-built one is not.
-    if (stale()) return;
-    const box2 = $('#runs');
-    runs.forEach((r, i) => {
-      const el = box2.querySelector('[data-run="' + r.run_uid + '"] .bd');
-      if (el) el.innerHTML = bodies[i];
-    });
-    runCache.set(ticketId, {
-      at: Date.now(), live: runs.some((r) => !r.ended_at), runs, html: box2.innerHTML,
-    });
-    paintTally(ticketId, runs);
+    } finally { runInFlight.delete(ticketId); }
   }
   // The header tally, corrected once every run is known. /api/state's window is
   // bounded, so the first paint can undercount a ticket with a long history.
@@ -2124,7 +2190,7 @@ export function boardPage(): string {
     if (el) el.innerHTML = tallyTime(runs);
   }
 
-  function runShell(r){
+  function runShell(r, body){
     const secs = runSecs(r);
     const live = !r.ended_at;
     const you = r.you_s || 0;
@@ -2138,7 +2204,7 @@ export function boardPage(): string {
       '<span>' + esc(r.skill) + '</span><span>' + esc(r.status) + '</span>' +
       '<span class="tot"' + (live ? ' data-live="dur" data-since="' + esc(r.started_at) + '"' : '') + '>' +
       fmtDur(secs) + '</span>' + split + '</div>' +
-      '<div class="bd"></div></div>';
+      '<div class="bd">' + (body || '') + '</div></div>';
   }
 
   // A stacked bar over the phases in order, then the same numbers as rows.
@@ -2297,11 +2363,21 @@ export function boardPage(): string {
   // ── keyboard ─────────────────────────────────────────────────────────
   document.addEventListener('keydown', (e) => {
     const inPal = $('#palv').classList.contains('on');
-    const typing = e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA');
-    // A focused link owns its own Enter. Without this the board's Enter would
-    // also fire — starting or attaching the ticket behind the link you were
-    // actually trying to follow.
-    const onLink = e.target && typeof e.target.closest === 'function' && e.target.closest('a[href]');
+    // SELECT belongs here with INPUT and TEXTAREA: a native select is TYPED
+    // into — s jumps to the first option starting with s — and without this
+    // that keystroke also started the ticket, while ArrowDown/Up were
+    // preventDefault-ed out from under the dropdown so it could not be
+    // navigated by keyboard at all.
+    const typing = e.target &&
+      (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT');
+    // A focused CONTROL owns its own Enter and Space — a link, a button, or
+    // anything wearing role="button". Without this the global handler fires as
+    // well: following a link would also start the ticket behind it, and on a
+    // ticket page — where the page itself is the selection, so selectedTicket()
+    // is never null — activating any button in the stub by keyboard would ALSO
+    // cut a worktree and spawn a session.
+    const onCtl = e.target && typeof e.target.closest === 'function' &&
+      e.target.closest('a[href],button,[role="button"]');
 
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k'){ e.preventDefault(); inPal ? closeAll() : palOpen(); return; }
     if (e.key === 'Escape'){
@@ -2323,7 +2399,7 @@ export function boardPage(): string {
       return;
     }
     if (typing) return;
-    if (onLink && (e.key === 'Enter' || e.key === ' ')) return;
+    if (onCtl && (e.key === 'Enter' || e.key === ' ')) return;
 
     const t = selectedTicket();
     switch (e.key){
@@ -2352,7 +2428,7 @@ export function boardPage(): string {
       //
       // help and pace have no description behind them, and focusing a textarea
       // underneath one of those puts every keystroke somewhere invisible AND
-      // stops refresh() re-rendering, since isEditing() then reports true.
+      // stops refresh() re-rendering, since isBusy() then reports true.
       case 'e': {
         if (['helpv', 'pacev'].some((id) => $('#' + id).classList.contains('on'))) break;
         const opened = startEdit($('#pagedesc'), $('#pagedescedit'));
