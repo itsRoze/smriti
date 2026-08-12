@@ -12,7 +12,7 @@
 #   smriti ticket cancel <id>                 park it out of the way, reversibly
 #   smriti ticket rm <id> [--yes]             delete it and its document rows
 #   smriti ticket pr <id> <url>               record the PR and move to in_review
-#   smriti ticket status <id> <status>        idea|ready|in_progress|in_review|shipped
+#   smriti ticket status <id> <status>        idea|ready|in_progress|in_review|shipped|cancelled
 #   smriti ticket done <id>                   shorthand for `status <id> shipped`
 #   smriti ticket doc <id|-> --type T --path P [--branch B]
 #   smriti ticket docs [--json]               the whole document index
@@ -72,7 +72,7 @@ usage:
   smriti ticket cancel <id>
   smriti ticket rm <id> [--yes]
   smriti ticket pr <id> <url>
-  smriti ticket status <id> <idea|ready|in_progress|in_review|shipped>
+  smriti ticket status <id> <idea|ready|in_progress|in_review|shipped|cancelled>
   smriti ticket done <id>
   smriti ticket doc <id|-> --type <plan|debug|design|audit> --path P [--branch B]
   smriti ticket docs [--json]
@@ -490,30 +490,66 @@ cmd_edit() {
   # points into the OLD app's repo, and `start` would happily reattach that
   # tree under the new slug. Refuse, and say which branch is in the way.
   local move_repo=0 new_repo="" project_sql=""
-  if [ "$project_given" -eq 1 ]; then
-    local pid; pid=$(resolve_project_ref "$project" "$([ "$repo_given" -eq 1 ] && printf '%s' "$repo" || current_slug)")
-    project_sql="$pid"
-    # Filing into a project settles the app too — a ticket cannot sit in a
-    # project belonging to a different app than its own.
-    if [ "$repo_given" -eq 0 ]; then
-      new_repo=$(repo_of_project "$pid"); move_repo=1
-    fi
-  elif [ "$no_project" -eq 1 ]; then
-    project_sql="NULL"
+  local cur_repo="" cur_wt="" cur_branch="" cur_pid=""
+  # Read once, for everything below: the destination check, the started-ticket
+  # refusal and the stranded-project sweep all want the same row. Skipped
+  # entirely for an edit that only touches the title or body.
+  if [ "$repo_given" -eq 1 ] || [ "$project_given" -eq 1 ] || [ "$no_project" -eq 1 ]; then
+    db_fields "SELECT coalesce(repo_slug,'')     FROM tickets WHERE id = $id;
+               SELECT coalesce(worktree_path,'') FROM tickets WHERE id = $id;
+               SELECT coalesce(branch,'')        FROM tickets WHERE id = $id;
+               SELECT coalesce(project_id,'')    FROM tickets WHERE id = $id;"
+    cur_repo="${DB_FIELDS[0]}"; cur_wt="${DB_FIELDS[1]}"; cur_branch="${DB_FIELDS[2]}"
+    cur_pid="${DB_FIELDS[3]}"
   fi
   if [ "$repo_given" -eq 1 ]; then
     if [ "$repo" = "-" ]; then new_repo=""; else new_repo=$(resolve_repo "$repo"); fi
     move_repo=1
   fi
+  if [ "$project_given" -eq 1 ]; then
+    # A slug is only unique within an app, so it is resolved against the app
+    # this ticket will END UP in: the one --repo names, or the one it already
+    # has. Only a ticket with no app falls back to the app you are standing in,
+    # which is what lets a freshly captured idea be filed by slug from inside
+    # the repo it belongs to. Scoping to the shell instead meant that running
+    # this from a different app silently RELOCATED the ticket whenever the two
+    # apps happened to share a project slug. Moving between apps is what --repo
+    # is for, and naming it gets the destination check below.
+    local scope
+    if [ "$move_repo" -eq 1 ]; then scope="$new_repo"
+    elif [ -n "$cur_repo" ];  then scope="$cur_repo"
+    else scope=$(current_slug); fi
+    local pid; pid=$(resolve_project_ref "$project" "$scope")
+    project_sql="$pid"
+    local p_repo; p_repo=$(repo_of_project "$pid")
+    if [ "$move_repo" -eq 1 ]; then
+      # Both halves given and disagreeing is a contradiction in one command,
+      # not something to guess at. A bare numeric --project skips the slug
+      # scoping above entirely, so this is the only thing standing between
+      # `--repo a --project <id-in-b>` and a ticket filed across apps.
+      [ "$p_repo" = "$new_repo" ] || \
+        die "project '$project' lives in ${p_repo:-no app}, not ${new_repo:-no app} — a ticket cannot sit in a project belonging to another app"
+    else
+      # Filing into a project settles the app too — a ticket cannot sit in a
+      # project belonging to a different app than its own.
+      new_repo="$p_repo"; move_repo=1
+    fi
+  elif [ "$no_project" -eq 1 ]; then
+    project_sql="NULL"
+  fi
 
   if [ "$move_repo" -eq 1 ]; then
-    local cur_repo cur_wt cur_branch
-    db_fields "SELECT coalesce(repo_slug,'')     FROM tickets WHERE id = $id;
-               SELECT coalesce(worktree_path,'') FROM tickets WHERE id = $id;
-               SELECT coalesce(branch,'')        FROM tickets WHERE id = $id;"
-    cur_repo="${DB_FIELDS[0]}"; cur_wt="${DB_FIELDS[1]}"; cur_branch="${DB_FIELDS[2]}"
     if [ "$cur_repo" != "$new_repo" ] && { [ -n "$cur_wt" ] || [ -n "$cur_branch" ]; }; then
       die "#$id is started on '$cur_branch' in ${cur_repo:-no app} — its worktree lives there. Finish or cancel it before moving it to another app"
+    fi
+    # Moving apps strands any project from the OLD one: the ticket ends up
+    # filed in a project belonging somewhere else, which every later read then
+    # has to defend against. The move settles it — that project is not a
+    # project of this app. Only when the caller did not name a project itself;
+    # an explicit --project has already been checked against the destination.
+    if [ "$cur_repo" != "$new_repo" ] && [ -z "$project_sql" ] && [ -n "$cur_pid" ] &&
+       [ "$(repo_of_project "$cur_pid")" != "$new_repo" ]; then
+      project_sql="NULL"
     fi
     sets="$sets repo_slug = $(sql_quote_or_null "$new_repo"),"
   fi

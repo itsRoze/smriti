@@ -355,7 +355,13 @@ describe('board UI', () => {
       const labels = await page.locator('.stub .f .k2').allInnerTexts();
       expect(labels).toEqual(['APP', 'PROJECT']);
       expect(await page.locator('.stub .f .v.empty').count()).toBe(1);
-      expect(await page.locator('.stub .f .v').first().innerText()).toBe('test-demo');
+      // The value carries a ↗ that opens the app page — the click that used to
+      // be the whole row, moved aside so the row itself can edit.
+      expect(await page.locator('.stub .f .v').first().innerText()).toContain('test-demo');
+      // Both rows are writable, and each names the key that opens its picker.
+      expect(await page.locator('.stub .f[data-field="app"]').getAttribute('data-k')).toBe('a');
+      expect(await page.locator('.stub .f[data-field="project"]').getAttribute('data-k')).toBe('f');
+      expect(await page.locator('.stub .head[data-field="status"]').getAttribute('data-k')).toBe('x');
       expect(errors).toEqual([]);
     } finally { await context.close(); }
   }, T);
@@ -425,23 +431,26 @@ describe('board UI', () => {
     } finally { await context.close(); }
   }, T);
 
-  it('typing into the re-file select does not start or finish the ticket', async () => {
+  it('typing into a picker does not start or finish the ticket', async () => {
     if (!HAS_CHROMIUM) return;
+    // The re-file <select> this replaced was typed into — s jumped to an
+    // option beginning with s, and those keystrokes reached the board's own
+    // s and d. The picker's query input is the control that took its place.
     const { context, page, errors } = await open();
     try {
       let hits = 0;
       await page.route('**/api/tickets/*/start', (route) => { hits++; route.abort(); });
       await page.route('**/api/tickets/*/done', (route) => { hits++; route.abort(); });
       await page.goto(url.split('?')[0] + '#/t/' + idOf('index the corpus'), { waitUntil: 'domcontentloaded' });
-      await page.waitForSelector('#refile');
+      await page.waitForSelector('.stub .f[data-field="project"]');
 
-      // A native select is typed into: s jumps to an option beginning with s.
-      // Those keystrokes used to reach the board's own s and d.
-      await page.locator('#refile').focus();
+      await page.locator('.stub .f[data-field="project"]').click();
+      await page.waitForSelector('#palv.on');
       await page.keyboard.press('s');
       await page.keyboard.press('d');
       await page.waitForTimeout(400);
       expect(hits).toBe(0);
+      expect(await page.locator('#palv.on').count()).toBe(1);
       expect(errors).toEqual([]);
     } finally { await context.close(); }
   }, T);
@@ -527,6 +536,181 @@ describe('board UI', () => {
       expect(await page.locator('.runs .nothing').count()).toBe(1);
       expect(errors).toEqual([]);
     } finally { await context.close(); }
+  }, T);
+
+  // ── the stub's fields as a control surface (T20) ───────────────────────
+
+  const ticketPage = async (page: import('playwright').Page, id: string | number) => {
+    await page.goto(url.split('?')[0] + '#/t/' + id, { waitUntil: 'domcontentloaded' });
+    await page.waitForSelector('.stub');
+  };
+
+  it('a captured idea with no app is filed from the board, app and all', async () => {
+    if (!HAS_CHROMIUM) return;
+    // The motivating case: `smriti ticket add` works from anywhere, so an idea
+    // arrives with no app and no project and could only be filed from a
+    // terminal. Picking a project settles the app too, because a project
+    // belongs to exactly one.
+    const id = idOf('an idea with no app');
+    const { context, page, errors } = await open();
+    try {
+      await ticketPage(page, id);
+      expect(await page.locator('.stub .f[data-field="app"]').innerText()).toContain('no app yet');
+
+      await page.locator('.stub .f[data-field="project"]').click();
+      await page.waitForSelector('#palv.on');
+      // It has no app, so every app's projects are on offer and grouped by app.
+      expect(await page.locator('#palopts .grp').count()).toBeGreaterThan(0);
+      await page.locator('#palopts .o:has-text("Search v2")').click();
+
+      await page.waitForSelector('.stub .f[data-field="project"]:has-text("Search v2")');
+      // ...and it is really in the store, not just on screen.
+      const t = (JSON.parse(run(TICKET, ['list', '--all', '--json'], appDir).stdout) as any[])
+        .find((x) => String(x.id) === id);
+      expect(t.project_ref).toBe('search-v2');
+      expect(t.repo_slug).toBe('test-demo');
+      expect(errors).toEqual([]);
+    } finally {
+      run(TICKET, ['edit', id, '--repo', '-'], appDir);
+      await context.close();
+    }
+  }, T);
+
+  it('the status picker offers all six, cancelled included, and lands', async () => {
+    if (!HAS_CHROMIUM) return;
+    // The ticket that asked for this said five; the CLI has always taken six,
+    // and only its usage string disagreed.
+    const { context, page, errors } = await open();
+    try {
+      await ticketPage(page, MD_TICKET);
+      await page.keyboard.press('x');
+      await page.waitForSelector('#palv.on');
+      const rows = await page.locator('#palopts .o span:first-child').allInnerTexts();
+      expect(rows).toEqual(['idea', 'ready', 'building', 'in review', 'shipped', 'cancelled']);
+      // The row you are on says so instead of repeating the word.
+      expect(await page.locator('#palopts .o:has-text("ready") .r').first().innerText()).toBe('current');
+
+      await page.locator('#palopts .o:has-text("cancelled")').click();
+      await page.waitForSelector('.stub .stamp.big:has-text("CANCELLED")');
+      const t = (JSON.parse(run(TICKET, ['list', '--all', '--json'], appDir).stdout) as any[])
+        .find((x) => x.id === MD_TICKET);
+      expect(t.status).toBe('cancelled');
+      expect(errors).toEqual([]);
+    } finally {
+      run(TICKET, ['status', String(MD_TICKET), 'ready'], appDir);
+      await context.close();
+    }
+  }, T);
+
+  it('a started ticket says what holds its app instead of offering a picker', async () => {
+    if (!HAS_CHROMIUM) return;
+    // Its worktree lives inside the app's tree, so bin/smriti-ticket refuses
+    // the move. A picker that failed on submit would be the wrong half of that.
+    // Its own fixture, torn down here, so the shared board is not left with an
+    // extra in_progress ticket for every test after this one.
+    spawnSync('git', ['add', '-A'], { cwd: appDir });
+    spawnSync('git', ['-c', 'user.email=t@smriti.local', '-c', 'user.name=t',
+      'commit', '-q', '-m', 'seed'], { cwd: appDir });
+    must(run(TICKET, ['add', 'held by its worktree', '--ready'], appDir), 'add held');
+    const held = idOf('held by its worktree');
+    const cleanup = () => {
+      const wt = JSON.parse(run(TICKET, ['list', '--all', '--json'], appDir).stdout)
+        .find((t: any) => String(t.id) === held)?.worktree_path;
+      if (wt) spawnSync('git', ['worktree', 'remove', '--force', wt], { cwd: appDir });
+      run(TICKET, ['rm', held, '--yes'], appDir);
+    };
+    let context: import('playwright').BrowserContext | null = null;
+    try {
+      must(run(TICKET, ['start', held], appDir), 'start held');
+      const opened = await open();
+      context = opened.context;
+      const { page, errors } = opened;
+      await ticketPage(page, held);
+
+      // No control on the app row, and the branch named as the reason.
+      expect(await page.locator('.stub .f[data-field="app"]').count()).toBe(0);
+      expect(await page.locator('.stub .f .held').innerText()).toContain('t' + held + '-');
+      // The key does nothing either — the lock is not just a missing target.
+      await page.keyboard.press('a');
+      expect(await page.locator('#palv.on').count()).toBe(0);
+      // ...while the project row stays editable: only the APP cannot move,
+      // because only the APP is where the worktree lives.
+      expect(await page.locator('.stub .f[data-field="project"]').count()).toBe(1);
+      expect(errors).toEqual([]);
+    } finally {
+      await context?.close();
+      cleanup();
+    }
+  }, T);
+
+  it('a modifier key belongs to the browser, not the board', async () => {
+    if (!HAS_CHROMIUM) return;
+    // a / f / x preventDefault, so without this guard the ticket page — the
+    // one surface with prose on it — swallowed find and select-all.
+    const { context, page, errors } = await open();
+    try {
+      await ticketPage(page, MD_TICKET);
+      for (const combo of ['Meta+f', 'Meta+a', 'Meta+x', 'Control+f']) {
+        await page.keyboard.press(combo);
+        expect(await page.locator('#palv.on').count()).toBe(0);
+      }
+      // ...and the bare key still works.
+      await page.keyboard.press('f');
+      await page.waitForSelector('#palv.on');
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+
+  it('finished work cannot be started or re-shipped from the keyboard', async () => {
+    if (!HAS_CHROMIUM) return;
+    // The buttons carried these guards and the buttons are gone; a ticket page
+    // is its own selection, so the keys always resolve — the guards moved onto
+    // the actions.
+    const shipped = idOf('the old importer');
+    const { context, page } = await open();
+    try {
+      await ticketPage(page, shipped);
+      const before = JSON.parse(run(TICKET, ['list', '--all', '--json'], appDir).stdout)
+        .find((t: any) => String(t.id) === shipped).updated_at;
+      await page.keyboard.press('Enter');   // would cut a worktree
+      await page.keyboard.press('d');       // would re-ship
+      await page.waitForTimeout(500);
+      const after = JSON.parse(run(TICKET, ['list', '--all', '--json'], appDir).stdout)
+        .find((t: any) => String(t.id) === shipped);
+      expect(after.updated_at).toBe(before);
+      expect(after.branch).toBeNull();
+    } finally { await context.close(); }
+  }, T);
+
+  it('a refusal reads as a sentence, not as raw JSON', async () => {
+    if (!HAS_CHROMIUM) return;
+    // The whole chain: CLI die() → stderr → {error} → api() → toast. Before
+    // this the toast showed the transport around the sentence, not the
+    // sentence: could not save: {"error":"smriti-ticket: no ticket #7"}.
+    must(run(TICKET, ['add', 'about to vanish', '--ready'], appDir), 'add doomed');
+    const doomed = idOf('about to vanish');
+    const { context, page } = await open();
+    try {
+      await ticketPage(page, doomed);
+      // Open the picker BEFORE deleting: its rows captured the id when they
+      // were built, so the click below does not depend on the page still
+      // knowing about a ticket the store has dropped.
+      await page.keyboard.press('x');
+      await page.waitForSelector('#palv.on');
+      run(TICKET, ['rm', doomed, '--yes'], appDir);
+      await page.locator('#palopts .o:has-text("shipped")').click();
+
+      await page.waitForSelector('#toast.on');
+      const said = await page.locator('#toast').innerText();
+      expect(said).toContain('no ticket #' + doomed);
+      expect(said).not.toContain('{');
+      expect(said).not.toContain('smriti-ticket:');
+      // errors is not asserted empty here: the 500 this deliberately provokes
+      // is logged by the browser as a failed resource load.
+    } finally {
+      run(TICKET, ['rm', doomed, '--yes'], appDir);
+      await context.close();
+    }
   }, T);
 
   it('a link in the body opens instead of dropping you into the editor', async () => {
