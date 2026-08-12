@@ -246,9 +246,16 @@ function herdrSessions(): Session[] {
 // the launch failed and the board fell back to a paste command, telling you to
 // run claude by hand for a session that was already open.
 //
-// Matched on the worktree path first, for the name-loss reason above.
-function existingAgent(name: string, dir?: string): { found: boolean; status?: string; name?: string; pane?: string } {
-  const hit = herdrSessions().find((s) => (dir && s.cwd === dir) || (s.name && s.name === name));
+// Matched on the worktree path, and ONLY on it. This used to also match herdr's
+// agent name (`t<id>`), which is machine-global: a `t7` belonging to some other
+// checkout answered for this ticket's, and that is how a test fixture came to
+// adopt a live session during ticket 3. Every caller passes `dir`, so a
+// name-only hit is by definition a session in a DIFFERENT directory — never the
+// one being looked for. It was never a fallback, either: the old predicate was
+// one `.find()` with an OR, so whichever session herdr happened to list first
+// won, and a name match could beat the cwd match the comment claimed to prefer.
+function existingAgent(dir?: string): { found: boolean; status?: string; name?: string; pane?: string } {
+  const hit = herdrSessions().find((s) => dir && s.cwd === dir);
   return hit ? { found: true, status: hit.status, name: hit.name, pane: hit.pane } : { found: false };
 }
 
@@ -372,6 +379,106 @@ async function closeOnShipEnabled(): Promise<boolean> {
 const closeGaveUp = new Set<string>();
 let sweeping = false;
 
+// Tickets with a restart in flight. See the restart route for why.
+const restarting = new Set<number>();
+
+// Which run owns a pane, matched on the pane and nothing else.
+//
+// Deliberately strict. A ticket accumulates a run per restart, so "the ticket's
+// newest run" can name a run that was never in this pane at all, and filing one
+// pane's terminal under another run's report is worse than filing it nowhere.
+// The sweep keeps its own newest-run fallback (below) because it has already
+// tied the session to the ticket by cwd before it gets there; nothing else may
+// borrow that fallback.
+async function runForPaneStrict(ticketId: number, pane: string): Promise<RunRow | undefined> {
+  const forTicket = (await readJsonAsync<RunRow[]>(['list', '--ticket', String(ticketId), '--json'], TRACE)) ?? [];
+  return forTicket.find((r) => r.herdr_pane && r.herdr_pane === pane);
+}
+
+// Half of the invariant: get the run's closing text stored, by whatever means.
+// Separate from the close so the sweep's opt-out can take this without the
+// other — see its call site for why capture is unconditional and only closing
+// is optional.
+//
+// A run we have no row for cannot be captured into anything. That is not a
+// failure to report: a session restarted before /begin ever called `trace start`
+// has printed a few seconds of boot and nothing worth keeping.
+async function capturePaneReport(pane: string, run: RunRow | undefined): Promise<boolean> {
+  if (!run) return false;
+
+  const arts = (await readJsonAsync<ArtifactRow[]>(
+    ['artifacts', '--run', run.run_uid, '--kind', 'report', '--json'], TRACE)) ?? [];
+  // A row is not a capture — a row with something in it is. `trace report`
+  // refuses to store an empty body, but a `path`-only artifact is legitimate
+  // and older rows predate that rule.
+  if (arts.some((a) => (a.body && a.body.trim()) || a.path)) return true;
+
+  const read = await shOut('herdr',
+    ['pane', 'read', pane, '--source', 'recent-unwrapped', '--lines', '200', '--format', 'text'], 10000);
+  const text = read.ok ? read.out.trim() : '';
+  if (!text) return false;
+
+  // `--source pane` will decline rather than overwrite if the run wrote its own
+  // report in the moments since the read above.
+  return shIn(TRACE, ['report', '--run', run.run_uid, '--source', 'pane'], text + '\n', 10000);
+}
+
+// The invariant, in the one place panes are closed: nothing is closed that has
+// not first been captured.
+//
+// `closeWhenUncaptured` is the only thing the two callers disagree about, and
+// the disagreement is deliberate rather than an oversight:
+//
+//   - The SWEEP passes false. It is a timer nobody asked for, so when it cannot
+//     capture it must not destroy — it leaves the pane open and yours to deal
+//     with. Losing the only copy of what a run said is the bug this exists to
+//     prevent.
+//   - RESTART passes true. You asked for the session to be replaced, and
+//     refusing would leave you holding the broken session you were trying to be
+//     rid of. Leaving the old pane open and starting beside it is not an option:
+//     launchSession reopens the same worktree pane, finds the old claude still
+//     in it, and `agent start` is refused as agent_pane_busy until the retry
+//     loop degrades to a pasted command.
+//
+// The window where those differ is narrower than it reads. A pane that is
+// already gone fails the read and no-ops the close, so nothing is lost; a wedged
+// herdr fails both.
+//
+// Session state is the CALLER'S precondition and is not policed here. The sweep
+// only ever calls this for `idle`/`done`; restart calls it for whatever is
+// there, usually `working`. Reads are not refused while an agent works —
+// verified against a live `working` agent on all four --source modes — so a
+// working pane captures its viewport the same way an idle one does.
+async function captureThenClose(
+  pane: string,
+  run: RunRow | undefined,
+  opts: { closeWhenUncaptured: boolean },
+): Promise<{ captured: boolean; closed: boolean }> {
+  const captured = await capturePaneReport(pane, run);
+
+  if (!captured && !opts.closeWhenUncaptured) return { captured: false, closed: false };
+
+  // herdr 0.8 has no `agent stop`; closing the pane is what ends a session.
+  if (!await shAsync('herdr', ['pane', 'close', pane], 10000)) return { captured, closed: false };
+
+  // A run whose pane we just closed never reached its own `trace end`, and the
+  // process that would have called it has just been killed — so without this it
+  // stays `running` forever, ticking a live duration on the board for a session
+  // that no longer exists, with that time booked against you. Only when still
+  // open: `trace end` rewrites ended_at unconditionally, so re-ending a finished
+  // run would silently restate how long it took.
+  //
+  // `failed` rather than `done` because it did not finish — the sweep got here
+  // by scraping a run that died before Gate 3, and restart got here because you
+  // discarded one. `done` would be a lie in both cases, and they are the only
+  // two honest terminal statuses there are.
+  if (run && (run.status === 'running' || run.status === 'awaiting')) {
+    await shAsync(TRACE, ['end', '--run', run.run_uid, '--status', 'failed'], 5000);
+  }
+
+  return { captured, closed: true };
+}
+
 async function sweepShippedSessions(): Promise<void> {
   // A slow herdr must not let sweeps stack on top of each other.
   if (sweeping) return;
@@ -448,50 +555,24 @@ async function sweepShippedSessions(): Promise<void> {
       }
       if (!run) continue;
 
-      const arts = (await readJsonAsync<ArtifactRow[]>(
-        ['artifacts', '--run', run.run_uid, '--kind', 'report', '--json'], TRACE)) ?? [];
-      // A row is not a capture — a row with something in it is. `trace report`
-      // refuses to store an empty body, but a `path`-only artifact is legitimate
-      // and older rows predate that rule.
-      let captured = arts.some((a) => (a.body && a.body.trim()) || a.path);
-
-      if (!captured) {
-        const read = await shOut('herdr',
-          ['pane', 'read', sess.pane, '--source', 'recent-unwrapped', '--lines', '200', '--format', 'text'], 10000);
-        const text = read.ok ? read.out.trim() : '';
-        if (text) {
-          // `--source pane` will decline rather than overwrite if the run wrote
-          // its own report in the moments since the read above.
-          captured = await shIn(TRACE, ['report', '--run', run.run_uid, '--source', 'pane'], text + '\n', 10000);
-        }
-      }
-
-      if (!captured) {
-        // Leave it open rather than closing blind. Losing the only copy of what
-        // the run said is the bug this feature exists to prevent, so an
-        // uncapturable pane stays visible and yours to deal with.
-        closeGaveUp.add(sess.pane);
+      // Capture is unconditional and only the closing is optional. Opting out
+      // means you want the panes kept, not that you want the record given up —
+      // and a pane you close by hand later must not take the summary with it.
+      // So the opt-out takes capturePaneReport alone rather than skipping the
+      // whole step.
+      if (!(await closeOnShipEnabled())) {
+        if (!await capturePaneReport(sess.pane, run)) closeGaveUp.add(sess.pane);
         continue;
       }
 
-      // Gated HERE, not at the top of the sweep: capture is unconditional and
-      // only the closing is optional. Opting out means you want the panes kept,
-      // not that you want the record given up — and a pane you close by hand
-      // later must not take the summary with it.
-      if (!(await closeOnShipEnabled())) continue;
+      // false: an uncapturable pane stays open and visible, because losing the
+      // only copy of what the run said is the bug this exists to prevent. See
+      // the helper for why restart is allowed the opposite.
+      const { captured, closed } = await captureThenClose(sess.pane, run, { closeWhenUncaptured: false });
 
-      // herdr 0.8 has no `agent stop`; closing the pane is what ends a session.
-      if (!await shAsync('herdr', ['pane', 'close', sess.pane], 10000)) { closeGaveUp.add(sess.pane); continue; }
-
-      // A run we had to scrape never reached its own `trace end`, and the
-      // process that would have called it has just been killed — so without
-      // this it stays `running` forever, ticking a live duration on the board
-      // for a session that no longer exists. Only when still open: `trace end`
-      // rewrites ended_at unconditionally, so re-ending a finished run would
-      // silently restate how long it took.
-      if (run.status === 'running' || run.status === 'awaiting') {
-        await shAsync(TRACE, ['end', '--run', run.run_uid, '--status', 'failed'], 5000);
-      }
+      // Whether the read failed or the close did, this pane is not worth
+      // retrying every ten seconds for the life of the process.
+      if (!captured || !closed) closeGaveUp.add(sess.pane);
     }
   } catch {
     // A sweep is housekeeping. It must never be able to take the board down.
@@ -510,7 +591,7 @@ function launchSession(dir: string, ticketId: number, force = false): Launch {
 
   // Already running (or already run) — hand back the way in rather than
   // starting a duplicate.
-  const prior = force ? { found: false as const } : existingAgent(name, dir);
+  const prior = force ? { found: false as const } : existingAgent(dir);
   if (prior.found) {
     const target = prior.name || name;
     return { method: 'herdr', attach: `herdr agent attach ${target}`, existing: true, agentStatus: prior.status };
@@ -879,31 +960,52 @@ async function cmdServer(): Promise<never> {
         return json({ path: dir, ...launch });
       }
 
-      // Explicitly replace a session: close the old pane, then start fresh.
+      // Explicitly replace a session: capture what it said, close the old pane,
+      // then start fresh.
       const restart = url.pathname.match(/^\/api\/tickets\/(\d+)\/restart$/);
       if (restart && req.method === 'POST') {
         touch();
         const id = Number(restart[1]);
-        // `start` is idempotent and reports the existing worktree, which is how
-        // we find the old session — it is the pane whose cwd is this worktree.
-        const r = sh(TICKET, ['start', String(id)], 30000);
-        if (!r.ok) return json({ error: r.errOut || 'could not restart' }, 500);
-        const dir = r.out.split('\n')[0].trim();
-        // herdr 0.8 has no `agent stop`. Closing the pane is what actually ends
-        // the session: renaming the agent only frees the name, and the old claude
-        // would still be sitting in that pane, so the new `agent start` would be
-        // refused as agent_pane_busy forever. A restart replaces the session, so
-        // losing the old pane is the point rather than a cost.
-        const old = existingAgent(`t${id}`, dir);
-        if (old.found && old.pane && Bun.which('herdr')) {
-          sh('herdr', ['pane', 'close', old.pane], 10000);
-          Bun.sleepSync(500);
+        // One restart per ticket at a time. This route destroys a pane and then
+        // starts a replacement, so two of them interleaved start two sessions
+        // against one closed pane. It was a narrow race while the whole thing
+        // was synchronous; capturing first makes it slower and reachable.
+        if (restarting.has(id)) return json({ error: 'a restart is already in flight' }, 409);
+        restarting.add(id);
+        try {
+          // `start` is idempotent and reports the existing worktree, which is how
+          // we find the old session — it is the pane whose cwd is this worktree.
+          const r = sh(TICKET, ['start', String(id)], 30000);
+          if (!r.ok) return json({ error: r.errOut || 'could not restart' }, 500);
+          const dir = r.out.split('\n')[0].trim();
+          // herdr 0.8 has no `agent stop`. Closing the pane is what actually ends
+          // the session: renaming the agent only frees the name, and the old claude
+          // would still be sitting in that pane, so the new `agent start` would be
+          // refused as agent_pane_busy forever. A restart replaces the session, so
+          // losing the old pane is the point rather than a cost.
+          //
+          // But not before reading it. This is the action you reach for when a
+          // run has gone wrong, which is exactly when what it printed is worth
+          // keeping — and until this existed, restart was the one place that
+          // destroyed it. `true`: unlike the sweep, a pane we could not capture
+          // is still closed, because you asked for this session to be replaced
+          // and refusing would leave you holding the broken one.
+          const old = existingAgent(dir);
+          if (old.found && old.pane && Bun.which('herdr')) {
+            await captureThenClose(old.pane, await runForPaneStrict(id, old.pane), { closeWhenUncaptured: true });
+            // The closed session can still be listed for a moment, and
+            // launchSession's own force flag covers that — but agent start is
+            // refused as agent_pane_busy until herdr lets go of the pane.
+            await Bun.sleep(500);
+          }
+          // force: the session we just closed can still be listed for a moment,
+          // and matching on cwd would otherwise make restart a no-op.
+          const launch = launchSession(dir, id, true);
+          broadcast();
+          return json({ path: dir, ...launch });
+        } finally {
+          restarting.delete(id);
         }
-        // force: the session we just closed can still be listed for a moment,
-        // and matching on cwd would otherwise make restart a no-op.
-        const launch = launchSession(dir, id, true);
-        broadcast();
-        return json({ path: dir, ...launch });
       }
 
       const edit = url.pathname.match(/^\/api\/tickets\/(\d+)$/);
