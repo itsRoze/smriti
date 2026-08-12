@@ -121,14 +121,24 @@ function readJsonCmd<T>(args: string[], from = TICKET): T[] | null {
 // the child runs — this file already says so about `shAsync` — and a trace read
 // spawns sqlite3, so the timing routes must not use it: opening a ticket with
 // twenty runs would otherwise stall SSE, /api/ping and every other tab.
-async function shOut(bin: string, args: string[], timeoutMs = 15000): Promise<{ ok: boolean; out: string }> {
-  const p = Bun.spawn([bin, ...args], { stdout: 'pipe', stderr: 'ignore' });
+// `errOut` is captured so a route can report WHY a CLI refused, the way the
+// blocking `sh` above always could. Draining both pipes concurrently rather
+// than in sequence: a child that fills the pipe we are not reading blocks on
+// the write and never exits, and the kill timer would be the only thing ending
+// it.
+async function shOut(
+  bin: string, args: string[], timeoutMs = 15000,
+): Promise<{ ok: boolean; out: string; errOut: string }> {
+  const p = Bun.spawn([bin, ...args], { stdout: 'pipe', stderr: 'pipe' });
   const killer = setTimeout(() => p.kill(), timeoutMs);
   try {
-    const out = await new Response(p.stdout).text();
-    return { ok: (await p.exited) === 0, out: out.trim() };
+    const [out, errOut] = await Promise.all([
+      new Response(p.stdout).text(),
+      new Response(p.stderr).text(),
+    ]);
+    return { ok: (await p.exited) === 0, out: out.trim(), errOut: errOut.trim() };
   } catch {
-    return { ok: false, out: '' };
+    return { ok: false, out: '', errOut: '' };
   } finally {
     clearTimeout(killer);
   }
@@ -1013,7 +1023,7 @@ async function cmdServer(): Promise<never> {
           // `start` is idempotent and reports the existing worktree, which is how
           // we find the old session — it is the pane whose cwd is this worktree.
           const r = await shOut(TICKET, ['start', String(id)], 30000);
-          if (!r.ok) return json({ error: 'could not restart' }, 500);
+          if (!r.ok) return json({ error: r.errOut || 'could not restart' }, 500);
           const dir = r.out.split('\n')[0].trim();
           // The worktree is the only thing this route matches a session on, so
           // an empty one does not mean "no session" — it means we do not know,
