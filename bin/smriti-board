@@ -254,9 +254,23 @@ function herdrSessions(): Session[] {
 // one being looked for. It was never a fallback, either: the old predicate was
 // one `.find()` with an OR, so whichever session herdr happened to list first
 // won, and a name match could beat the cwd match the comment claimed to prefer.
-function existingAgent(dir?: string): { found: boolean; status?: string; name?: string; pane?: string } {
-  const hit = herdrSessions().find((s) => dir && s.cwd === dir);
+type AgentHit = { found: boolean; status?: string; name?: string; pane?: string };
+const matchAgent = (sessions: Session[], dir: string): AgentHit => {
+  const hit = dir ? sessions.find((s) => s.cwd === dir) : undefined;
   return hit ? { found: true, status: hit.status, name: hit.name, pane: hit.pane } : { found: false };
+};
+// `dir` is required rather than optional now that it is the ONLY thing matched
+// on: an absent one used to mean "match by name instead", and left behind it
+// would silently mean "no session exists" for every caller that failed to
+// resolve a worktree.
+function existingAgent(dir: string): AgentHit {
+  return matchAgent(herdrSessions(), dir);
+}
+// The non-blocking twin, for request paths. spawnSync inside a route freezes
+// every other request, which this file says twice about other calls and is
+// no less true of `herdr agent list`.
+async function existingAgentAsync(dir: string): Promise<AgentHit> {
+  return matchAgent(await herdrSessionsAsync(), dir);
 }
 
 // Default is `bypass` (--dangerously-skip-permissions), because the whole point
@@ -362,7 +376,13 @@ async function deliverPrompt(pane: string, prompt: string): Promise<boolean> {
 // `pane read --lines 2000` returns exactly what `--lines 55` does, silently.
 // That limit is the whole reason the run writes its own report rather than
 // being photographed.
-type ArtifactRow = { run_uid: string; kind: string; source?: string; status?: string | null; body?: string | null };
+// `path` is load-bearing, not decoration: a path-only artifact counts as a
+// capture, so leaving it off the type made the rule invisible to every reader
+// and to tsc, which had nothing to check the `a.path` branch against.
+type ArtifactRow = {
+  run_uid: string; kind: string; source?: string; status?: string | null;
+  body?: string | null; path?: string | null;
+};
 type RunRow = { run_uid: string; ticket_id?: number | null; status?: string; herdr_pane?: string | null };
 type ShipTicket = { id: number; status: string; worktree_path?: string | null };
 
@@ -379,20 +399,33 @@ async function closeOnShipEnabled(): Promise<boolean> {
 const closeGaveUp = new Set<string>();
 let sweeping = false;
 
-// Tickets with a restart in flight. See the restart route for why.
-const restarting = new Set<number>();
+// Tickets whose session is mid-change. Restart closes a pane and then starts a
+// replacement, and between those two the ticket has no live session at all —
+// so a second restart, or a `start` arriving in the gap, would launch against a
+// pane the first one is still working on. It was a narrow race while restart
+// was synchronous end to end; capturing first makes it slower and reachable.
+const sessionBusy = new Set<number>();
 
-// Which run owns a pane, matched on the pane and nothing else.
+// Which of a ticket's runs is the one sitting in this pane.
 //
-// Deliberately strict. A ticket accumulates a run per restart, so "the ticket's
-// newest run" can name a run that was never in this pane at all, and filing one
-// pane's terminal under another run's report is worse than filing it nowhere.
-// The sweep keeps its own newest-run fallback (below) because it has already
-// tied the session to the ticket by cwd before it gets there; nothing else may
-// borrow that fallback.
-async function runForPaneStrict(ticketId: number, pane: string): Promise<RunRow | undefined> {
+// The stamped pane wins outright. Failing that, the newest run that is not
+// stamped with SOME OTHER pane — which is the honest reading of an unstamped
+// run: `runs.herdr_pane` only arrived in schema v4 and `trace start` fills it
+// from $HERDR_PANE_ID, so a run from before that, or one started outside a
+// herdr pane, has nothing to match on and would otherwise be invisible here.
+//
+// Both halves matter, and a caller may not have one without the other. Taking
+// only the exact match loses every unstamped run, and on the restart path
+// "no run" means the pane is closed having been read into nothing — the exact
+// loss this whole feature exists to prevent. Taking the newest run
+// unconditionally, which is what the sweep used to do alone, can file one
+// pane's terminal under a run that demonstrably belongs to a different pane. A
+// run carrying another pane's id is the one candidate that is never right.
+async function runForPane(ticketId: number, pane: string): Promise<RunRow | undefined> {
+  // Newest-first, so the first survivor of either filter is the newest one.
   const forTicket = (await readJsonAsync<RunRow[]>(['list', '--ticket', String(ticketId), '--json'], TRACE)) ?? [];
-  return forTicket.find((r) => r.herdr_pane && r.herdr_pane === pane);
+  return forTicket.find((r) => r.herdr_pane === pane)
+    ?? forTicket.find((r) => !r.herdr_pane);
 }
 
 // Half of the invariant: get the run's closing text stored, by whatever means.
@@ -516,6 +549,10 @@ async function sweepShippedSessions(): Promise<void> {
       return allRuns.find((r) => r.herdr_pane && r.herdr_pane === pane);
     };
 
+    // Once per sweep, not once per session: it is a process-wide setting and
+    // nothing in the loop below can change it.
+    const mayClose = await closeOnShipEnabled();
+
     for (const sess of agents) {
       if (!sess.pane || closeGaveUp.has(sess.pane)) continue;
 
@@ -547,12 +584,8 @@ async function sweepShippedSessions(): Promise<void> {
       // Which run owns this pane. A ticket can have several — the board's own
       // restart action closes one session and starts another on the same
       // worktree — so an older run's report must not license closing a newer
-      // session.
-      if (!run) {
-        const forTicket = (await readJsonAsync<RunRow[]>(['list', '--ticket', String(t.id), '--json'], TRACE)) ?? [];
-        // Newest-first, so [0] is the run this session most plausibly is.
-        run = forTicket.find((r) => r.herdr_pane && r.herdr_pane === sess.pane) ?? forTicket[0];
-      }
+      // session. Shared with restart, which needs the identical answer.
+      run ??= await runForPane(t.id, sess.pane);
       if (!run) continue;
 
       // Capture is unconditional and only the closing is optional. Opting out
@@ -560,7 +593,7 @@ async function sweepShippedSessions(): Promise<void> {
       // and a pane you close by hand later must not take the summary with it.
       // So the opt-out takes capturePaneReport alone rather than skipping the
       // whole step.
-      if (!(await closeOnShipEnabled())) {
+      if (!mayClose) {
         if (!await capturePaneReport(sess.pane, run)) closeGaveUp.add(sess.pane);
         continue;
       }
@@ -952,6 +985,10 @@ async function cmdServer(): Promise<never> {
       if (start && req.method === 'POST') {
         touch();
         const id = Number(start[1]);
+        // A restart in flight has already closed this ticket's pane and has not
+        // yet started its replacement. Starting into that gap duplicates the
+        // session the restart is about to create.
+        if (sessionBusy.has(id)) return json({ error: 'a restart is already in flight' }, 409);
         const r = sh(TICKET, ['start', String(id)], 30000);
         if (!r.ok) return json({ error: r.errOut || 'could not start' }, 500);
         const dir = r.out.split('\n')[0].trim();
@@ -970,14 +1007,19 @@ async function cmdServer(): Promise<never> {
         // starts a replacement, so two of them interleaved start two sessions
         // against one closed pane. It was a narrow race while the whole thing
         // was synchronous; capturing first makes it slower and reachable.
-        if (restarting.has(id)) return json({ error: 'a restart is already in flight' }, 409);
-        restarting.add(id);
+        if (sessionBusy.has(id)) return json({ error: 'a restart is already in flight' }, 409);
+        sessionBusy.add(id);
         try {
           // `start` is idempotent and reports the existing worktree, which is how
           // we find the old session — it is the pane whose cwd is this worktree.
-          const r = sh(TICKET, ['start', String(id)], 30000);
-          if (!r.ok) return json({ error: r.errOut || 'could not restart' }, 500);
+          const r = await shOut(TICKET, ['start', String(id)], 30000);
+          if (!r.ok) return json({ error: 'could not restart' }, 500);
           const dir = r.out.split('\n')[0].trim();
+          // The worktree is the only thing this route matches a session on, so
+          // an empty one does not mean "no session" — it means we do not know,
+          // and carrying on would force-launch into `cd '' && claude`.
+          if (!dir) return json({ error: 'could not resolve the worktree' }, 500);
+
           // herdr 0.8 has no `agent stop`. Closing the pane is what actually ends
           // the session: renaming the agent only frees the name, and the old claude
           // would still be sitting in that pane, so the new `agent start` would be
@@ -990,9 +1032,11 @@ async function cmdServer(): Promise<never> {
           // destroyed it. `true`: unlike the sweep, a pane we could not capture
           // is still closed, because you asked for this session to be replaced
           // and refusing would leave you holding the broken one.
-          const old = existingAgent(dir);
-          if (old.found && old.pane && Bun.which('herdr')) {
-            await captureThenClose(old.pane, await runForPaneStrict(id, old.pane), { closeWhenUncaptured: true });
+          const old = await existingAgentAsync(dir);
+          let closed = true;
+          if (old.found && old.pane) {
+            ({ closed } = await captureThenClose(
+              old.pane, await runForPane(id, old.pane), { closeWhenUncaptured: true }));
             // The closed session can still be listed for a moment, and
             // launchSession's own force flag covers that — but agent start is
             // refused as agent_pane_busy until herdr lets go of the pane.
@@ -1002,9 +1046,13 @@ async function cmdServer(): Promise<never> {
           // and matching on cwd would otherwise make restart a no-op.
           const launch = launchSession(dir, id, true);
           broadcast();
-          return json({ path: dir, ...launch });
+          // A close that failed leaves the old claude sitting in the pane, so
+          // the relaunch below will have been refused as agent_pane_busy and
+          // handed back a paste command. Say so rather than letting that read
+          // as an ordinary manual fallback.
+          return json({ path: dir, ...launch, ...(closed ? {} : { oldSessionSurvived: true }) });
         } finally {
-          restarting.delete(id);
+          sessionBusy.delete(id);
         }
       }
 

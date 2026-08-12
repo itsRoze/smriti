@@ -84,10 +84,15 @@ async function until(fn: () => boolean, ms = 6000): Promise<boolean> {
   return fn();
 }
 
-const artifacts = (uid: string) =>
-  JSON.parse(spawnSync(TRACE, ['artifacts', '--run', uid, '--json'],
-    { encoding: 'utf8', cwd: REPO, env: env() }).stdout) as
-    { source: string; kind: string; body: string | null }[];
+// Empty stdout means the CLI failed, not that there are no artifacts. Parsing
+// it raw threw inside the poll loop below, which turned a legible assertion
+// failure into a JSON EOF from three frames away.
+const artifacts = (uid: string) => {
+  const r = spawnSync(TRACE, ['artifacts', '--run', uid, '--json'],
+    { encoding: 'utf8', cwd: REPO, env: env() });
+  if (r.status !== 0) throw new Error(`trace artifacts --run ${uid} exited ${r.status}: ${r.stderr}`);
+  return JSON.parse(r.stdout || '[]') as { source: string; kind: string; body: string | null }[];
+};
 
 const runRow = (uid: string) =>
   (JSON.parse(spawnSync(TRACE, ['list', '--limit', '500', '--json'],
@@ -233,6 +238,51 @@ test('the capture lands on the run holding that pane, not the ticket\'s newest',
   expect(artifacts(oldUid)[0].body).toContain('belongs to the OLD pane');
   // ...and the newer run, which was never in that pane, got nothing.
   expect(artifacts(newUid).length).toBe(0);
+});
+
+test('a run with no stamped pane is still captured, not closed unread', async () => {
+  // `runs.herdr_pane` only arrived in schema v4, and `trace start` fills it from
+  // $HERDR_PANE_ID — so a run from before that, or one started outside a herdr
+  // pane, has nothing to match on. Resolving by stamped pane alone would find
+  // no run, capture into nothing, and close the terminal anyway, which is the
+  // precise loss this feature exists to prevent.
+  const add = cli(TICKET, ['add', 'run predates the pane column', '--ready']);
+  const id = (add.stdout.match(/#(\d+)/) ?? [])[1]!;
+  const wt = cli(TICKET, ['start', id]).stdout.trim().split('\n')[0];
+  // No HERDR_PANE_ID: the run records no pane at all. Explicitly emptied rather
+  // than merely omitted, because these tests may themselves be running inside a
+  // herdr pane, and that variable would otherwise leak in and stamp the run.
+  const run = spawnSync(TRACE, ['start', 'begin', '--ticket', id], {
+    encoding: 'utf8', cwd: wt, env: env({ HERDR_PANE_ID: '' }),
+  });
+  expect(run.status).toBe(0);
+  const uid = run.stdout.trim().split('=')[1]!;
+  expect(uid).toBeTruthy();
+
+  writeFileSync(READ_FILE, 'unstamped but still worth keeping\n');
+  session(wt, 'working', 'wZ:p1');
+
+  expect((await restart(id)).status).toBe(200);
+  expect(await until(() => closes('wZ:p1') > 0)).toBe(true);
+  expect(await until(() => artifacts(uid).length === 1)).toBe(true);
+  expect(artifacts(uid)[0].body).toContain('unstamped but still worth keeping');
+});
+
+test('a run stamped with a DIFFERENT pane is never the fallback', async () => {
+  // The other half of the same rule. An unstamped run is a plausible owner of
+  // the pane in front of us; one carrying another pane's id demonstrably is
+  // not, and filing this terminal under it would be worse than filing it
+  // nowhere.
+  const { id, wt, uid: otherPaneRun } = liveTicket('stamped elsewhere', 'wAA:p9');
+  writeFileSync(READ_FILE, 'from the pane being closed\n');
+  // The live session is in a pane no run claims.
+  session(wt, 'working', 'wAA:p1');
+
+  expect((await restart(id)).status).toBe(200);
+  expect(await until(() => closes('wAA:p1') > 0)).toBe(true);
+  await Bun.sleep(600);
+  // The run belonging to wAA:p9 was not handed wAA:p1's terminal.
+  expect(artifacts(otherPaneRun).length).toBe(0);
 });
 
 test('the replaced run is ended, not left ticking forever', async () => {
