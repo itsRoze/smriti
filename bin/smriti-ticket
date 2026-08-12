@@ -12,6 +12,7 @@
 #   smriti ticket cancel <id>                 park it out of the way, reversibly
 #   smriti ticket rm <id> [--yes]             delete it and its document rows
 #   smriti ticket pr <id> <url>               record the PR and move to in_review
+#   smriti ticket move <id> --before <id>|--after <id>|--top|--bottom
 #   smriti ticket status <id> <status>        idea|ready|in_progress|in_review|shipped|cancelled
 #   smriti ticket done <id>                   shorthand for `status <id> shipped`
 #   smriti ticket doc <id|-> --type T --path P [--branch B]
@@ -24,6 +25,7 @@
 #   3  sqlite3 or schema missing
 #   4  no such ticket
 #   5  could not create or attach the worktree
+#   6  a reorder named a target in another app or project
 #
 # A ticket belongs to a project, or to an app directly (a one-off bug), or to
 # neither — an idea, capturable from anywhere, including outside a git repo.
@@ -69,6 +71,7 @@ usage:
   smriti ticket start <id>
   smriti ticket edit <id> [--title T] [--body T] [--priority N] [--repo S]
                           [--project P | --no-project]
+  smriti ticket move <id> <--before <id> | --after <id> | --top | --bottom>
   smriti ticket cancel <id>
   smriti ticket rm <id> [--yes]
   smriti ticket pr <id> <url>
@@ -190,10 +193,20 @@ cmd_add() {
 
   # last_insert_rowid() is per-connection, so it has to ride along inside the
   # same db_write rather than being fetched by a second invocation.
+  #
+  # position lands at the BOTTOM of the group it joins — capture is a quick,
+  # frequent act and it must never disturb an order you arranged by hand. The
+  # coalesce pair is the scope key used everywhere positions are compared: NULL
+  # is not equal to NULL in SQL, so without it every app-less idea would count
+  # as its own group and they would all be born at position 1.
   local id
-  id=$(db_write "INSERT INTO tickets (repo_slug, project_id, title, body, status, priority, created_at, updated_at)
+  id=$(db_write "INSERT INTO tickets (repo_slug, project_id, title, body, status, priority, position, created_at, updated_at)
             VALUES ($(sql_quote_or_null "$slug"), ${project_id:-NULL}, $(sql_quote "$title"), $(sql_quote_or_null "$body"),
-                    $(sql_quote "$status"), $priority, $(sql_quote "$ts"), $(sql_quote "$ts"));
+                    $(sql_quote "$status"), $priority,
+                    (SELECT coalesce(max(position), 0) + 1 FROM tickets
+                      WHERE coalesce(repo_slug, '') = coalesce($(sql_quote_or_null "$slug"), '')
+                        AND coalesce(project_id, -1) = coalesce(${project_id:-NULL}, -1)),
+                    $(sql_quote "$ts"), $(sql_quote "$ts"));
             SELECT last_insert_rowid();")
 
   local where="${slug:-no app yet}"
@@ -244,7 +257,12 @@ cmd_list() {
     where="$where AND status NOT IN ('shipped','cancelled')"
   fi
 
-  local order="ORDER BY priority DESC, id ASC"
+  # The order you dragged, and nothing else. This used to be
+  # `priority DESC, id ASC` while the board sorted by status band first — two
+  # surfaces answering the same question differently. `position` is now the one
+  # answer, seeded at migration from what the board was already showing, so the
+  # board is unchanged and this listing is the one that moved.
+  local order="ORDER BY position ASC, id ASC"
 
   if [ "$json" -eq 1 ]; then
     # Deliberately NOT called project_slug: that key existed in v1.2 and held
@@ -253,7 +271,7 @@ cmd_list() {
     db_json "SELECT id, repo_slug, project_id,
                     (SELECT slug FROM projects p WHERE p.id = tickets.project_id) AS project_ref,
                     (SELECT name FROM projects p WHERE p.id = tickets.project_id) AS project_name,
-                    title, body, status, priority, branch,
+                    title, body, status, priority, position, branch,
                     worktree_path, pr_url, origin, created_at, updated_at
              FROM tickets $where $order;"
     return 0
@@ -566,8 +584,144 @@ cmd_edit() {
     UPDATE documents SET project_id = $project_sql WHERE ticket_id = $id;
     UPDATE runs      SET project_id = $project_sql WHERE ticket_id = $id;"
 
+  # A position only means anything inside its own (repo_slug, project_id) scope,
+  # so a ticket that changes scope must be given a new one — otherwise it lands
+  # in its destination carrying a number from somewhere else and sorts into an
+  # arbitrary place. Bottom of the destination, same as a freshly captured one.
+  #
+  # This belongs HERE rather than in `move`, because `edit` is where scope
+  # actually changes — including the quiet path above where naming a project
+  # settles the app as well, without --repo ever being passed.
+  local cur_pid_sql="${cur_pid:-NULL}"
+  local dest_repo="$cur_repo" dest_pid_sql="$cur_pid_sql"
+  [ "$move_repo" -eq 1 ] && dest_repo="$new_repo"
+  [ -n "$project_sql" ] && dest_pid_sql="$project_sql"
+  if [ "$dest_repo" != "$cur_repo" ] || [ "$dest_pid_sql" != "$cur_pid_sql" ]; then
+    # `id <> $id` so the row being moved never counts itself: whether SQLite
+    # evaluates this subquery before or after the SET lands, the answer is the
+    # same one.
+    sets="$sets position = (SELECT coalesce(max(position), 0) + 1 FROM tickets
+            WHERE coalesce(repo_slug, '') = coalesce($(sql_quote_or_null "$dest_repo"), '')
+              AND coalesce(project_id, -1) = coalesce($dest_pid_sql, -1)
+              AND id <> $id),"
+  fi
+
   db_write "UPDATE tickets SET $sets updated_at = $(sql_quote "$(now_utc)") WHERE id = $id;$follow"
   echo "#$id updated"
+}
+
+# ─── move ───────────────────────────────────────────────────────────────────
+
+# Reorder within a group. The caller says WHERE relative to another card —
+# `--before 12`, `--after 12`, `--top`, `--bottom` — and never a raw number:
+# the arithmetic lives here, in one place, so the board's drag and its keyboard
+# both go through the same reasoning and neither can invent a position.
+#
+# A dropped card takes the MIDPOINT of its two neighbours, so one row is written
+# and no sibling has to shift. When a gap has been halved so many times that the
+# midpoint would collide with an endpoint, the scope is renumbered to whole
+# numbers first and the move is retried against the fresh spacing.
+cmd_move() {
+  [ $# -ge 1 ] || usage
+  require_id "$1"
+  local id="$1"; shift
+  ticket_exists "$id" || die "no ticket #$id" 4
+
+  local where="" target=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --before) [ $# -ge 2 ] || die "--before requires a ticket id"; where="before"; target="$2"; shift 2 ;;
+      --after)  [ $# -ge 2 ] || die "--after requires a ticket id";  where="after";  target="$2"; shift 2 ;;
+      --top)    where="top";    shift ;;
+      --bottom) where="bottom"; shift ;;
+      *) die "unknown flag: $1" ;;
+    esac
+  done
+  [ -n "$where" ] || die "say where it goes: --before <id>, --after <id>, --top or --bottom"
+
+  # The scope key, read from the ticket itself. Everything below compares
+  # against these two and nothing else — a position has no meaning outside them.
+  local scope_repo scope_pid
+  db_fields "SELECT coalesce(repo_slug,'')  FROM tickets WHERE id = $id;
+             SELECT coalesce(project_id,'') FROM tickets WHERE id = $id;"
+  scope_repo="${DB_FIELDS[0]}"; scope_pid="${DB_FIELDS[1]}"
+  local scope="coalesce(repo_slug, '') = coalesce($(sql_quote_or_null "$scope_repo"), '')
+           AND coalesce(project_id, -1) = coalesce(${scope_pid:-NULL}, -1)"
+
+  if [ "$where" = "before" ] || [ "$where" = "after" ]; then
+    require_id "$target"
+    [ "$target" = "$id" ] && die "#$id cannot move relative to itself"
+    ticket_exists "$target" || die "no ticket #$target" 4
+    # Refused rather than silently re-filed: dropping a card into another
+    # group means changing which project owns it, and `edit --project` is the
+    # verb for that. Two gestures for one operation is worse than one each.
+    local same
+    same=$(db "SELECT count(*) FROM tickets WHERE id = $target AND $scope;")
+    [ "$same" = "1" ] || \
+      die "#$target is in a different app or project than #$id — reorder happens within one group; use 'edit --project' to re-file" 6
+  fi
+
+  # Two attempts at most. The first can fail only by running out of room
+  # between two neighbours; renumbering the scope to 1..N restores whole-number
+  # spacing and the second attempt then always has room.
+  local attempt=0
+  while [ "$attempt" -lt 2 ]; do
+    attempt=$((attempt + 1))
+
+    # lo and hi bound the gap the card is landing in; an empty string means
+    # "no neighbour on that side", i.e. the end of the list.
+    local lo="" hi=""
+    case "$where" in
+      top)    hi=$(db "SELECT min(position) FROM tickets WHERE $scope AND id <> $id;") ;;
+      bottom) lo=$(db "SELECT max(position) FROM tickets WHERE $scope AND id <> $id;") ;;
+      before)
+        hi=$(db "SELECT position FROM tickets WHERE id = $target;")
+        lo=$(db "SELECT max(position) FROM tickets
+                  WHERE $scope AND id <> $id AND position < $hi;") ;;
+      after)
+        lo=$(db "SELECT position FROM tickets WHERE id = $target;")
+        hi=$(db "SELECT min(position) FROM tickets
+                  WHERE $scope AND id <> $id AND position > $lo;") ;;
+    esac
+
+    local pos
+    if   [ -z "$lo" ] && [ -z "$hi" ]; then pos=1                        # alone in the group
+    elif [ -z "$lo" ]; then pos=$(db "SELECT $hi - 1;")                  # new first
+    elif [ -z "$hi" ]; then pos=$(db "SELECT $lo + 1;")                  # new last
+    else
+      # The midpoint, and a check that it actually landed strictly between the
+      # two. Comparing against BOTH endpoints is what catches the underflow:
+      # once the gap is small enough, (lo+hi)/2 rounds to one of them and the
+      # order would silently stop being a total one.
+      pos=$(db "SELECT ($lo + $hi) / 2.0;")
+      local ok
+      ok=$(db "SELECT CASE WHEN $pos > $lo AND $pos < $hi THEN 1 ELSE 0 END;")
+      if [ "$ok" != "1" ]; then
+        [ "$attempt" -ge 2 ] && die "could not find room to place #$id — the order is too tightly packed to subdivide" 3
+        renumber_scope "$scope"
+        continue
+      fi
+    fi
+
+    db_write "UPDATE tickets SET position = $pos,
+                                 updated_at = $(sql_quote "$(now_utc)")
+              WHERE id = $id;"
+    echo "#$id moved"
+    return 0
+  done
+}
+
+# Rewrite one group's positions as 1, 2, 3 … preserving the order they are
+# already in. Only ever called when a midpoint has run out of room, which takes
+# roughly fifty consecutive drops into the same gap.
+renumber_scope() {
+  local scope="$1"
+  db_write "WITH packed AS (
+              SELECT id, ROW_NUMBER() OVER (ORDER BY position ASC, id ASC) AS rn
+              FROM tickets WHERE $scope
+            )
+            UPDATE tickets SET position = (SELECT rn FROM packed WHERE packed.id = tickets.id)
+            WHERE id IN (SELECT id FROM packed);"
 }
 
 # Cancel is reversible and keeps the paper trail; rm is not. Two verbs because
@@ -817,6 +971,7 @@ case "$CMD" in
   edit)         cmd_edit "$@" ;;
   cancel)       cmd_cancel "$@" ;;
   rm)           cmd_rm "$@" ;;
+  move)         cmd_move "$@" ;;
   pr)           cmd_pr "$@" ;;
   status)       cmd_status "$@" ;;
   done)         cmd_done "$@" ;;

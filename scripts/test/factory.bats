@@ -94,16 +94,27 @@ teardown() {
   [[ "$output" == *"running begin"* ]]
 }
 
-@test "ordering puts work needing a decision above ideas" {
+@test "ordering follows the order you arranged, not the status" {
+  # This listing used to sort by status band — work needing a decision above
+  # ideas — while `ticket list` sorted by priority, so the two disagreed about
+  # the same tickets. Ticket #11 settled it: status says what a card IS,
+  # position says where it SITS, and every surface reads position.
   "$TICKET" add "an idea" >/dev/null
   "$TICKET" add "in review" >/dev/null
   "$TICKET" status 2 in_review >/dev/null
 
   run bun "$CLI" --list
-  # "in review" must appear before "an idea" in the output.
   local review_line idea_line
-  review_line=$(echo "$output" | grep -n "in review" | head -1 | cut -d: -f1)
   idea_line=$(echo "$output" | grep -n "an idea" | head -1 | cut -d: -f1)
+  review_line=$(echo "$output" | grep -n "in review" | head -1 | cut -d: -f1)
+  # Capture order, undisturbed by the status change.
+  [ "$idea_line" -lt "$review_line" ]
+
+  # Move it, and the listing follows.
+  "$TICKET" move 2 --before 1 >/dev/null
+  run bun "$CLI" --list
+  idea_line=$(echo "$output" | grep -n "an idea" | head -1 | cut -d: -f1)
+  review_line=$(echo "$output" | grep -n "in review" | head -1 | cut -d: -f1)
   [ "$review_line" -lt "$idea_line" ]
 }
 

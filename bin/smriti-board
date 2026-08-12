@@ -95,9 +95,14 @@ function readState(): { port: number; pid: number; secret: string } | null {
     return { port, pid, secret };
   } catch { return null; }
 }
-function sh(bin: string, args: string[], timeoutMs = 15000): { ok: boolean; out: string; errOut: string } {
+// `code` carries the CLI's own exit code through, because a few of them mean
+// something specific enough that the page should react differently: a reorder
+// refused for naming another group (6) is the user's mistake and deserves a
+// 4xx, not the blanket 500 every other failure collapses to. null when the
+// child was killed or never ran.
+function sh(bin: string, args: string[], timeoutMs = 15000): { ok: boolean; out: string; errOut: string; code: number | null } {
   const r = spawnSync(bin, args, { encoding: 'utf8', timeout: timeoutMs });
-  return { ok: r.status === 0, out: (r.stdout || '').trim(), errOut: (r.stderr || '').trim() };
+  return { ok: r.status === 0, out: (r.stdout || '').trim(), errOut: (r.stderr || '').trim(), code: r.status };
 }
 // null means "the read failed", which is NOT the same as "there is nothing".
 // Collapsing the two rendered a broken store as an inviting blank page.
@@ -736,6 +741,29 @@ async function cmdServer(): Promise<never> {
         // anything else and its message names the whole set.
         const r = sh(TICKET, ['status', setStatus[1], b.status]);
         if (!r.ok) return json({ error: r.errOut || 'could not set the status' }, 500);
+        broadcast();
+        return json({ ok: true });
+      }
+
+      // Reorder. Relative to another card, never a raw position — the CLI owns
+      // the arithmetic, so the drag and the keyboard both land on one place
+      // that can decide about midpoints and renumbering.
+      const move = url.pathname.match(/^\/api\/tickets\/(\d+)\/move$/);
+      if (move && req.method === 'POST') {
+        touch();
+        const b = (await req.json().catch(() => ({}))) as
+          { before?: number; after?: number; top?: boolean; bottom?: boolean };
+        let args: string[];
+        if (typeof b.before === 'number')     args = ['move', move[1], '--before', String(b.before)];
+        else if (typeof b.after === 'number') args = ['move', move[1], '--after', String(b.after)];
+        else if (b.top)                       args = ['move', move[1], '--top'];
+        else if (b.bottom)                    args = ['move', move[1], '--bottom'];
+        else return json({ error: 'say where it goes: before, after, top or bottom' }, 400);
+        const r = sh(TICKET, args);
+        // 6 is "that target is in another app or project" — an illegal drop
+        // rather than a broken server, and the page says so instead of
+        // reporting that the factory fell over.
+        if (!r.ok) return json({ error: r.errOut || 'could not move it' }, r.code === 6 ? 409 : 500);
         broadcast();
         return json({ ok: true });
       }

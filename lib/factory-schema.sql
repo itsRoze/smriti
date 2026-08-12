@@ -70,7 +70,19 @@ CREATE TABLE IF NOT EXISTS tickets (
   body          TEXT,
   -- idea -> ready -> in_progress -> in_review -> shipped
   status        TEXT    NOT NULL DEFAULT 'idea',
+  -- How important you called it. Deliberately NOT the sort key: importance and
+  -- sequence are different questions, and overloading one column with both
+  -- means dragging a card silently rewrites how important it is.
   priority      INTEGER NOT NULL DEFAULT 0,
+  -- Where it sits in the order you intend to work it. Only ever compared
+  -- against tickets in the same (repo_slug, project_id) scope — the group the
+  -- board draws it in — and meaningless across scopes.
+  --
+  -- REAL, not INTEGER, so a card dropped between two others takes the midpoint
+  -- of its neighbours: one row written per move, never a renumbering cascade.
+  -- `ticket move` renormalises a scope to whole numbers when a gap has been
+  -- subdivided into the ground.
+  position      REAL    NOT NULL DEFAULT 0,
   branch        TEXT,
   worktree_path TEXT,
   pr_url        TEXT,

@@ -252,6 +252,8 @@ smriti ticket list --all                                    # everywhere
 smriti ticket list --repo -                                 # the ideas with no app yet
 smriti ticket start 7                                       # worktree + branch; prints the path
 smriti ticket show 7                                        # detail + its documents
+smriti ticket move 7 --before 12                            # the order you mean to work them
+smriti ticket move 7 --top                                  # ...or straight to the front
 
 smriti project add "Search v2"                              # a body of work in this app
 smriti ticket edit 7 --project search-v2                    # file a ticket into it

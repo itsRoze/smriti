@@ -561,6 +561,54 @@ test('any status can be set through the board, cancelled included', async () => 
   expect(empty.status).toBe(400);
 });
 
+// Ticket #11. The route says WHERE relative to another card and never a raw
+// position — the CLI owns that arithmetic, so the drag and the keyboard both
+// reach one place that can decide about midpoints and repacking.
+test('tickets reorder through the board, and an illegal drop is a 409', async () => {
+  const tk = (args: string[]) =>
+    spawnSync(TICKET, args, { encoding: 'utf8', env: { ...process.env, SMRITI_HOME: HOME_DIR } });
+  for (const t of ['ord one', 'ord two', 'ord three']) tk(['add', t, '--repo', 'ordering']);
+  tk(['add', 'somewhere else', '--repo', 'elsewhere']);
+
+  const list = () =>
+    (JSON.parse(tk(['list', '--all', '--json']).stdout) as { id: number; title: string; repo_slug: string | null }[]);
+  const byTitle = (t: string) => list().find((x) => x.title === t)!.id;
+  const orderIn = (repo: string) => list().filter((x) => x.repo_slug === repo).map((x) => x.title);
+
+  const one = byTitle('ord one'), two = byTitle('ord two'), three = byTitle('ord three');
+  const move = (id: number, body: unknown) =>
+    fetch(`${base()}/api/tickets/${id}/move`, {
+      method: 'POST',
+      headers: { cookie: jar, 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+  // list --json is itself ordered by position, so reading it back IS the check.
+  expect(orderIn('ordering')).toEqual(['ord one', 'ord two', 'ord three']);
+
+  expect((await move(three, { before: one })).status).toBe(200);
+  expect(orderIn('ordering')).toEqual(['ord three', 'ord one', 'ord two']);
+
+  expect((await move(three, { after: two })).status).toBe(200);
+  expect(orderIn('ordering')).toEqual(['ord one', 'ord two', 'ord three']);
+
+  expect((await move(two, { top: true })).status).toBe(200);
+  expect(orderIn('ordering')).toEqual(['ord two', 'ord one', 'ord three']);
+
+  expect((await move(two, { bottom: true })).status).toBe(200);
+  expect(orderIn('ordering')).toEqual(['ord one', 'ord three', 'ord two']);
+
+  // Naming a card in another app is the user dropping somewhere they cannot,
+  // not the factory falling over — 409 so the page can tell the two apart.
+  const illegal = await move(one, { after: byTitle('somewhere else') });
+  expect(illegal.status).toBe(409);
+  expect(((await illegal.json()) as { error: string }).error).toContain('different app or project');
+  expect(orderIn('ordering')).toEqual(['ord one', 'ord three', 'ord two']);
+
+  // No direction at all is the caller's mistake, and never a write.
+  expect((await move(one, {})).status).toBe(400);
+});
+
 test('a ticket can be re-filed into a project and back out again', async () => {
   const tk = (args: string[]) =>
     spawnSync(TICKET, args, { encoding: 'utf8', env: { ...process.env, SMRITI_HOME: HOME_DIR } });

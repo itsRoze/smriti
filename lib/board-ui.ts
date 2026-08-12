@@ -28,6 +28,12 @@ export function boardPage(): string {
     --tree:#2E5C43; --live-bg:#FFF4EC; --attach-bg:#F2F7EE;
     --sh:30,64,50; --veil:rgba(30,64,50,.18); --dust:.06;
     --hi-wash:.55; --hi-text:var(--ink-2);
+    /* The one curve this board moves on. Was written inline in the card
+       entrance; promoted to a token when reordering needed the same spring so
+       there would be exactly one place to change how the whole thing feels.
+       Deliberately outside the theme blocks — motion does not change with the
+       light. */
+    --spring:cubic-bezier(.2,.9,.3,1.25);
   }
   @media (prefers-color-scheme: dark){
     :root{
@@ -411,11 +417,62 @@ export function boardPage(): string {
   .cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(310px,1fr));gap:14px}
   .card{
     padding:15px 17px 14px;position:relative;display:flex;flex-direction:column;min-height:112px;
-    cursor:pointer;transition:transform .12s ease,box-shadow .12s ease;
-    animation:drop .4s cubic-bezier(.2,.9,.3,1.25) backwards;
+    cursor:grab;transition:transform .12s ease,box-shadow .12s ease;
+    animation:drop .4s var(--spring) backwards;
   }
   @keyframes drop{from{opacity:0;transform:translateY(10px) rotate(-.6deg)}}
   .card:hover{transform:translate(-1px,-2px) rotate(-.4deg);box-shadow:4px 6px 0 rgba(var(--sh),.4)}
+
+  /* ── reordering ──────────────────────────────────────────────────────
+     "Lift it, and leave a slot." A generic drag fades what you are dragging
+     and draws a line where it lands; on a paper board that is backwards. The
+     card in your hand stays the most SOLID thing on the page and the absence
+     it left is the ghost.
+
+     There is no grip handle and no drag dots — nothing permanent is added to a
+     card. The affordance is the cursor plus the lift hover already does, and
+     the ? sheet teaches the keys like it does for everything else. */
+  .card.drag{
+    cursor:grabbing;z-index:40;pointer-events:none;
+    box-shadow:10px 14px 0 rgba(var(--sh),.30);
+    transition:box-shadow .14s ease;   /* transform is written per frame by JS */
+  }
+  /* Keyboard carry: the same card in the same hand, just sitting still while
+     the others shuffle past it. One look for both inputs, deliberately. */
+  .card.carry{
+    z-index:40;transform:rotate(-2.2deg) scale(1.035);
+    box-shadow:10px 14px 0 rgba(var(--sh),.30);
+    transition:transform .18s var(--spring),box-shadow .18s var(--spring);
+  }
+  /* An idea card is transparent and a done card has no background at all.
+     Held, they are off the board and in your hand, so they get paper under
+     them — otherwise you drag a see-through rectangle over other cards. The
+     dashed border stays: that is the card's identity, not its backing. */
+  .card.drag,.card.carry{background:var(--paper-2)}
+  /* The hover rule would otherwise re-tilt a card being carried by keyboard,
+     which reads as the card twitching when the pointer happens to rest on it. */
+  .card.carry:hover{transform:rotate(-2.2deg) scale(1.035)}
+
+  /* Where it lands. NOT an insertion line: these cards sit in a responsive
+     grid where the drop point can fall mid-row, and a horizontal rule cannot
+     say "here" in a grid. A card-shaped placeholder can, because it takes a
+     real cell and lets the browser's own auto-placement do the reflow.
+     Highlighter rather than --ink-4 for two reasons: --hi already means "the
+     active place" on this board, and an idea card is ALSO dashed in --ink-4,
+     so an ink slot would vanish in a group of them. */
+  .slot{
+    border:2.5px dashed var(--hi);background:rgba(var(--hi-rgb),.10);
+    box-shadow:none;animation:slotin .18s var(--spring);
+  }
+  @keyframes slotin{from{opacity:0;transform:scale(.96)}}
+  /* FLIP: siblings are measured before the slot moves and again after, then
+     glide from the difference. Without it they jump between grid cells, which
+     on a board this springy reads as cheap. Same curve as the entrance
+     animation — the motion vocabulary here is one curve, and stays one. */
+  .card.flip{transition:transform .18s var(--spring)}
+  /* Announced, never drawn. clip-path over display:none because a hidden
+     element is not announced at all. */
+  .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
   .card.sel{outline:2.5px solid var(--hi);outline-offset:3px;box-shadow:0 0 22px -6px rgba(var(--hi-rgb),.55)}
   .card .t{font-size:19px;line-height:1.34;margin-bottom:10px;text-wrap:balance}
   .card .foot{display:flex;align-items:center;gap:9px;margin-top:auto}
@@ -451,6 +508,11 @@ export function boardPage(): string {
     background:linear-gradient(180deg,transparent,var(--paper) 44%);
     font-family:ui-monospace,Menlo,monospace;font-size:10px;letter-spacing:.12em;
     text-transform:uppercase;color:var(--ink-3)}
+  /* display:flex above beats the UA's [hidden]{display:none}, which is a bare
+     attribute selector. Without this the move-mode bar is never hidden — and
+     because it is position:fixed across the bottom, it also swallows pointer
+     events over whatever it covers. */
+  .keys[hidden]{display:none}
   .k{
     display:inline-block;min-width:22px;text-align:center;padding:3px 7px 4px;margin-right:7px;
     border:2px solid var(--ink-2);color:var(--ink);background:var(--paper-2);
@@ -762,6 +824,12 @@ export function boardPage(): string {
   @media (prefers-reduced-motion:reduce){
     .card,.panel,.lab{animation:none !important}
     .card.live::after{animation:none}
+    /* A reorder still has to be readable with the motion taken out: the lift
+       and the slot are STATE, so they stay — it is only the travel between
+       states that goes. JS reads the same query and skips FLIP and the
+       velocity tilt rather than animating them to zero. */
+    .card.carry,.card.flip{transition:none}
+    .slot{animation:none}
   }
 </style>
 </head>
@@ -806,6 +874,15 @@ export function boardPage(): string {
   <span><span class="k" data-k="?">?</span>keys</span>
 </div>
 
+<!-- Swapped in while a card is being carried. The keycap bar is where this
+     board has always explained itself, so move mode explains itself there too
+     rather than inventing a new place to put a hint. -->
+<div class="keys" id="movekeys" hidden>
+  <span><span class="k hit" data-k="J">⇧J ⇧K</span>move it</span>
+  <span><span class="k" data-k="Enter">⏎</span>drop it</span>
+  <span><span class="k" data-k="Escape">esc</span>put it back</span>
+</div>
+
 <div class="veil" id="palv"><div class="box b4 panel pal">
   <div class="q"><span class="cue" id="palcue" style="display:none"></span><input id="palq" placeholder="type a ticket title, or search…" autocomplete="off"></div>
   <div id="palopts"></div>
@@ -826,11 +903,17 @@ export function boardPage(): string {
     <div><b>b</b> — the margin, open / collapsed</div><div><b>h</b> — completed work, every group</div>
     <div><b>esc</b> — close, then back up a level</div>
     <div><b>⏎</b> on a ticket page — start / attach it</div>
+    <div><b>⇧J / ⇧K</b> — carry it up or down</div><div><b>⏎</b> — drop it, <b>esc</b> — put it back</div>
+    <div class="hnote">or drag a card — the order sticks</div>
     <div><b>t</b> — light / dark</div><div><b>?</b> — this</div>
   </div>
 </div></div>
 
 <div class="box toast" id="toast"></div>
+
+<!-- Reordering by keyboard is silent otherwise, and this board is keyboard
+     first. Announces where the card landed, not merely that it moved. -->
+<div id="live" class="sr" aria-live="polite" role="status"></div>
 
 <script>
 (() => {
@@ -999,6 +1082,19 @@ export function boardPage(): string {
     return slug === NO_APP ? '◌◌' : appLabel(slug).slice(0, 2).toUpperCase();
   }
 
+  // Open work sorts by the order you dragged it into, and by nothing else.
+  // This is what ticket #11 settled: status still says what a card IS, but it
+  // no longer decides where the card SITS, and neither does priority. The
+  // server hands positions back already sorted; this keeps the client honest
+  // when it re-sorts a filtered subset.
+  //
+  // A position is only comparable inside one (app, project) group — which is
+  // exactly the set each caller below has already narrowed to before sorting.
+  const byPos = (a, b) => (a.position !== b.position ? a.position - b.position : a.id - b.id);
+
+  // Completed work keeps the old status-band sort. Positions are for deciding
+  // what to do next, and there is no next about a shipped ticket — the fold is
+  // a record, so it stays grouped by how each item ended.
   const byStatus = (a, b) => {
     const s = ORDER.indexOf(a.status) - ORDER.indexOf(b.status);
     if (s) return s;
@@ -1222,7 +1318,7 @@ export function boardPage(): string {
       const items = all
         .filter((t) => t.status !== 'shipped')
         .filter((t) => t.status !== 'cancelled')
-        .sort(byStatus);
+        .sort(byPos);
       const projs = projectsIn(app).filter((p) => p.status === 'active');
       const done = all.filter((t) => !isOpen(t) && !items.includes(t));
       // An app with nothing live stays OFF the board even though it has a
@@ -1329,7 +1425,7 @@ export function boardPage(): string {
       }).join('') + '</div>';
     }
 
-    const loose = items.filter((t) => t.project_id == null && isOpen(t)).sort(byStatus);
+    const loose = items.filter((t) => t.project_id == null && isOpen(t)).sort(byPos);
     cardIdx = 0; flat = [];
     if (loose.length){
       h += '<div class="lab">' + (projs.length ? 'loose tickets' : 'tickets') + '</div><div class="cards">';
@@ -1374,7 +1470,7 @@ export function boardPage(): string {
       descBox('id="pagedesc" data-edit="project" data-pid="' + p.id + '"', p.description, 'what this project is, and why…') +
       '<textarea class="descedit" id="pagedescedit" placeholder="what this project is, and why">' + esc(p.description || '') + '</textarea>';
 
-    const open = items.filter(isOpen).sort(byStatus);
+    const open = items.filter(isOpen).sort(byPos);
     cardIdx = 0; flat = [];
     h += '<div class="lab">tickets</div>';
     if (open.length){
@@ -1516,6 +1612,10 @@ export function boardPage(): string {
     $$('[data-tid]').forEach((el) => {
       el.addEventListener('click', () => { const id = Number(el.dataset.tid); if (id) go('#/t/' + id); });
     });
+    // Reordering. Bound per grid rather than per card, and re-bound here with
+    // everything else because #plots is replaced wholesale on every render.
+    // The completed fold is deliberately not a candidate — see ordGrid.
+    $$('.cards:not(.folded)').forEach((g) => g.addEventListener('pointerdown', onGridDown));
     // The ticket page's dispositions and its re-file select. Here rather than
     // beside the render, because wire() reaches the whole sheet — the by-hand
     // binding the overlay ended with existed only because a veil was outside
@@ -1738,10 +1838,295 @@ export function boardPage(): string {
   // ticket page redraws about once a second while an agent runs, and each redraw
   // closed the re-file dropdown with no choice made.
   function isBusy(){
+    // A reorder in flight is the same kind of thing as a half-typed
+    // description: the board redraws #plots wholesale about once a second while
+    // an agent runs, and doing that mid-gesture pulls the card out from under
+    // the cursor. This covers BOTH triggers, because they both land here — the
+    // SSE 'changed' stream, and the 'changed' this very move broadcast back at
+    // us the moment it was written.
+    if (reorder) return true;
     const ta = document.querySelector('.descedit.on');
     if (ta && document.activeElement === ta) return true;
     const a = document.activeElement;
     return Boolean(a && a.tagName === 'SELECT');
+  }
+
+  // ── reordering ───────────────────────────────────────────────────────
+  // "Lift it, and leave a slot." The card you are holding stays solid and
+  // leaves a highlighter slot behind; the slot is a real grid item, so the
+  // browser's own auto-placement works out where a mid-row drop belongs and
+  // the siblings glide there with FLIP. See the CSS above for the why.
+  //
+  // Both inputs end in the same place: smriti ticket move --before/--after.
+  // Nothing here computes a position — the CLI owns that arithmetic, so the
+  // page cannot invent an order the store disagrees with.
+  const REDUCED = matchMedia('(prefers-reduced-motion: reduce)');
+  const CARRY_T = 'rotate(-2.2deg) scale(1.035)';
+  const DRAG_THRESHOLD = 5;   // px of travel before a click becomes a drag
+
+  // Non-null exactly while a reorder is happening. isBusy() reads it.
+  let reorder = null;
+  let pend = null;            // a pointer that is down but has not moved far enough
+
+  function isCard(el){ return el && el.classList && el.classList.contains('card'); }
+  function prevCard(el){ let p = el.previousElementSibling; while (p && !isCard(p)) p = p.previousElementSibling; return p; }
+  function nextCard(el){ let n = el.nextElementSibling;     while (n && !isCard(n)) n = n.nextElementSibling;     return n; }
+  // A grid you may reorder in. The history fold is excluded on purpose: a
+  // hand-placed sequence over shipped work is a number nobody reads.
+  function ordGrid(el){
+    const g = el && el.parentElement;
+    return g && g.classList.contains('cards') && !g.classList.contains('folded') ? g : null;
+  }
+
+  function announce(msg){ const l = $('#live'); if (l) l.textContent = msg; }
+  function movePos(card){
+    const g = card.parentElement; if (!g) return '';
+    const cards = [...g.children].filter(isCard);
+    return 'position ' + (cards.indexOf(card) + 1) + ' of ' + cards.length;
+  }
+
+  // FLIP: measure, re-parent, then play the difference. Without it the grid
+  // snaps between cells, which on a board this springy reads as cheap.
+  function flipStart(grid, skip){
+    if (REDUCED.matches) return null;
+    const m = new Map();
+    for (const el of grid.children){
+      if (el === skip) continue;
+      if (isCard(el) || el.classList.contains('slot')) m.set(el, el.getBoundingClientRect());
+    }
+    return m;
+  }
+  function flipEnd(before){
+    if (!before) return;
+    for (const [el, r0] of before){
+      if (!el.isConnected) continue;
+      const r1 = el.getBoundingClientRect();
+      const dx = r0.left - r1.left, dy = r0.top - r1.top;
+      if (!dx && !dy) continue;
+      el.classList.remove('flip');
+      // A carried card keeps its lift while it travels — clearing the inline
+      // transform later hands it back to the .carry class untouched.
+      el.style.transform = 'translate(' + dx + 'px,' + dy + 'px)' +
+        (el.classList.contains('carry') ? ' ' + CARRY_T : '');
+    }
+    requestAnimationFrame(() => {
+      for (const [el] of before){
+        if (!el.isConnected) continue;
+        el.classList.add('flip');
+        el.style.transform = '';
+      }
+    });
+  }
+
+  // Where the slot sits now, expressed the way the CLI wants to hear it.
+  function anchorFor(node){
+    const p = prevCard(node), n = nextCard(node);
+    if (p) return { after: Number(p.dataset.tid) };
+    if (n) return { before: Number(n.dataset.tid) };
+    return null;
+  }
+
+  async function commitMove(id, anchor, unchanged){
+    reorder = null;
+    setMoveKeys(false);
+    if (!anchor || unchanged){ refresh(); return; }
+    try {
+      await api('/api/tickets/' + id + '/move', { method: 'POST', body: JSON.stringify(anchor) });
+    } catch (e){
+      // 409 is the CLI refusing a target in another app or project — an
+      // illegal drop, not a broken server, and worth saying plainly.
+      toast(e.message || 'could not move it', 4000);
+    }
+    refresh();
+  }
+
+  function setMoveKeys(on){
+    const k = $('#keys'), mk = $('#movekeys');
+    if (k) k.hidden = Boolean(on);
+    if (mk) mk.hidden = !on;
+  }
+
+  // ── pointer ──────────────────────────────────────────────────────────
+  function onGridDown(e){
+    if (e.button !== 0 || reorder) return;
+    const card = e.target.closest('.card');
+    if (!card || !ordGrid(card)) return;
+    // Nothing is claimed yet — a click must stay a click until the pointer has
+    // actually travelled. A press-and-hold delay would put latency on every
+    // open; distance costs nothing and starts the drag the moment you mean it.
+    pend = { card, id: Number(card.dataset.tid), x: e.clientX, y: e.clientY, pid: e.pointerId };
+  }
+
+  function onGridMove(e){
+    if (pend && !reorder){
+      if (Math.abs(e.clientX - pend.x) < DRAG_THRESHOLD && Math.abs(e.clientY - pend.y) < DRAG_THRESHOLD) return;
+      beginDrag(e);
+      if (!reorder) return;
+    }
+    if (!reorder || reorder.mode !== 'drag' || e.pointerId !== reorder.pid) return;
+    e.preventDefault();
+    const dx = e.clientX - reorder.x, dy = e.clientY - reorder.y;
+    // The one flourish: the card leans into the throw. Everything else on this
+    // board is hand-drawn and hand-placed, and a card that hangs perfectly
+    // rigid while you fling it across the page contradicts that. Clamped
+    // tight — past about 4 degrees it stops reading as weight.
+    let tilt = -2.2;
+    if (!REDUCED.matches){
+      reorder.vs = reorder.vs * 0.82 + (e.clientX - reorder.lx) * 0.18;
+      tilt = Math.max(-3.8, Math.min(-0.6, -2.2 + reorder.vs * 0.05));
+    }
+    reorder.lx = e.clientX;
+    reorder.card.style.transform =
+      'translate3d(' + dx + 'px,' + dy + 'px,0) rotate(' + tilt.toFixed(2) + 'deg) scale(1.035)';
+    slotTo(e.clientX, e.clientY);
+  }
+
+  function beginDrag(e){
+    const { card, id } = pend;
+    const grid = ordGrid(card);
+    pend = null;
+    if (!grid) return;
+    const r = card.getBoundingClientRect();
+
+    const slot = document.createElement('div');
+    slot.className = 'box slot';
+    slot.style.minHeight = r.height + 'px';
+    grid.insertBefore(slot, card);
+
+    // Out of the grid entirely, and fixed where it already was, so the slot can
+    // own its cell and sibling scans never trip over the card in your hand.
+    card.classList.add('drag');
+    card.style.position = 'fixed';
+    card.style.left = r.left + 'px'; card.style.top = r.top + 'px';
+    card.style.width = r.width + 'px'; card.style.height = r.height + 'px';
+    card.style.margin = '0';
+    document.body.appendChild(card);
+
+    reorder = {
+      mode: 'drag', id, card, slot, grid, pid: e.pointerId,
+      x: e.clientX, y: e.clientY, lx: e.clientX, vs: 0,
+      from: anchorKey(slot),
+    };
+    try { card.setPointerCapture(e.pointerId); } catch {}
+  }
+
+  // A stable description of where something sits, so a drop that changed
+  // nothing can skip the write entirely.
+  function anchorKey(node){
+    const p = prevCard(node);
+    return p ? 'after:' + p.dataset.tid : 'top';
+  }
+
+  function slotTo(x, y){
+    const { grid, slot } = reorder;
+    const sibs = [...grid.children].filter(isCard);
+    if (!sibs.length) return;
+    let target = null, after = false;
+    for (const el of sibs){
+      const r = el.getBoundingClientRect();
+      if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom){
+        target = el; after = (x - r.left) > r.width / 2; break;
+      }
+    }
+    if (!target){
+      // Not over a card — in the gutter, or past the end of the last row.
+      // Nearest centre keeps the slot following the pointer sensibly.
+      let best = Infinity;
+      for (const el of sibs){
+        const r = el.getBoundingClientRect();
+        const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+        const d = (x - cx) * (x - cx) + (y - cy) * (y - cy);
+        if (d < best){ best = d; target = el; after = x > cx; }
+      }
+    }
+    if (!target) return;
+    const ref = after ? target.nextSibling : target;
+    if (slot.nextSibling === ref) return;      // already exactly there
+    const before = flipStart(grid, slot);
+    grid.insertBefore(slot, ref);
+    flipEnd(before);
+  }
+
+  function onGridUp(e){
+    if (pend && !reorder){ pend = null; return; }
+    if (!reorder || reorder.mode !== 'drag' || e.pointerId !== reorder.pid) return;
+    const { card, slot, grid, id } = reorder;
+    const anchor = anchorFor(slot);
+    const unchanged = anchorKey(slot) === reorder.from;
+
+    card.classList.remove('drag');
+    card.style.position = card.style.left = card.style.top = '';
+    card.style.width = card.style.height = card.style.margin = card.style.transform = '';
+    grid.insertBefore(card, slot);
+    slot.remove();
+    // pointerup is followed by a click, and that click would open the ticket
+    // you just finished dragging. Eat exactly one, then stop listening.
+    const eat = (ev) => { ev.stopPropagation(); ev.preventDefault(); };
+    document.addEventListener('click', eat, true);
+    setTimeout(() => document.removeEventListener('click', eat, true), 0);
+
+    commitMove(id, anchor, unchanged);
+  }
+
+  function cancelDrag(){
+    if (!reorder || reorder.mode !== 'drag') return;
+    const { card, slot, grid } = reorder;
+    card.classList.remove('drag');
+    card.style.position = card.style.left = card.style.top = '';
+    card.style.width = card.style.height = card.style.margin = card.style.transform = '';
+    grid.insertBefore(card, slot);
+    slot.remove();
+    reorder = null;
+    setMoveKeys(false);
+    refresh();
+  }
+
+  // ── keyboard ─────────────────────────────────────────────────────────
+  // The same gesture, not a second one: the card lifts in place exactly as it
+  // would under the cursor, and the others shuffle past it.
+  function carryStep(dir){
+    const t = selectedTicket(); if (!t) return;
+    const card = document.querySelector('.card[data-tid="' + t.id + '"]');
+    if (!card) return;
+    const grid = ordGrid(card); if (!grid) return;
+
+    if (!reorder){
+      reorder = { mode: 'key', id: t.id, card, grid, origNext: card.nextSibling, from: anchorKey(card) };
+      card.classList.add('carry');
+      setMoveKeys(true);
+      // Clicking away is a decision too — commit rather than leaving a card
+      // stuck in the air with no visible way down.
+      reorder.away = () => { if (reorder && reorder.mode === 'key') carryCommit(); };
+      document.addEventListener('pointerdown', reorder.away, true);
+    }
+    const sib = dir < 0 ? prevCard(card) : nextCard(card);
+    if (!sib){ announce('already at the ' + (dir < 0 ? 'top' : 'bottom')); return; }
+    const before = flipStart(grid, null);
+    grid.insertBefore(card, dir < 0 ? sib : sib.nextSibling);
+    flipEnd(before);
+    announce(t.title + ', ' + movePos(card));
+  }
+
+  function carryEnd(){
+    if (!reorder || reorder.mode !== 'key') return null;
+    const r = reorder;
+    r.card.classList.remove('carry');
+    r.card.style.transform = '';
+    document.removeEventListener('pointerdown', r.away, true);
+    return r;
+  }
+  function carryCommit(){
+    const r = carryEnd(); if (!r) return;
+    commitMove(r.id, anchorFor(r.card), anchorKey(r.card) === r.from);
+    announce('dropped at ' + movePos(r.card));
+  }
+  function carryRevert(){
+    const r = carryEnd(); if (!r) return;
+    r.grid.insertBefore(r.card, r.origNext);
+    reorder = null;
+    setMoveKeys(false);
+    announce('put back');
+    paintSel();
   }
 
   // ── descriptions ─────────────────────────────────────────────────────
@@ -2611,6 +2996,21 @@ export function boardPage(): string {
     const onCtl = e.target && typeof e.target.closest === 'function' &&
       e.target.closest('a[href],button,[role="button"]');
 
+    // A carried card is a modal state, and it comes first: it owns esc, ⏎ and
+    // ⇧J/⇧K, and swallows everything else until you put it down. Letting s or d
+    // fire under a card that is mid-air is how you lose track of what moved —
+    // and esc especially, which otherwise navigates up a level and strands the
+    // card lifted on a page you just left.
+    if (reorder && reorder.mode === 'key' && !typing){
+      switch (e.key){
+        case 'Escape': e.preventDefault(); carryRevert(); break;
+        case 'Enter':  e.preventDefault(); carryCommit(); break;
+        case 'J':      e.preventDefault(); carryStep(1);  break;
+        case 'K':      e.preventDefault(); carryStep(-1); break;
+      }
+      return;
+    }
+
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k'){ e.preventDefault(); inPal ? closeAll() : palOpen(); return; }
     if (e.key === 'Escape'){
       // On a page with nothing open, esc is "go back up" rather than a no-op,
@@ -2643,6 +3043,11 @@ export function boardPage(): string {
     switch (e.key){
       case 'ArrowDown': case 'j': e.preventDefault(); move(1); break;
       case 'ArrowUp': case 'k': e.preventDefault(); move(-1); break;
+      // Shifted, so they read as "the same movement, but carrying something".
+      // The first press picks the card up as well as moving it — a separate
+      // key to enter move mode would be one more thing to remember for no gain.
+      case 'J': e.preventDefault(); carryStep(1); break;
+      case 'K': e.preventDefault(); carryStep(-1); break;
       // On a ticket page ⏎ starts or attaches it — what it meant with the
       // overlay open, now carried by the page rather than by a module flag.
       // Everywhere else it opens what is selected.
@@ -2727,6 +3132,13 @@ export function boardPage(): string {
     // and nothing ever re-drives refresh().
     es.onerror = () => toast('lost the server — rerun <b>smriti</b> in a terminal', 6000);
   } catch {}
+  // Bound once, on the document rather than on a grid: the pointer leaves the
+  // card the instant it lifts, and a drag that ends over the margin or off the
+  // window still has to end. wire() only binds the pointerdown that starts it.
+  document.addEventListener('pointermove', onGridMove);
+  document.addEventListener('pointerup', onGridUp);
+  document.addEventListener('pointercancel', cancelDrag);
+
   // Back/forward and hand-edited URLs both drive the same router.
   window.addEventListener('hashchange', () => route());
   // Coming back to the tab is the moment stale data is most obvious, and the

@@ -190,6 +190,156 @@ line two"
   [ "$(echo "$output" | jq -r 'length')" = "0" ]
 }
 
+# ─── move (the order you drag things into) ──────────────────────────────────
+#
+# Ticket #11. `position` is a REAL so a card dropped between two others takes
+# the midpoint of its neighbours — one row written, no renumbering cascade —
+# and the scope repacks to whole numbers only when a gap runs out of room.
+
+tq() { sqlite3 "$SMRITI_HOME/factory.db" "$1"; }
+# The ids of one app's tickets, in the order they would be drawn.
+ord() { tq "SELECT group_concat(id) FROM (SELECT id FROM tickets WHERE repo_slug = '$1' ORDER BY position, id);"; }
+
+four() {
+  "$CLI" add one   --repo demo >/dev/null
+  "$CLI" add two   --repo demo >/dev/null
+  "$CLI" add three --repo demo >/dev/null
+  "$CLI" add four  --repo demo >/dev/null
+}
+
+@test "move: a new ticket lands at the bottom of its group" {
+  four
+  [ "$(ord demo)" = "1,2,3,4" ]
+}
+
+@test "move: --after puts it directly after the target" {
+  four
+  "$CLI" move 1 --after 3
+  [ "$(ord demo)" = "2,3,1,4" ]
+}
+
+@test "move: --before puts it directly before the target" {
+  four
+  "$CLI" move 4 --before 2
+  [ "$(ord demo)" = "1,4,2,3" ]
+}
+
+@test "move: --top and --bottom go to the ends" {
+  four
+  "$CLI" move 3 --top
+  [ "$(ord demo)" = "3,1,2,4" ]
+  "$CLI" move 3 --bottom
+  [ "$(ord demo)" = "1,2,4,3" ]
+}
+
+@test "move: writes one row and leaves the rest alone" {
+  # The whole reason position is a REAL. If a drag rewrote its siblings, every
+  # reorder would be a scope-wide write and the midpoint scheme would be
+  # pointless.
+  four
+  local before after
+  before=$(tq "SELECT group_concat(id || '=' || position) FROM (SELECT id, position FROM tickets WHERE id IN (1,2,4) ORDER BY id);")
+  "$CLI" move 3 --top
+  after=$(tq "SELECT group_concat(id || '=' || position) FROM (SELECT id, position FROM tickets WHERE id IN (1,2,4) ORDER BY id);")
+  [ "$before" = "$after" ]
+}
+
+@test "move: the order survives, and list reads it back" {
+  four
+  "$CLI" move 4 --top
+  run "$CLI" list --repo demo
+  local first_line; first_line=$(echo "$output" | head -1)
+  [[ "$first_line" == *"four"* ]]
+}
+
+@test "move: a target in another app is refused, exit 6" {
+  # Dropping a card into another group means re-filing it, and `edit --project`
+  # is the verb for that. Two gestures for one operation is worse than one each.
+  "$CLI" add mine   --repo demo  >/dev/null
+  "$CLI" add theirs --repo other >/dev/null
+  run "$CLI" move 1 --after 2
+  [ "$status" -eq 6 ]
+  [[ "$output" == *"different app or project"* ]]
+}
+
+@test "move: a target in another project of the same app is refused too" {
+  "$PROJECT" add "Alpha" --repo demo >/dev/null
+  "$CLI" add loose  --repo demo >/dev/null
+  "$CLI" add filed  --repo demo --project alpha >/dev/null
+  run "$CLI" move 1 --after 2
+  [ "$status" -eq 6 ]
+}
+
+@test "move: refuses to move relative to itself" {
+  four
+  run "$CLI" move 1 --after 1
+  [ "$status" -eq 2 ]
+}
+
+@test "move: an unknown target exits 4, an unknown ticket exits 4" {
+  four
+  run "$CLI" move 1 --after 99
+  [ "$status" -eq 4 ]
+  run "$CLI" move 99 --top
+  [ "$status" -eq 4 ]
+}
+
+@test "move: with no direction is a usage error" {
+  four
+  run "$CLI" move 1
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"where it goes"* ]]
+}
+
+@test "move: a gap too small to halve repacks the group instead of collapsing" {
+  # Two adjacent doubles have no value between them, so the midpoint would
+  # round onto an endpoint and the order would quietly stop being a total one.
+  # The renumber is what keeps that from happening.
+  four
+  tq "UPDATE tickets SET position = 1.0 WHERE id = 1;
+      UPDATE tickets SET position = 1.0000000000000002 WHERE id = 2;
+      UPDATE tickets SET position = 50 WHERE id = 3;
+      UPDATE tickets SET position = 60 WHERE id = 4;"
+  run "$CLI" move 3 --after 1
+  [ "$status" -eq 0 ]
+  [ "$(ord demo)" = "1,3,2,4" ]
+  # Every position distinct, or the next drag has nothing to aim between.
+  [ "$(tq "SELECT count(DISTINCT position) FROM tickets WHERE repo_slug='demo';")" = "4" ]
+}
+
+@test "move: re-filing through edit lands it at the bottom of its destination" {
+  # A position means nothing outside its own scope, so a ticket that changes
+  # app or project must be given a fresh one — otherwise it arrives carrying a
+  # number from somewhere else and sorts into an arbitrary place.
+  "$CLI" add a1 --repo alpha >/dev/null
+  "$CLI" add a2 --repo alpha >/dev/null
+  "$CLI" add b1 --repo beta  >/dev/null
+  "$CLI" add b2 --repo beta  >/dev/null
+  # #1 sits at position 1 in alpha; moved to beta it must not keep it.
+  "$CLI" edit 1 --repo beta >/dev/null
+  [ "$(ord beta)" = "3,4,1" ]
+}
+
+@test "move: filing into a project repositions even without --repo" {
+  # The quiet path: naming a project settles the app too, so scope changes
+  # without --repo ever being passed.
+  "$PROJECT" add "Alpha" --repo demo >/dev/null
+  "$CLI" add p1 --repo demo --project alpha >/dev/null
+  "$CLI" add p2 --repo demo --project alpha >/dev/null
+  "$CLI" add loose --repo demo >/dev/null
+  # #3 is loose at position 1 of its own scope; filed into alpha it goes last.
+  "$CLI" edit 3 --project alpha >/dev/null
+  [ "$(tq "SELECT group_concat(id) FROM (SELECT id FROM tickets WHERE project_id IS NOT NULL ORDER BY position, id);")" = "1,2,3" ]
+}
+
+@test "move: app-less ideas are one group, so they order against each other" {
+  "$CLI" add i1 --repo - >/dev/null
+  "$CLI" add i2 --repo - >/dev/null
+  "$CLI" add i3 --repo - >/dev/null
+  "$CLI" move 3 --top
+  [ "$(tq "SELECT group_concat(id) FROM (SELECT id FROM tickets WHERE repo_slug IS NULL ORDER BY position, id);")" = "3,1,2" ]
+}
+
 # ─── status transitions ─────────────────────────────────────────────────────
 
 @test "status: moves a ticket and rejects an unknown value" {

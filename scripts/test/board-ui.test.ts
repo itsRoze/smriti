@@ -1064,11 +1064,13 @@ describe('the margin', () => {
       // Not an exact count — the bar legitimately grows when a key has nowhere
       // else to live. What must stay true is that a key with a control on
       // screen is not ALSO listed here.
-      const bar = (await page.locator('.keys').innerText()).toLowerCase();
+      // #keys, not .keys: the move-mode legend is a second .keys bar, hidden
+      // until a card is being carried.
+      const bar = (await page.locator('#keys').innerText()).toLowerCase();
       expect(bar).not.toContain('margin');
       expect(bar).not.toContain('completed');
-      expect(await page.locator('.keys .k[data-k="b"]').count()).toBe(0);
-      expect(await page.locator('.keys .k[data-k="h"]').count()).toBe(0);
+      expect(await page.locator('#keys .k[data-k="b"]').count()).toBe(0);
+      expect(await page.locator('#keys .k[data-k="h"]').count()).toBe(0);
 
       // Legible at rest, not hover-only: the board replaces its html about once
       // a second, and a swap under a still cursor never regains :hover.
@@ -1285,6 +1287,184 @@ describe('the fold, on the board itself', () => {
       await page.waitForSelector('.card.done');
       const revealed = (await page.locator('.card.done .t').allInnerTexts()).join(' | ');
       expect(revealed).toContain('the old importer');
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+});
+
+// Ticket #11: drag to order tickets, and make that order stick.
+//
+// The app page is the surface used here because it draws ONE .cards grid — the
+// loose tickets — so "what order are they in" is a straight read rather than a
+// question about which group you meant. The CLI and HTTP layers are covered in
+// ticket.bats and board.test.ts; what only exists in a browser is the gesture
+// itself, the keyboard carry, and whether a live redraw eats either of them.
+describe('reordering', () => {
+  const ORD = ['reorder alpha', 'reorder beta'];
+
+  beforeAll(() => {
+    if (!HAS_CHROMIUM) return;
+    // Appended, and this block is last in the file: earlier tests count cards
+    // and would fail if the fixture grew underneath them.
+    for (const t of ORD) must(run(TICKET, ['add', t, '--ready'], appDir), 'add ' + t);
+  });
+
+  // A viewport tall enough to hold the whole loose group. page.mouse works in
+  // viewport coordinates, so a card below the fold has coordinates that are not
+  // on screen and every click lands on <html> instead — and scrollIntoView is
+  // not the fix, because the SSE redraw detaches the element mid-scroll.
+  const openTall = async (hash: string) => {
+    const o = await open(hash);
+    await o.page.setViewportSize({ width: 1400, height: 1600 });
+    await o.page.waitForSelector('#plots .cards .card');
+    return o;
+  };
+
+  // Titles in drawn order, from the one grid the app page renders. Excludes the
+  // completed fold, which is deliberately not reorderable.
+  const order = (page: any) =>
+    page.$$eval('#plots .cards:not(.folded) .card .t', (els: any[]) => els.map((e) => e.innerText));
+
+  const boxOf = async (page: any, title: string) => {
+    const b = await page.locator('#plots .card', { hasText: title }).first().boundingBox();
+    if (!b) throw new Error('no card for ' + title);
+    return b;
+  };
+
+  it('a card dragged onto another lands there, and the order survives a reload', async () => {
+    if (!HAS_CHROMIUM) return;
+    const { context, page, errors } = await openTall('#/r/test-demo');
+    try {
+      const before = await order(page);
+      expect(before[0]).toBe('a one-off bug');
+      expect(before).toContain('reorder beta');
+
+      const from = await boxOf(page, 'reorder beta');
+      const to = await boxOf(page, 'a one-off bug');
+      await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
+      await page.mouse.down();
+      // Past the 5px threshold first, so the gesture is a drag and not a click,
+      // then onto the LEFT half of the target, which means "before this one".
+      await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2 - 40, { steps: 5 });
+      await page.mouse.move(to.x + to.width * 0.25, to.y + to.height / 2, { steps: 10 });
+
+      // Mid-flight: the card is in your hand and a slot marks where it lands.
+      expect(await page.locator('.card.drag').count()).toBe(1);
+      expect(await page.locator('.slot').count()).toBe(1);
+
+      const wrote = page.waitForResponse((r: any) => r.url().includes('/move'));
+      await page.mouse.up();
+      expect((await wrote).status()).toBe(200);
+      await page.waitForFunction(() => document.querySelectorAll('.slot').length === 0);
+
+      expect((await order(page))[0]).toBe('reorder beta');
+      // A drag must not also open the ticket it was holding.
+      expect(page.url()).toContain('#/r/test-demo');
+
+      // The real claim: it stuck. Re-read from the store, not from the DOM.
+      await page.reload({ waitUntil: 'domcontentloaded' });
+      await page.waitForFunction(() => (document.querySelector('#plots')?.children.length ?? 0) > 0);
+      expect((await order(page))[0]).toBe('reorder beta');
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+
+  it('shift-J carries the selected card, and esc puts it back', async () => {
+    if (!HAS_CHROMIUM) return;
+    const { context, page, errors } = await openTall('#/r/test-demo');
+    try {
+      const before = await order(page);
+      await page.keyboard.press('ArrowDown');          // select the first card
+      await page.waitForSelector('.card.sel');
+
+      await page.keyboard.press('Shift+J');
+      await page.waitForSelector('.card.carry');
+      // Lifted, and the keycap bar swapped to the move legend.
+      expect(await page.locator('#movekeys').isVisible()).toBe(true);
+      const moved = await order(page);
+      expect(moved[0]).toBe(before[1]);
+      expect(moved[1]).toBe(before[0]);
+
+      await page.keyboard.press('Escape');
+      await page.waitForFunction(() => document.querySelectorAll('.card.carry').length === 0);
+      expect(await order(page)).toEqual(before);
+      expect(await page.locator('#movekeys').isVisible()).toBe(false);
+      // esc put the card down; it did NOT also navigate up a level.
+      expect(page.url()).toContain('#/r/test-demo');
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+
+  it('shift-J then enter commits, and the store agrees', async () => {
+    if (!HAS_CHROMIUM) return;
+    const { context, page, errors } = await openTall('#/r/test-demo');
+    try {
+      const before = await order(page);
+      await page.keyboard.press('ArrowDown');
+      await page.waitForSelector('.card.sel');
+      await page.keyboard.press('Shift+J');
+      await page.waitForSelector('.card.carry');
+
+      const wrote = page.waitForResponse((r: any) => r.url().includes('/move'));
+      await page.keyboard.press('Enter');
+      expect((await wrote).status()).toBe(200);
+      await page.waitForFunction(() => document.querySelectorAll('.card.carry').length === 0);
+
+      // Enter dropped the card. It must not ALSO have opened the ticket.
+      expect(page.url()).toContain('#/r/test-demo');
+
+      const listed = JSON.parse(run(TICKET, ['list', '--all', '--json'], appDir).stdout)
+        .filter((t: any) => t.repo_slug === 'test-demo' && t.project_id == null &&
+                            !['shipped', 'cancelled'].includes(t.status))
+        .map((t: any) => t.title);
+      expect(listed[0]).toBe(before[1]);
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+
+  it('a live redraw does not eat a drag in flight', async () => {
+    if (!HAS_CHROMIUM) return;
+    // The sharpest edge in this whole feature. #plots is replaced wholesale
+    // whenever the store changes — about once a second while an agent runs —
+    // and doing that mid-gesture pulls the card out from under the cursor.
+    const { context, page, errors } = await openTall('#/r/test-demo');
+    try {
+      const from = await boxOf(page, 'reorder alpha');
+      await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
+      await page.mouse.down();
+      await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2 - 60, { steps: 5 });
+      expect(await page.locator('.card.drag').count()).toBe(1);
+
+      // A write from outside the board entirely — the mtime watcher notices and
+      // broadcasts, which is the same path an agent's run takes.
+      must(run(TICKET, ['add', 'noise from another process', '--repo', '-'], appDir), 'add noise');
+      await page.waitForTimeout(1800);
+
+      // Still airborne, still with somewhere to land.
+      expect(await page.locator('.card.drag').count()).toBe(1);
+      expect(await page.locator('.slot').count()).toBe(1);
+
+      await page.mouse.up();
+      await page.waitForFunction(() => document.querySelectorAll('.slot').length === 0);
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+
+  it('completed work in the fold is not draggable', async () => {
+    if (!HAS_CHROMIUM) return;
+    const { context, page, errors } = await openTall('#/r/test-demo');
+    try {
+      await page.keyboard.press('h');
+      await page.waitForSelector('.card.done');
+      const done = await page.locator('.card.done').first().boundingBox();
+      await page.mouse.move(done!.x + done!.width / 2, done!.y + done!.height / 2);
+      await page.mouse.down();
+      await page.mouse.move(done!.x + done!.width / 2, done!.y - 80, { steps: 8 });
+      // No lift, no slot: a hand-placed sequence over shipped work is a number
+      // nobody reads, so the fold never offers the gesture.
+      expect(await page.locator('.card.drag').count()).toBe(0);
+      expect(await page.locator('.slot').count()).toBe(0);
+      await page.mouse.up();
       expect(errors).toEqual([]);
     } finally { await context.close(); }
   }, T);
