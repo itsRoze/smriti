@@ -753,17 +753,29 @@ async function cmdServer(): Promise<never> {
         touch();
         const b = (await req.json().catch(() => ({}))) as
           { before?: number; after?: number; top?: boolean; bottom?: boolean };
+        // typeof 'number' alone admits NaN, 1.5 and Infinity, which reach the
+        // command line as "NaN"/"1.5"/"Infinity", get rejected there as a usage
+        // error, and surface as "the factory fell over". A ticket id is a
+        // positive integer; ask for one.
+        const isId = (v: unknown) => Number.isInteger(v) && (v as number) > 0;
         let args: string[];
-        if (typeof b.before === 'number')     args = ['move', move[1], '--before', String(b.before)];
-        else if (typeof b.after === 'number') args = ['move', move[1], '--after', String(b.after)];
-        else if (b.top)                       args = ['move', move[1], '--top'];
-        else if (b.bottom)                    args = ['move', move[1], '--bottom'];
+        if (b.before !== undefined || b.after !== undefined) {
+          const rel = b.before !== undefined ? b.before : b.after;
+          if (!isId(rel)) return json({ error: 'before/after must be a ticket id' }, 400);
+          args = ['move', move[1], b.before !== undefined ? '--before' : '--after', String(rel)];
+        }
+        else if (b.top)    args = ['move', move[1], '--top'];
+        else if (b.bottom) args = ['move', move[1], '--bottom'];
         else return json({ error: 'say where it goes: before, after, top or bottom' }, 400);
         const r = sh(TICKET, args);
-        // 6 is "that target is in another app or project" — an illegal drop
-        // rather than a broken server, and the page says so instead of
-        // reporting that the factory fell over.
-        if (!r.ok) return json({ error: r.errOut || 'could not move it' }, r.code === 6 ? 409 : 500);
+        // The CLI's exit codes carry more than "it failed", and the page acts
+        // on the difference: 6 is a drop into another app or project, 4 is a
+        // ticket that is not there, 2 is a malformed request. None of the three
+        // is the factory falling over, which is what a 500 tells the user.
+        if (!r.ok) {
+          const code = r.code === 6 ? 409 : r.code === 4 ? 404 : r.code === 2 ? 400 : 500;
+          return json({ error: r.errOut || 'could not move it' }, code);
+        }
         broadcast();
         return json({ ok: true });
       }

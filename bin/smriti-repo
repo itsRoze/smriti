@@ -355,7 +355,8 @@ cmd_show() {
   tickets=$(db "SELECT '  #' || id || '  ' || status || '  ' || title
                 FROM tickets WHERE repo_slug = $(sql_quote "$slug")
                   AND status NOT IN ('shipped','cancelled')
-                ORDER BY position ASC, id;")
+                ORDER BY (project_id IS NULL), coalesce(project_id, 0),
+                         position ASC, id;")
   if [ -n "$tickets" ]; then
     echo
     echo "open tickets:"

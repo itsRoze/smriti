@@ -414,11 +414,17 @@ export function boardPage(): string {
   .histline.on b{color:var(--hi-text)}
   .cards.folded{margin-top:12px}
 
-  .cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(310px,1fr));gap:14px}
+  /* position:relative so a card's offsetLeft/offsetTop are measured against
+     the grid — the drag hit-tests on those rather than on bounding rects,
+     which report mid-FLIP positions instead of the actual cells. */
+  .cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(310px,1fr));gap:14px;position:relative}
   .card{
     padding:15px 17px 14px;position:relative;display:flex;flex-direction:column;min-height:112px;
-    cursor:grab;transition:transform .12s ease,box-shadow .12s ease;
+    cursor:pointer;transition:transform .12s ease,box-shadow .12s ease;
     animation:drop .4s var(--spring) backwards;
+    /* Without this, flinging a card paints a text selection across every card
+       it passes over, and the selection outlives the drop. */
+    user-select:none;-webkit-user-select:none;
   }
   @keyframes drop{from{opacity:0;transform:translateY(10px) rotate(-.6deg)}}
   .card:hover{transform:translate(-1px,-2px) rotate(-.4deg);box-shadow:4px 6px 0 rgba(var(--sh),.4)}
@@ -432,8 +438,14 @@ export function boardPage(): string {
      There is no grip handle and no drag dots — nothing permanent is added to a
      card. The affordance is the cursor plus the lift hover already does, and
      the ? sheet teaches the keys like it does for everything else. */
+  /* Only where a drag can actually start. The completed fold renders the same
+     cards, and advertising a grab there promises a gesture that is refused. */
+  .cards:not(.folded) > .card{cursor:grab}
+  /* On the root, because .card.drag is pointer-events:none and the cursor is
+     therefore hit-tested against whatever sits underneath it. */
+  :root.dragging,:root.dragging *{cursor:grabbing !important}
   .card.drag{
-    cursor:grabbing;z-index:40;pointer-events:none;
+    z-index:40;pointer-events:none;
     box-shadow:10px 14px 0 rgba(var(--sh),.30);
     transition:box-shadow .14s ease;   /* transform is written per frame by JS */
   }
@@ -449,6 +461,13 @@ export function boardPage(): string {
      them — otherwise you drag a see-through rectangle over other cards. The
      dashed border stays: that is the card's identity, not its backing. */
   .card.drag,.card.carry{background:var(--paper-2)}
+  /* No entrance animation on a card you are holding. Moving a node — which is
+     what picking one up does, out of the grid and onto the body — RESTARTS its
+     CSS animation, so the card faded in from opacity:0 under the cursor and you
+     could read the card beneath through it. The exact opposite of the thing
+     this design is built on: what you are holding is the most solid object on
+     the page, and the hole it left is the ghost. */
+  .card.drag,.card.carry{animation:none}
   /* The hover rule would otherwise re-tilt a card being carried by keyboard,
      which reads as the card twitching when the pointer happens to rest on it. */
   .card.carry:hover{transform:rotate(-2.2deg) scale(1.035)}
@@ -878,7 +897,7 @@ export function boardPage(): string {
      board has always explained itself, so move mode explains itself there too
      rather than inventing a new place to put a hint. -->
 <div class="keys" id="movekeys" hidden>
-  <span><span class="k hit" data-k="J">⇧J ⇧K</span>move it</span>
+  <span><span class="k" data-k="J">⇧J ⇧K</span>move it</span>
   <span><span class="k" data-k="Enter">⏎</span>drop it</span>
   <span><span class="k" data-k="Escape">esc</span>put it back</span>
 </div>
@@ -1315,10 +1334,14 @@ export function boardPage(): string {
       // appeared broken because for those cards it was. Cancelled tickets on the
       // next line were never given the same exemption, so shipped was the odd
       // one out. Predictable beats gentle here: press h to see what finished.
+      // NOT sorted here. Positions restart at 1 in every group, so sorting an
+      // app's whole backlog on position before bucketing compares numbers from
+      // different scopes: every group's head ticket ties at 1 and the id
+      // tiebreak silently decides which project is drawn first. Bucket first,
+      // sort inside each bucket — see below.
       const items = all
         .filter((t) => t.status !== 'shipped')
-        .filter((t) => t.status !== 'cancelled')
-        .sort(byPos);
+        .filter((t) => t.status !== 'cancelled');
       const projs = projectsIn(app).filter((p) => p.status === 'active');
       const done = all.filter((t) => !isOpen(t) && !items.includes(t));
       // An app with nothing live stays OFF the board even though it has a
@@ -1336,7 +1359,11 @@ export function boardPage(): string {
         '<span class="goto">' + (app === NO_APP ? 'no app yet' : 'app page →') + '</span>' +
         '<span class="pn">' + items.length + '</span></div>';
 
-      // Grouped by project, in the order their most urgent ticket appears.
+      // Grouped by project, then ordered WITHIN each group. Group order is by
+      // project id — the order you created them — rather than by whose work is
+      // most urgent, which is a question the board stopped answering when your
+      // dragged order replaced the status bands. Deterministic beats a ranking
+      // derived from numbers that are not comparable across groups.
       const groups = new Map();
       const loose = [];
       for (const t of items){
@@ -1349,8 +1376,11 @@ export function boardPage(): string {
       // An active project with no open tickets still deserves a line — it is
       // where you would go to add one.
       for (const p of projs) if (!groups.has(p.id)) groups.set(p.id, []);
+      for (const g of groups.values()) g.sort(byPos);
+      loose.sort(byPos);
+      const ordered = [...groups.entries()].sort((a, b) => a[0] - b[0]);
 
-      for (const [pid, group] of groups){
+      for (const [pid, group] of ordered){
         const p = projectById(pid);
         html += '<div class="sub" role="button" tabindex="0" data-proj="' + pid + '">' +
           '<span class="arrow">▸</span> ' + esc(p ? p.name : 'project ' + pid) +
@@ -1898,6 +1928,7 @@ export function boardPage(): string {
   }
   function flipEnd(before){
     if (!before) return;
+    const moved = [];
     for (const [el, r0] of before){
       if (!el.isConnected) continue;
       const r1 = el.getBoundingClientRect();
@@ -1908,13 +1939,21 @@ export function boardPage(): string {
       // transform later hands it back to the .carry class untouched.
       el.style.transform = 'translate(' + dx + 'px,' + dy + 'px)' +
         (el.classList.contains('carry') ? ' ' + CARRY_T : '');
+      moved.push(el);
     }
+    if (!moved.length) return;
     requestAnimationFrame(() => {
-      for (const [el] of before){
+      for (const el of moved){
         if (!el.isConnected) continue;
         el.classList.add('flip');
         el.style.transform = '';
       }
+      // .flip has to come back OFF. It overrides the whole transition
+      // shorthand, so a card left wearing it loses the box-shadow half of the
+      // hover transition and does its hover lift on the overshooting spring —
+      // leaving the board with two different hover feels side by side until
+      // the next full re-render.
+      setTimeout(() => { for (const el of moved) el.classList.remove('flip'); }, 220);
     });
   }
 
@@ -1986,6 +2025,13 @@ export function boardPage(): string {
     const grid = ordGrid(card);
     pend = null;
     if (!grid) return;
+    // isBusy() guards a drag in flight, but NOT the window between pressing a
+    // card and moving far enough to mean it. A redraw landing in there replaces
+    // #plots and detaches this card, whose parent is still a .cards div — just
+    // one in a dead tree. Dragging it would insert the slot into that tree,
+    // yank a stale card into the live page, and file it back somewhere nobody
+    // can see, having read its new neighbours from a DOM that no longer exists.
+    if (!card.isConnected) return;
     const r = card.getBoundingClientRect();
 
     const slot = document.createElement('div');
@@ -2001,6 +2047,10 @@ export function boardPage(): string {
     card.style.width = r.width + 'px'; card.style.height = r.height + 'px';
     card.style.margin = '0';
     document.body.appendChild(card);
+    // The grabbing cursor has to live on the root: .card.drag is
+    // pointer-events:none, so the cursor is hit-tested against whatever is
+    // underneath it and a rule on the card itself never renders.
+    document.documentElement.classList.add('dragging');
 
     reorder = {
       mode: 'drag', id, card, slot, grid, pid: e.pointerId,
@@ -2021,11 +2071,20 @@ export function boardPage(): string {
     const { grid, slot } = reorder;
     const sibs = [...grid.children].filter(isCard);
     if (!sibs.length) return;
+    // Hit-tested against LAYOUT geometry (offsetLeft/Top), not
+    // getBoundingClientRect. The siblings are mid-FLIP for 180ms after every
+    // slot move, and a bounding rect reports the transformed, half-travelled
+    // box rather than the cell the card actually occupies. Sweeping the pointer
+    // across the grid would then place the slot relative to where a card WAS,
+    // and the indicator thrashes — the exact cheapness FLIP was added to avoid.
+    // .cards is position:relative so these offsets are grid-relative.
+    const g = grid.getBoundingClientRect();
+    const px = x - g.left, py = y - g.top;
     let target = null, after = false;
     for (const el of sibs){
-      const r = el.getBoundingClientRect();
-      if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom){
-        target = el; after = (x - r.left) > r.width / 2; break;
+      const l = el.offsetLeft, t = el.offsetTop, w = el.offsetWidth, h = el.offsetHeight;
+      if (px >= l && px <= l + w && py >= t && py <= t + h){
+        target = el; after = (px - l) > w / 2; break;
       }
     }
     if (!target){
@@ -2033,10 +2092,9 @@ export function boardPage(): string {
       // Nearest centre keeps the slot following the pointer sensibly.
       let best = Infinity;
       for (const el of sibs){
-        const r = el.getBoundingClientRect();
-        const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
-        const d = (x - cx) * (x - cx) + (y - cy) * (y - cy);
-        if (d < best){ best = d; target = el; after = x > cx; }
+        const cx = el.offsetLeft + el.offsetWidth / 2, cy = el.offsetTop + el.offsetHeight / 2;
+        const d = (px - cx) * (px - cx) + (py - cy) * (py - cy);
+        if (d < best){ best = d; target = el; after = px > cx; }
       }
     }
     if (!target) return;
@@ -2047,18 +2105,28 @@ export function boardPage(): string {
     flipEnd(before);
   }
 
-  function onGridUp(e){
-    if (pend && !reorder){ pend = null; return; }
-    if (!reorder || reorder.mode !== 'drag' || e.pointerId !== reorder.pid) return;
-    const { card, slot, grid, id } = reorder;
-    const anchor = anchorFor(slot);
-    const unchanged = anchorKey(slot) === reorder.from;
-
+  // Put the carried card back in the flow where its slot is standing, and undo
+  // everything beginDrag did to it. One function because the drop path and the
+  // cancel path must never drift apart — and the cancel path is the one nobody
+  // exercises by hand.
+  function restoreCard(){
+    const { card, slot, grid } = reorder;
     card.classList.remove('drag');
     card.style.position = card.style.left = card.style.top = '';
     card.style.width = card.style.height = card.style.margin = card.style.transform = '';
+    try { card.releasePointerCapture(reorder.pid); } catch {}
     grid.insertBefore(card, slot);
     slot.remove();
+    document.documentElement.classList.remove('dragging');
+  }
+
+  function onGridUp(e){
+    if (pend && !reorder){ pend = null; return; }
+    if (!reorder || reorder.mode !== 'drag' || e.pointerId !== reorder.pid) return;
+    const { slot, id } = reorder;
+    const anchor = anchorFor(slot);
+    const unchanged = anchorKey(slot) === reorder.from;
+    restoreCard();
     // pointerup is followed by a click, and that click would open the ticket
     // you just finished dragging. Eat exactly one, then stop listening.
     const eat = (ev) => { ev.stopPropagation(); ev.preventDefault(); };
@@ -2069,13 +2137,14 @@ export function boardPage(): string {
   }
 
   function cancelDrag(){
+    // Before anything else: a pointercancel can arrive while only pend is
+    // set — the browser taking over for a touch scroll or a palm rejection,
+    // before the 5px threshold. Leaving pend alive there means the NEXT
+    // pointermove starts a drag with no button held, pinning a card under a
+    // cursor that is not pressing anything.
+    pend = null;
     if (!reorder || reorder.mode !== 'drag') return;
-    const { card, slot, grid } = reorder;
-    card.classList.remove('drag');
-    card.style.position = card.style.left = card.style.top = '';
-    card.style.width = card.style.height = card.style.margin = card.style.transform = '';
-    grid.insertBefore(card, slot);
-    slot.remove();
+    restoreCard();
     reorder = null;
     setMoveKeys(false);
     refresh();
@@ -2085,6 +2154,12 @@ export function boardPage(): string {
   // The same gesture, not a second one: the card lifts in place exactly as it
   // would under the cursor, and the others shuffle past it.
   function carryStep(dir){
+    // The selection must be a CARD. flat also holds "waiting on you" rows,
+    // which are .item elements drawn from a ticket — and selectedTicket()
+    // happily returns that ticket, so without this check ⇧J finds the same
+    // ticket's card further down the board and silently lifts, steps and
+    // commits a reorder the user never saw, while .sel stayed on the row above.
+    if (sel < 0 || !flat[sel] || flat[sel].kind !== 'card') return;
     const t = selectedTicket(); if (!t) return;
     const card = document.querySelector('.card[data-tid="' + t.id + '"]');
     if (!card) return;
@@ -3001,13 +3076,17 @@ export function boardPage(): string {
     // fire under a card that is mid-air is how you lose track of what moved —
     // and esc especially, which otherwise navigates up a level and strands the
     // card lifted on a page you just left.
+    // Caps Lock makes e.key report 'J' for an unshifted press and 'j' for a
+    // shifted one, so matching on the capital letter alone swaps carry and
+    // navigation for as long as the light is on. The modifier is the thing
+    // being asked about; ask about it.
+    const kl = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+
     if (reorder && reorder.mode === 'key' && !typing){
-      switch (e.key){
-        case 'Escape': e.preventDefault(); carryRevert(); break;
-        case 'Enter':  e.preventDefault(); carryCommit(); break;
-        case 'J':      e.preventDefault(); carryStep(1);  break;
-        case 'K':      e.preventDefault(); carryStep(-1); break;
-      }
+      if (e.key === 'Escape'){ e.preventDefault(); carryRevert(); }
+      else if (e.key === 'Enter'){ e.preventDefault(); carryCommit(); }
+      else if (e.shiftKey && kl === 'j'){ e.preventDefault(); carryStep(1); }
+      else if (e.shiftKey && kl === 'k'){ e.preventDefault(); carryStep(-1); }
       return;
     }
 
@@ -3039,15 +3118,25 @@ export function boardPage(): string {
     // handled above, before this point.)
     if (e.metaKey || e.ctrlKey) return;
 
+    // j/k move the cursor; SHIFTED they carry the selected card, which reads as
+    // "the same movement, but holding something". The first shifted press picks
+    // the card up as well as moving it — a separate key to enter move mode
+    // would be one more thing to remember for no gain.
+    //
+    // Handled here rather than as switch cases so both halves match on the
+    // normalised letter and the shift modifier together. Keying off 'J' vs 'j'
+    // instead would let Caps Lock swap the two.
+    if (kl === 'j' || kl === 'k'){
+      e.preventDefault();
+      const d = kl === 'j' ? 1 : -1;
+      if (e.shiftKey) carryStep(d); else move(d);
+      return;
+    }
+
     const t = selectedTicket();
     switch (e.key){
-      case 'ArrowDown': case 'j': e.preventDefault(); move(1); break;
-      case 'ArrowUp': case 'k': e.preventDefault(); move(-1); break;
-      // Shifted, so they read as "the same movement, but carrying something".
-      // The first press picks the card up as well as moving it — a separate
-      // key to enter move mode would be one more thing to remember for no gain.
-      case 'J': e.preventDefault(); carryStep(1); break;
-      case 'K': e.preventDefault(); carryStep(-1); break;
+      case 'ArrowDown': e.preventDefault(); move(1); break;
+      case 'ArrowUp': e.preventDefault(); move(-1); break;
       // On a ticket page ⏎ starts or attaches it — what it meant with the
       // overlay open, now carried by the page rather than by a module flag.
       // Everywhere else it opens what is selected.

@@ -607,6 +607,16 @@ test('tickets reorder through the board, and an illegal drop is a 409', async ()
 
   // No direction at all is the caller's mistake, and never a write.
   expect((await move(one, {})).status).toBe(400);
+
+  // A 500 says "the factory fell over", so everything that is actually the
+  // caller's mistake has to be something else. typeof 'number' alone would let
+  // all three of these reach the command line and come back as a 500.
+  for (const bad of [NaN, 1.5, Infinity, 0, -3, '7']) {
+    expect((await move(one, { after: bad })).status).toBe(400);
+  }
+  // A well-formed id for a ticket that is not there is a 404, not a 500.
+  expect((await move(one, { after: 999999 })).status).toBe(404);
+  expect(orderIn('ordering')).toEqual(['ord one', 'ord three', 'ord two']);
 });
 
 test('a ticket can be re-filed into a project and back out again', async () => {

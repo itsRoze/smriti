@@ -20,6 +20,7 @@ setup() {
   CLI="$FAKE_BIN/smriti-factory"
   TICKET="$FAKE_BIN/smriti-ticket"
   TRACE="$FAKE_BIN/smriti-trace"
+  PROJECT="$FAKE_BIN/smriti-project"
 
   export SMRITI_HOME="$WORK/state"
   mkdir -p "$SMRITI_HOME"
@@ -92,6 +93,38 @@ teardown() {
 
   run bun "$CLI" --list
   [[ "$output" == *"running begin"* ]]
+}
+
+@test "ordering groups by project before it sorts, never across scopes" {
+  # Positions restart at 1 in every group. Sorting an app's whole backlog on
+  # position before bucketing compares numbers from different scopes: every
+  # group's head ticket ties at 1 and the id tiebreak silently decides which
+  # project is drawn first. Bucket, then sort inside the bucket.
+  "$PROJECT" add "Alpha" >/dev/null
+  "$PROJECT" add "Beta" >/dev/null
+  "$TICKET" add "a-one" --project alpha >/dev/null   # 1
+  "$TICKET" add "a-two" --project alpha >/dev/null   # 2
+  "$TICKET" add "b-one" --project beta  >/dev/null   # 3
+  "$TICKET" add "b-two" --project beta  >/dev/null   # 4
+  "$TICKET" add "loose-one" >/dev/null               # 5
+  # b-two to the top of ITS group. It must move within Beta and not jump the
+  # whole app — which is what sorting across scopes on position would do, since
+  # position 1 in Beta ties with position 1 in Alpha.
+  "$TICKET" move 4 --top >/dev/null
+
+  run bun "$CLI" --list
+  local a1 a2 b1 b2 l1
+  a1=$(echo "$output" | grep -n "a-one"     | head -1 | cut -d: -f1)
+  a2=$(echo "$output" | grep -n "a-two"     | head -1 | cut -d: -f1)
+  b1=$(echo "$output" | grep -n "b-one"     | head -1 | cut -d: -f1)
+  b2=$(echo "$output" | grep -n "b-two"     | head -1 | cut -d: -f1)
+  l1=$(echo "$output" | grep -n "loose-one" | head -1 | cut -d: -f1)
+  # Alpha's two in order, then Beta's — reordered inside Beta — then the loose
+  # work last. b-two is first in Beta but still below both of Alpha's.
+  [ "$a1" -lt "$a2" ]
+  [ "$a2" -lt "$b2" ]
+  [ "$b2" -lt "$b1" ]
+  [ "$b1" -lt "$l1" ]
 }
 
 @test "ordering follows the order you arranged, not the status" {

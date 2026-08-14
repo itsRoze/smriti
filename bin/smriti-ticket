@@ -93,6 +93,30 @@ ticket_exists() {
   [ "$(db "SELECT count(*) FROM tickets WHERE id = $1;")" = "1" ]
 }
 
+# ── the scope a position lives in ───────────────────────────────────────────
+# One (app, project) pair — the group the board draws as one grid, and the only
+# set a position is ever compared against. Written once here because it is the
+# invariant that must not drift: `add`, `edit`'s re-file and `move` all have to
+# agree on what a group IS, and three hand-written copies of the same predicate
+# is three chances for them to stop agreeing.
+#
+# coalesce on both halves because NULL = NULL is not true in SQL. Without it
+# every app-less idea would count as a group of one, and they would all be born
+# at position 1 with nothing to order them against.
+#
+# Both arguments are SQL fragments, already quoted or the literal NULL.
+scope_sql() {
+  printf "coalesce(repo_slug, '') = coalesce(%s, '') AND coalesce(project_id, -1) = coalesce(%s, -1)" "$1" "$2"
+}
+
+# One past the last position in that scope — where a new or newly re-filed
+# ticket lands. $3, when given, is a ticket id to exclude, so a row being moved
+# never counts itself.
+bottom_of_scope() {
+  printf "(SELECT coalesce(max(position), 0) + 1 FROM tickets WHERE %s%s)" \
+    "$(scope_sql "$1" "$2")" "${3:+ AND id <> $3}"
+}
+
 validate_status() {
   case " $VALID_STATUSES " in
     *" $1 "*) ;;
@@ -195,17 +219,12 @@ cmd_add() {
   # same db_write rather than being fetched by a second invocation.
   #
   # position lands at the BOTTOM of the group it joins — capture is a quick,
-  # frequent act and it must never disturb an order you arranged by hand. The
-  # coalesce pair is the scope key used everywhere positions are compared: NULL
-  # is not equal to NULL in SQL, so without it every app-less idea would count
-  # as its own group and they would all be born at position 1.
+  # frequent act and it must never disturb an order you arranged by hand.
   local id
   id=$(db_write "INSERT INTO tickets (repo_slug, project_id, title, body, status, priority, position, created_at, updated_at)
             VALUES ($(sql_quote_or_null "$slug"), ${project_id:-NULL}, $(sql_quote "$title"), $(sql_quote_or_null "$body"),
                     $(sql_quote "$status"), $priority,
-                    (SELECT coalesce(max(position), 0) + 1 FROM tickets
-                      WHERE coalesce(repo_slug, '') = coalesce($(sql_quote_or_null "$slug"), '')
-                        AND coalesce(project_id, -1) = coalesce(${project_id:-NULL}, -1)),
+                    $(bottom_of_scope "$(sql_quote_or_null "$slug")" "${project_id:-NULL}"),
                     $(sql_quote "$ts"), $(sql_quote "$ts"));
             SELECT last_insert_rowid();")
 
@@ -257,12 +276,22 @@ cmd_list() {
     where="$where AND status NOT IN ('shipped','cancelled')"
   fi
 
-  # The order you dragged, and nothing else. This used to be
-  # `priority DESC, id ASC` while the board sorted by status band first — two
-  # surfaces answering the same question differently. `position` is now the one
-  # answer, seeded at migration from what the board was already showing, so the
-  # board is unchanged and this listing is the one that moved.
-  local order="ORDER BY position ASC, id ASC"
+  # The order you dragged. This used to be `priority DESC, id ASC` while the
+  # board sorted by status band first — two surfaces answering the same question
+  # differently. `position` is now the one answer, seeded at migration from what
+  # the board was already showing, so the board is unchanged and this listing is
+  # the one that moved.
+  #
+  # Grouped by scope BEFORE position, because a position is only comparable
+  # within one (app, project) — the group the board draws. Sorting a flat,
+  # multi-scope listing on position alone interleaves them into nonsense: an
+  # app with a project and some loose tickets came out 1, 3, 2, 4 as the two
+  # scopes' independent numbering took turns. The grouping mirrors the board:
+  # apps first with app-less ideas last, and within an app its projects before
+  # its loose work.
+  local order="ORDER BY (repo_slug IS NULL), repo_slug,
+                        (project_id IS NULL), coalesce(project_id, 0),
+                        position ASC, id ASC"
 
   if [ "$json" -eq 1 ]; then
     # Deliberately NOT called project_slug: that key existed in v1.2 and held
@@ -597,13 +626,7 @@ cmd_edit() {
   [ "$move_repo" -eq 1 ] && dest_repo="$new_repo"
   [ -n "$project_sql" ] && dest_pid_sql="$project_sql"
   if [ "$dest_repo" != "$cur_repo" ] || [ "$dest_pid_sql" != "$cur_pid_sql" ]; then
-    # `id <> $id` so the row being moved never counts itself: whether SQLite
-    # evaluates this subquery before or after the SET lands, the answer is the
-    # same one.
-    sets="$sets position = (SELECT coalesce(max(position), 0) + 1 FROM tickets
-            WHERE coalesce(repo_slug, '') = coalesce($(sql_quote_or_null "$dest_repo"), '')
-              AND coalesce(project_id, -1) = coalesce($dest_pid_sql, -1)
-              AND id <> $id),"
+    sets="$sets position = $(bottom_of_scope "$(sql_quote_or_null "$dest_repo")" "$dest_pid_sql" "$id"),"
   fi
 
   db_write "UPDATE tickets SET $sets updated_at = $(sql_quote "$(now_utc)") WHERE id = $id;$follow"
@@ -645,8 +668,7 @@ cmd_move() {
   db_fields "SELECT coalesce(repo_slug,'')  FROM tickets WHERE id = $id;
              SELECT coalesce(project_id,'') FROM tickets WHERE id = $id;"
   scope_repo="${DB_FIELDS[0]}"; scope_pid="${DB_FIELDS[1]}"
-  local scope="coalesce(repo_slug, '') = coalesce($(sql_quote_or_null "$scope_repo"), '')
-           AND coalesce(project_id, -1) = coalesce(${scope_pid:-NULL}, -1)"
+  local scope; scope=$(scope_sql "$(sql_quote_or_null "$scope_repo")" "${scope_pid:-NULL}")
 
   if [ "$where" = "before" ] || [ "$where" = "after" ]; then
     require_id "$target"
@@ -669,34 +691,45 @@ cmd_move() {
     attempt=$((attempt + 1))
 
     # lo and hi bound the gap the card is landing in; an empty string means
-    # "no neighbour on that side", i.e. the end of the list.
+    # "no neighbour on that side", i.e. the end of the list. Both come back
+    # from ONE sqlite3 invocation — this is the board's interactive drag path,
+    # and every db call here pays for a process plus a version probe.
     local lo="" hi=""
     case "$where" in
-      top)    hi=$(db "SELECT min(position) FROM tickets WHERE $scope AND id <> $id;") ;;
-      bottom) lo=$(db "SELECT max(position) FROM tickets WHERE $scope AND id <> $id;") ;;
+      top)
+        db_fields "SELECT '';
+                   SELECT coalesce(min(position), '') FROM tickets WHERE $scope AND id <> $id;" ;;
+      bottom)
+        db_fields "SELECT coalesce(max(position), '') FROM tickets WHERE $scope AND id <> $id;
+                   SELECT '';" ;;
       before)
-        hi=$(db "SELECT position FROM tickets WHERE id = $target;")
-        lo=$(db "SELECT max(position) FROM tickets
-                  WHERE $scope AND id <> $id AND position < $hi;") ;;
+        db_fields "SELECT coalesce((SELECT max(position) FROM tickets
+                     WHERE $scope AND id <> $id
+                       AND position < (SELECT position FROM tickets WHERE id = $target)), '');
+                   SELECT position FROM tickets WHERE id = $target;" ;;
       after)
-        lo=$(db "SELECT position FROM tickets WHERE id = $target;")
-        hi=$(db "SELECT min(position) FROM tickets
-                  WHERE $scope AND id <> $id AND position > $lo;") ;;
+        db_fields "SELECT position FROM tickets WHERE id = $target;
+                   SELECT coalesce((SELECT min(position) FROM tickets
+                     WHERE $scope AND id <> $id
+                       AND position > (SELECT position FROM tickets WHERE id = $target)), '');" ;;
     esac
+    lo="${DB_FIELDS[0]}"; hi="${DB_FIELDS[1]}"
 
+    # awk rather than another sqlite3: this is IEEE-754 double arithmetic on two
+    # numbers already in hand, and bash cannot do it. Spawning a database to
+    # halve two floats was two processes per drag for no reason.
+    #
+    # The check is that the midpoint landed STRICTLY between both endpoints.
+    # Comparing against both is what catches the underflow — once a gap has been
+    # subdivided far enough, (lo+hi)/2 rounds onto one of them and the order
+    # would quietly stop being a total one.
     local pos
-    if   [ -z "$lo" ] && [ -z "$hi" ]; then pos=1                        # alone in the group
-    elif [ -z "$lo" ]; then pos=$(db "SELECT $hi - 1;")                  # new first
-    elif [ -z "$hi" ]; then pos=$(db "SELECT $lo + 1;")                  # new last
+    if   [ -z "$lo" ] && [ -z "$hi" ]; then pos=1                                  # alone in the group
+    elif [ -z "$lo" ]; then pos=$(awk -v h="$hi" 'BEGIN{printf "%.17g", h - 1}')   # new first
+    elif [ -z "$hi" ]; then pos=$(awk -v l="$lo" 'BEGIN{printf "%.17g", l + 1}')   # new last
     else
-      # The midpoint, and a check that it actually landed strictly between the
-      # two. Comparing against BOTH endpoints is what catches the underflow:
-      # once the gap is small enough, (lo+hi)/2 rounds to one of them and the
-      # order would silently stop being a total one.
-      pos=$(db "SELECT ($lo + $hi) / 2.0;")
-      local ok
-      ok=$(db "SELECT CASE WHEN $pos > $lo AND $pos < $hi THEN 1 ELSE 0 END;")
-      if [ "$ok" != "1" ]; then
+      pos=$(awk -v l="$lo" -v h="$hi" 'BEGIN{m=(l+h)/2.0; print (m>l && m<h) ? sprintf("%.17g", m) : ""}')
+      if [ -z "$pos" ]; then
         [ "$attempt" -ge 2 ] && die "could not find room to place #$id — the order is too tightly packed to subdivide" 3
         renumber_scope "$scope"
         continue

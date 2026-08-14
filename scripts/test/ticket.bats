@@ -332,6 +332,29 @@ four() {
   [ "$(tq "SELECT group_concat(id) FROM (SELECT id FROM tickets WHERE project_id IS NOT NULL ORDER BY position, id);")" = "1,2,3" ]
 }
 
+@test "move: a listing spanning scopes groups them before it sorts by position" {
+  # Positions restart at 1 in every group, so a flat listing sorted on position
+  # alone interleaves them — an app with a project and some loose work came out
+  # 1, 3, 2, 4 as the two independent numberings took turns. Grouping first is
+  # what makes the listing agree with the board rather than merely share a
+  # column with it.
+  "$PROJECT" add "Alpha" --repo demo >/dev/null
+  "$CLI" add p1 --repo demo --project alpha >/dev/null
+  "$CLI" add p2 --repo demo --project alpha >/dev/null
+  "$CLI" add l1 --repo demo >/dev/null
+  "$CLI" add l2 --repo demo >/dev/null
+  run "$CLI" list --repo demo
+  # The project's two, then the loose two — the board's own grouping.
+  [ "$(echo "$output" | awk '{print $1}' | tr '\n' ' ')" = "#1 #2 #3 #4 " ]
+}
+
+@test "move: --all lists app-less ideas after every app, like the board does" {
+  "$CLI" add owned --repo demo >/dev/null
+  "$CLI" add an-idea --repo - >/dev/null
+  run "$CLI" list --all
+  [[ "$(echo "$output" | tail -1)" == *"an-idea"* ]]
+}
+
 @test "move: app-less ideas are one group, so they order against each other" {
   "$CLI" add i1 --repo - >/dev/null
   "$CLI" add i2 --repo - >/dev/null

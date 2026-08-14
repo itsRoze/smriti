@@ -186,18 +186,24 @@ function buildRows(tickets: Ticket[], runs: Run[], filter: string): Row[] {
       }
     }
 
-    // Grouped by project, in first-appearance order of the sorted tickets, so
-    // the project holding the most urgent work comes first.
+    // Grouped by project, then ordered WITHIN each group — never sorted across
+    // them first. Positions restart at 1 in every group, so sorting the app's
+    // whole backlog by position before bucketing compares numbers from
+    // different scopes: every group's head ticket ties at 1 and the id tiebreak
+    // decides which project leads. Group order is project id, matching the
+    // board and `ticket list`.
     const groups = new Map<number, Ticket[]>();
     const looseTickets: Ticket[] = [];
-    for (const t of items.slice().sort(byPosition)) {
+    for (const t of items) {
       if (t.project_id == null) looseTickets.push(t);
       else {
         if (!groups.has(t.project_id)) groups.set(t.project_id, []);
         groups.get(t.project_id)!.push(t);
       }
     }
-    for (const [, group] of groups) {
+    for (const g of groups.values()) g.sort(byPosition);
+    looseTickets.sort(byPosition);
+    for (const [, group] of [...groups.entries()].sort((a, b) => a[0] - b[0])) {
       rows.push({ kind: 'project', label: group[0].project_name ?? `project ${group[0].project_id}` });
       for (const t of group) rows.push({ kind: 'ticket', ticket: t, run: runFor.get(t.id) });
     }

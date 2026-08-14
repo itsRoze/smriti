@@ -1317,6 +1317,17 @@ describe('reordering', () => {
     const o = await open(hash);
     await o.page.setViewportSize({ width: 1400, height: 1600 });
     await o.page.waitForSelector('#plots .cards .card');
+    // The app page fetches PROJECT.md and injects it AFTER first paint, which
+    // pushes the card grid down the page. Measuring a card before that lands
+    // gives coordinates the mouse then arrives at pointing somewhere else — the
+    // drag reads as working and drops in the wrong place. Wait for the pane to
+    // fill, then for two clean frames, before anything measures geometry.
+    await o.page.waitForFunction(() => {
+      const d = document.querySelector('#docpane');
+      return !d || (d as HTMLElement).innerHTML.length > 0;
+    });
+    await o.page.evaluate(() => new Promise((r) =>
+      requestAnimationFrame(() => requestAnimationFrame(() => r(null)))));
     return o;
   };
 

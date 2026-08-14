@@ -196,11 +196,18 @@ _db_migrate() {
     "SELECT count(*) FROM pragma_table_info('tickets') WHERE name='position';" 2>/dev/null) || {
       rmdir "$lock" 2>/dev/null || true; return 1; }
   if [ "$has_tickets" = "1" ] && [ "$has_position" != "1" ]; then
-    # One statement, so an interrupted migration cannot leave the column added
-    # but unseeded — which would read as "every ticket at position 0" and is
-    # exactly the reshuffle the seed exists to prevent.
+    # ONE TRANSACTION, and it is load-bearing rather than tidiness. The add and
+    # the seed are two statements; if the process dies between them — or the
+    # UPDATE loses the write lock, or the disk fills — the column exists at
+    # DEFAULT 0 for every row while the version still says 3. The next
+    # invocation probes, sees the column, skips this block entirely and stamps
+    # 4, leaving every ticket at position 0 permanently: the whole board falls
+    # back to id order, which is precisely the reshuffle the seed exists to
+    # prevent. Wrapped, a failure rolls back to no column at all and the next
+    # run simply tries again. Same shape as the v2 rebuild below.
     sqlite3 "$FACTORY_DB" ".timeout 10000" \
-      "ALTER TABLE tickets ADD COLUMN position REAL NOT NULL DEFAULT 0;
+      "BEGIN IMMEDIATE;
+       ALTER TABLE tickets ADD COLUMN position REAL NOT NULL DEFAULT 0;
        WITH seeded AS (
          SELECT id, ROW_NUMBER() OVER (
            PARTITION BY coalesce(repo_slug, ''), coalesce(project_id, -1)
@@ -216,7 +223,8 @@ _db_migrate() {
          ) AS rn
          FROM tickets
        )
-       UPDATE tickets SET position = (SELECT rn FROM seeded WHERE seeded.id = tickets.id);" \
+       UPDATE tickets SET position = (SELECT rn FROM seeded WHERE seeded.id = tickets.id);
+       COMMIT;" \
       >/dev/null 2>&1 || {
         rmdir "$lock" 2>/dev/null || true; return 1; }
   fi
