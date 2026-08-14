@@ -467,9 +467,25 @@ now_utc() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 # rather than in bin/smriti-photo because the surfaces that WRITE that text are
 # three separate commands, and each of them has to sweep what it just dropped.
 
+# One spelling per number, sorted the one way both sides of every comparison
+# use. `smriti://photo/007` and `smriti://photo/7` are the same picture to the
+# renderer and to SQL, which compares numbers — and were two different ids to
+# `comm`, which happily deleted a photo another description was still showing.
+photo_ids_normalise() {
+  sed 's/^0*//' | grep -v '^$' | sort -u
+}
+
+# Photo ids referred to by whatever is on stdin. The single definition of what a
+# reference LOOKS like — lib/md.ts holds the only other copy of that pattern,
+# and the two have to agree exactly or the renderer and the sweep disagree about
+# what is in use.
+photo_refs_stream() {
+  grep -oE 'smriti://photo/[0-9]+' | grep -oE '[0-9]+$' | photo_ids_normalise
+}
+
 # Every photo id a blob of text refers to, sorted and deduplicated.
 photo_refs_in() {
-  printf '%s' "$1" | grep -oE 'smriti://photo/[0-9]+' | grep -oE '[0-9]+$' | sort -u
+  printf '%s' "$1" | photo_refs_stream
 }
 
 # A description just changed; delete the photos it stopped referring to.

@@ -34,7 +34,7 @@ import { join, dirname } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { renderMarkdown } from '../lib/md.ts';
+import { renderMarkdownWithoutPhotos } from '../lib/md.ts';
 
 const TOOL_VERSION = '0.3.0';
 const SCHEMA_VERSION = 2;
@@ -345,7 +345,7 @@ function renderHtml(spec: Spec): string {
           <span class="badge badge-${status}">${status}</span>
           <h3>${escapeHtml(card.title)}</h3>
         </header>
-        <div class="body">${renderMarkdown(card.body_md)}</div>${mockupHtml(card)}
+        <div class="body">${renderMarkdownWithoutPhotos(card.body_md)}</div>${mockupHtml(card)}
         <div class="controls">
           <div class="decision">${radio('accept', 'Accept')} ${radio('reject', 'Reject')} ${radio('edit', 'Edit')}</div>
           <textarea class="cardtext" placeholder="${ph}"></textarea>

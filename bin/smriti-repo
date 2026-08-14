@@ -492,7 +492,12 @@ cmd_forget() {
     [ -z "$f" ] && continue
     rm -f "$f"
   done <<< "$cache_files"
-  factory_db_exists && db_write "DELETE FROM repositories WHERE slug = $(sql_quote "$slug");"
+  local refs_before=""
+  factory_db_exists && {
+    refs_before=$(db "SELECT coalesce(description,'') FROM repositories WHERE slug = $(sql_quote "$slug");")
+    db_write "DELETE FROM repositories WHERE slug = $(sql_quote "$slug");"
+    sweep_dropped_photos "$refs_before" ""
+  }
 
   echo "forgot: $slug"
   echo "  removed $dir"

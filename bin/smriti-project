@@ -364,7 +364,10 @@ cmd_rm() {
 
   # The FK is ON DELETE SET NULL, so the tickets survive and become one-off work
   # in the app — deleting a grouping is not a reason to destroy what it grouped.
+  local refs_before
+  refs_before=$(db "SELECT coalesce(description,'') FROM projects WHERE id = $id;")
   db_write "DELETE FROM projects WHERE id = $id;"
+  sweep_dropped_photos "$refs_before" ""
   echo "deleted: #$id  $name"
   [ "$tickets" != "0" ] && echo "  $tickets ticket(s) are now loose in the app"
   return 0

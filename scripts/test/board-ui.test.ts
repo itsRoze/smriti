@@ -1682,6 +1682,77 @@ describe('board UI', () => {
     } finally { await context.close(); }
   }, T);
 
+  it('dropping a file we will not take does not navigate away with your typing', async () => {
+    if (!HAS_CHROMIUM) return;
+    const { context, page, errors } = await open();
+    try {
+      await openBodyTicket(page);
+      await page.keyboard.press('e');
+      await page.waitForSelector('#pagedescedit.on');
+      await page.locator('#pagedescedit').fill('words worth keeping');
+
+      const before = page.url();
+      // A PDF, not an image. Returning early *before* preventDefault left the
+      // browser's own default in place — and its default is to navigate the
+      // page to the dropped file, taking every unsaved word with it.
+      await page.evaluate(() => {
+        const dt = new DataTransfer();
+        dt.items.add(new File([new Uint8Array([37, 80, 68, 70])], 'notes.pdf', { type: 'application/pdf' }));
+        const ta = document.querySelector('#pagedescedit')!;
+        ta.dispatchEvent(new DragEvent('dragover', { dataTransfer: dt, bubbles: true, cancelable: true }));
+        const ev = new DragEvent('drop', { dataTransfer: dt, bubbles: true, cancelable: true });
+        ta.dispatchEvent(ev);
+        (window as any).__dropPrevented = ev.defaultPrevented;
+      });
+
+      expect(await page.evaluate(() => (window as any).__dropPrevented)).toBe(true);
+      expect(page.url()).toBe(before);
+      expect(await page.locator('#pagedescedit.on').count()).toBe(1);
+      expect(await page.locator('#pagedescedit').inputValue()).toBe('words worth keeping');
+      // Refused out loud rather than silently swallowed.
+      await page.waitForSelector('#toast.on');
+      expect(await page.locator('#toast').innerText()).toContain('png, jpeg, gif and webp');
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+
+  it('a photo landing mid-sentence does not move the caret', async () => {
+    if (!HAS_CHROMIUM) return;
+    const { context, page, errors } = await open();
+    try {
+      // Hold the upload so the caret can be parked deliberately before it lands.
+      let release: (() => void) | null = null;
+      const held = new Promise<void>((r) => { release = r; });
+      await page.route('**/api/photos', async (route) => { await held; route.continue(); });
+
+      await openBodyTicket(page);
+      await page.keyboard.press('e');
+      await page.waitForSelector('#pagedescedit.on');
+      await page.locator('#pagedescedit').fill('HEAD\n\nTAIL');
+      // Paste at the very end, then put the caret back at the top and type.
+      await page.evaluate(() => {
+        const ta = document.querySelector('#pagedescedit') as HTMLTextAreaElement;
+        ta.setSelectionRange(ta.value.length, ta.value.length);
+      });
+      await pasteImage(page);
+      await page.waitForFunction(() =>
+        (document.querySelector('#pagedescedit') as HTMLTextAreaElement).value.includes('uploading…'));
+      await page.evaluate(() => {
+        const ta = document.querySelector('#pagedescedit') as HTMLTextAreaElement;
+        ta.setSelectionRange(4, 4);          // just after "HEAD"
+      });
+
+      release!();
+      await page.waitForFunction(() =>
+        !(document.querySelector('#pagedescedit') as HTMLTextAreaElement).value.includes('uploading…'));
+      // Assigning to .value collapses the selection to the end in every browser,
+      // which would drop the next keystroke at the bottom of the description.
+      expect(await page.evaluate(() =>
+        (document.querySelector('#pagedescedit') as HTMLTextAreaElement).selectionStart)).toBe(4);
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+
   it('the editor says how to add a photo, and only while it is open', async () => {
     if (!HAS_CHROMIUM) return;
     const { context, page, errors } = await open();

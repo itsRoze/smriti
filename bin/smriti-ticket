@@ -1480,8 +1480,17 @@ cmd_rm() {
   # will take and asks first, and a delete that secretly keeps things is its own
   # trap. A working copy still on disk is untouched — this deletes the store's
   # copy, not the filesystem.
+  # Every reference this ticket and its documents were holding, read before the
+  # rows go. Deleting a ticket removes text exactly as editing it does, and the
+  # photos that text was keeping alive have to be reconsidered either way — the
+  # sweep spares any that another description still shows.
+  local refs_before
+  refs_before=$(db "SELECT coalesce(body,'') FROM tickets WHERE id = $id;
+                    SELECT coalesce(body,'') FROM documents WHERE ticket_id = $id;")
+
   db_write "DELETE FROM documents WHERE ticket_id = $id;
             DELETE FROM tickets WHERE id = $id;"
+  sweep_dropped_photos "$refs_before" ""
   echo "deleted: #$id  $title"
   if [ -n "$freed" ]; then
     echo "  unblocks $(printf '%s\n' "$freed" | cut -f1 | paste -sd' ' -)"
@@ -1882,7 +1891,10 @@ cmd_doc_forget() {
   [ -n "$slug" ] && where="$where AND repo_slug = $(sql_quote "$slug")"
 
   local n; n=$(db "SELECT count(*) FROM documents $where;")
+  local refs_before
+  refs_before=$(db "SELECT coalesce(body,'') FROM documents $where;")
   db_write "DELETE FROM documents $where;"
+  sweep_dropped_photos "$refs_before" ""
   echo "forgot $n document(s) for '$branch'"
 }
 

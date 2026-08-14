@@ -325,3 +325,119 @@ make_svg()  { printf '<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</
   [ "$status" -eq 0 ]
   [[ "$output" == *"#1 updated"* ]]
 }
+
+@test "a stale reference alongside a real one does not spare the real one" {
+  # The regression that made the whole feature fail quietly: prune --ids ran a
+  # `photo_exists` loop whose exit status became the command substitution's, so
+  # ONE id that was not a real row aborted the command under set -e — before the
+  # delete. The save reported success and the photo stayed.
+  "$CLI" add "$IMG/a.png" >/dev/null
+  "$TICKET" add "bug" --body 'here ![](smriti://photo/1) and stale ![](smriti://photo/9)' >/dev/null
+  "$TICKET" edit 1 --body 'no pictures' >/dev/null
+  run "$CLI" show 1
+  [ "$status" -eq 4 ]
+}
+
+@test "prune --ids: a stale id is skipped, and the real ones still go" {
+  "$CLI" add "$IMG/a.png" >/dev/null
+  "$CLI" add "$IMG/b.png" >/dev/null
+  run "$CLI" prune --ids 1,9,2
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"deleted 2 photo(s): 1,2"* ]]
+}
+
+@test "prune --ids: naming only ids that do not exist deletes nothing, quietly" {
+  "$CLI" add "$IMG/a.png" >/dev/null
+  run "$CLI" prune --ids 8,9
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"nothing to prune"* ]]
+  run "$CLI" show 1
+  [ "$status" -eq 0 ]
+}
+
+@test "prune --ids '': considers nothing, rather than everything" {
+  # An empty list is a caller saying "sweep these zero photos". Falling through
+  # to the unnarrowed branch made it sweep the whole store — the exact inverse,
+  # and the one direction a sweep must never fail in.
+  "$CLI" add "$IMG/a.png" >/dev/null
+  run "$CLI" prune --ids ""
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"nothing to prune"* ]]
+  run "$CLI" show 1
+  [ "$status" -eq 0 ]
+}
+
+@test "a padded reference is the same photo as an unpadded one" {
+  # md.ts matches \\d+ and SQL compares numbers, so smriti://photo/007 renders
+  # photo #7 — but a lexical set difference saw "007" and "7" as two ids and
+  # deleted a picture another description was still showing.
+  "$CLI" add "$IMG/a.png" >/dev/null
+  "$TICKET" add "padded" --body 'a ![](smriti://photo/001)' >/dev/null
+  "$TICKET" add "plain" --body 'b ![](smriti://photo/1)' >/dev/null
+  "$TICKET" edit 2 --body 'b, without it' >/dev/null
+  run "$CLI" show 1
+  [ "$status" -eq 0 ]
+  run "$CLI" prune
+  [[ "$output" == *"nothing to prune"* ]]
+}
+
+@test "prune spares a photo referenced only from a document's working copy" {
+  # `ticket doc` stores no body for a path outside $SMRITI_HOME/projects, and
+  # doc-show syncs from that file on every read — so the reference is genuinely
+  # on screen while the store knows nothing about it.
+  "$CLI" add "$IMG/a.png" >/dev/null
+  mkdir -p "$SMRITI_HOME/projects/test-demo"
+  printf 'a plan\n\n![](smriti://photo/1)\n' > "$SMRITI_HOME/projects/test-demo/main-plan-2026-01-01T00-00-00Z.md"
+  run "$CLI" prune
+  [[ "$output" == *"nothing to prune"* ]]
+}
+
+# ─── deleting text wholesale, not just editing it ───────────────────────────
+
+@test "ticket rm: deleting a ticket sweeps the photos its body held" {
+  "$CLI" add "$IMG/a.png" >/dev/null
+  "$TICKET" add "doomed" --body 'x ![](smriti://photo/1)' >/dev/null
+  "$TICKET" rm 1 --yes >/dev/null
+  run "$CLI" show 1
+  [ "$status" -eq 4 ]
+}
+
+@test "ticket rm: a photo another description still shows survives the delete" {
+  "$CLI" add "$IMG/a.png" >/dev/null
+  "$TICKET" add "doomed" --body 'x ![](smriti://photo/1)' >/dev/null
+  "$TICKET" add "keeps it" --body 'y ![](smriti://photo/1)' >/dev/null
+  "$TICKET" rm 1 --yes >/dev/null
+  run "$CLI" show 1
+  [ "$status" -eq 0 ]
+}
+
+@test "project rm: deleting a project sweeps its description's photos" {
+  "$CLI" add "$IMG/a.png" >/dev/null
+  "$PROJECT" add "doomed work" >/dev/null
+  "$PROJECT" edit doomed-work --description 'p ![](smriti://photo/1)' >/dev/null
+  "$PROJECT" rm doomed-work --yes >/dev/null
+  run "$CLI" show 1
+  [ "$status" -eq 4 ]
+}
+
+# ─── a store that does not exist yet ────────────────────────────────────────
+
+@test "reading does not bring a store into being" {
+  rm -f "$SMRITI_HOME/factory.db"
+  run "$CLI" list
+  [ "$status" -eq 0 ]
+  [ "$output" = "no photos stored" ]
+  [ ! -f "$SMRITI_HOME/factory.db" ]
+
+  run "$CLI" list --json
+  [ "$output" = "[]" ]
+  [ ! -f "$SMRITI_HOME/factory.db" ]
+
+  run "$CLI" show 1
+  [ "$status" -eq 4 ]
+  [ ! -f "$SMRITI_HOME/factory.db" ]
+
+  run "$CLI" prune
+  [ "$status" -eq 0 ]
+  [ ! -f "$SMRITI_HOME/factory.db" ]
+}

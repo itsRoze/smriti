@@ -119,18 +119,27 @@ sniff_mime() {
 
 # Every photo id spoken for by text anywhere in the factory.
 #
-# The scan is deliberately over the STORED text and not over a reference table,
-# because there is no reference table: the markdown is the only thing that knows.
-# Four surfaces, and all four have to be read or prune deletes something that is
-# still on screen.
+# The scan is deliberately over the TEXT and not over a reference table, because
+# there is no reference table: the markdown is the only thing that knows. Every
+# surface that can carry a reference has to be read, or prune deletes a picture
+# something is still showing.
+#
+# Four of them live in the store. The fifth is on disk: `ticket doc` only takes
+# a copy of a document's body for a path under $SMRITI_HOME/projects/<slug>/,
+# so a plan registered from anywhere else has a row with a NULL body and a real
+# file — and `doc-show` syncs from that file on every read, which means it is
+# genuinely on screen. Reading the working copies too is what stops a prune from
+# emptying a plan you are in the middle of writing.
 referenced_ids() {
-  db "SELECT coalesce(body,'')        FROM tickets;
-      SELECT coalesce(description,'') FROM projects;
-      SELECT coalesce(description,'') FROM repositories;
-      SELECT coalesce(body,'')        FROM documents;" \
-    | grep -oE 'smriti://photo/[0-9]+' \
-    | grep -oE '[0-9]+$' \
-    | sort -u
+  local docs_dir="${SMRITI_HOME:-$HOME/.smriti}/projects"
+  {
+    db "SELECT coalesce(body,'')        FROM tickets;
+        SELECT coalesce(description,'') FROM projects;
+        SELECT coalesce(description,'') FROM repositories;
+        SELECT coalesce(body,'')        FROM documents;"
+    [ -d "$docs_dir" ] && grep -rhoE 'smriti://photo/[0-9]+' "$docs_dir" 2>/dev/null
+    true
+  } | photo_refs_stream
 }
 
 # ─── add ────────────────────────────────────────────────────────────────────
@@ -213,6 +222,13 @@ cmd_list() {
     esac
   done
 
+  # A read-only question must not bring a store into being to answer it — the
+  # same reason bin/smriti-project's edit opens with this check.
+  if ! factory_db_exists; then
+    if [ "$json" = "1" ]; then echo '[]'; else echo "no photos stored"; fi
+    return
+  fi
+
   if [ "$json" = "1" ]; then
     db_json "SELECT id, sha256, mime, bytes, created_at FROM photos ORDER BY id;"
     return
@@ -243,6 +259,7 @@ cmd_show() {
     esac
   done
   require_num "$id" "photo id"
+  factory_db_exists || die "no photo #$id" 4
   photo_exists "$id" || die "no photo #$id" 4
 
   if [ "$json" = "1" ]; then
@@ -269,6 +286,7 @@ cmd_show() {
 cmd_data() {
   [ $# -ge 1 ] || usage
   require_num "$1" "photo id"
+  factory_db_exists || die "no photo #$1" 4
   photo_exists "$1" || die "no photo #$1" 4
   db "SELECT mime FROM photos WHERE id = $1;
       SELECT hex(data) FROM photos WHERE id = $1;"
@@ -279,6 +297,7 @@ cmd_data() {
 cmd_rm() {
   [ $# -ge 1 ] || usage
   require_num "$1" "photo id"
+  factory_db_exists || die "no photo #$1" 4
   photo_exists "$1" || die "no photo #$1" 4
   db_write "DELETE FROM photos WHERE id = $1;"
   echo "deleted photo #$1"
@@ -293,60 +312,74 @@ cmd_rm() {
 # question asked about them — an id still referenced somewhere else survives
 # being named here, which is what makes it safe to call on every save.
 cmd_prune() {
-  local dry=0 json=0 ids=""
+  local dry=0 json=0 ids="" ids_given=0
   while [ $# -gt 0 ]; do
     case "$1" in
-      --ids)     [ $# -ge 2 ] || die "--ids requires a value"; ids="$2"; shift 2 ;;
+      --ids)     [ $# -ge 2 ] || die "--ids requires a value"; ids="$2"; ids_given=1; shift 2 ;;
       --dry-run) dry=1; shift ;;
       --json)    json=1; shift ;;
       *) die "unknown flag: $1" ;;
     esac
   done
 
-  local candidates
-  if [ -n "$ids" ]; then
-    # Rejecting a malformed list beats filtering it: these become SQL, and a
-    # caller passing junk should hear about it rather than get a silent no-op.
+  # Rejecting a malformed list beats filtering it: these become SQL, and a
+  # caller passing junk should hear about it rather than get a silent no-op.
+  # Checked BEFORE the store-existence test below, because "you typed that
+  # wrong" is true whether or not there is anything to sweep.
+  if [ "$ids_given" -eq 1 ]; then
     case "$ids" in
+      '') ;;
       *[!0-9,]*|,*|*,,*|*,) die "--ids takes a comma-separated list of numbers, got '$ids'" ;;
     esac
-    candidates=$(printf '%s' "$ids" | tr ',' '\n' | grep -v '^$' | sort -u)
+  fi
+
+  if [ "$json" = "1" ]; then nothing() { printf '{"deleted":[],"dry_run":%s}\n' "$dry"; }
+  else nothing() { echo "nothing to prune"; }; fi
+
+  # A read-only question must not bring a store into being to answer it.
+  factory_db_exists || { nothing; return 0; }
+
+  local candidates
+  # ids_given, NOT [ -n "$ids" ]. An empty --ids means "consider these zero
+  # photos" and must prune nothing; falling through to the unnarrowed branch
+  # made it prune EVERYTHING, which is the exact inverse of what was asked and
+  # the one direction a sweep must never fail in.
+  if [ "$ids_given" -eq 1 ]; then
+    candidates=$(printf '%s' "$ids" | tr ',' '\n' | photo_ids_normalise)
   else
-    candidates=$(db "SELECT id FROM photos ORDER BY id;")
+    candidates=$(db "SELECT id FROM photos;" | photo_ids_normalise)
   fi
-  if [ -z "$candidates" ]; then
-    if [ "$json" = "1" ]; then printf '{"deleted":[],"dry_run":%s}\n' "$dry"
-    else echo "nothing to prune"; fi
-    return 0
-  fi
+  if [ -z "$candidates" ]; then nothing; return 0; fi
 
   local live doomed
   live=$(referenced_ids)
-  # comm needs both sides sorted the same way; ids are numbers but this is a
-  # lexical compare on both, which is fine because it only ever has to AGREE
-  # with itself. Photos that exist and are not referenced are what is left.
-  doomed=$(comm -23 <(printf '%s\n' "$candidates" | sort -u) <(printf '%s\n' "$live" | sort -u))
-  # Named ids that are not real rows would otherwise be reported as "deleted".
-  if [ -n "$doomed" ] && [ -n "$ids" ]; then
-    doomed=$(printf '%s\n' "$doomed" | while IFS= read -r i; do
-      [ -n "$i" ] && photo_exists "$i" && printf '%s\n' "$i"
-    done)
-  fi
+  # Both sides come out of normalise_ids, so they are sorted the same way and
+  # carry the same spelling of a number — see the note there about 007.
+  doomed=$(comm -23 <(printf '%s\n' "$candidates") <(printf '%s\n' "$live")) || true
+  if [ -z "$doomed" ]; then nothing; return 0; fi
 
-  local n=0 list=""
-  if [ -n "$doomed" ]; then
-    n=$(printf '%s\n' "$doomed" | grep -c '^[0-9]' || true)
-    list=$(printf '%s' "$doomed" | tr '\n' ',' | sed 's/,$//')
-  fi
+  # Which of those are real rows, in reading order, in ONE query.
+  #
+  # This was a `while read` loop around `photo_exists`, and it was wrong twice:
+  # a spawned sqlite3 per candidate on a keystroke-latency path, and — far worse
+  # — the loop's exit status became the command substitution's, so a single id
+  # that was not a real row made this assignment return 1 and `set -e` killed
+  # the command before the DELETE. Naming one stale id therefore silently
+  # orphaned every other photo in the same sweep, which is the headline feature
+  # failing quietly. A save reported success and the picture stayed.
+  local list
+  list=$(printf '%s' "$doomed" | tr '\n' ',' | sed 's/,$//')
+  doomed=$(db "SELECT id FROM photos WHERE id IN ($list) ORDER BY id;")
+  if [ -z "$doomed" ]; then nothing; return 0; fi
 
-  if [ "$n" -gt 0 ] && [ "$dry" = "0" ]; then
-    db_write "DELETE FROM photos WHERE id IN ($list);"
-  fi
+  local n
+  n=$(printf '%s\n' "$doomed" | grep -c '^[0-9]') || true
+  list=$(printf '%s' "$doomed" | tr '\n' ',' | sed 's/,$//')
+
+  [ "$dry" = "0" ] && db_write "DELETE FROM photos WHERE id IN ($list);"
 
   if [ "$json" = "1" ]; then
     printf '{"deleted":[%s],"dry_run":%s}\n' "$list" "$dry"
-  elif [ "$n" = "0" ]; then
-    echo "nothing to prune"
   elif [ "$dry" = "1" ]; then
     echo "would delete $n photo(s): $list"
   else

@@ -193,6 +193,24 @@ test('caption text cannot break out of the alt attribute', async () => {
   expect(html).toContain('&quot;');
 });
 
+test('a consumer that cannot serve photos renders the caption, not a broken image', async () => {
+  // bin/smriti-html writes a deliberately self-contained file opened from disk,
+  // where /api/photo/12 resolves to file:///api/photo/12 and paints nothing.
+  // It must degrade to the caption — which is what the markup did before photos
+  // existed — rather than leave a hole in the page.
+  const { renderMarkdown, renderMarkdownWithoutPhotos } =
+    await import(join(REPO_ROOT, 'lib', 'md.ts'));
+  const md = 'look ![the failing dialog](smriti://photo/12)';
+  expect(renderMarkdown(md)).toContain('<img src="/api/photo/12"');
+  const off = renderMarkdownWithoutPhotos(md);
+  expect(off).not.toContain('<img');
+  expect(off).not.toContain('/api/photo/');
+  expect(off).toContain('the failing dialog');
+  // And the flag is restored, so the board's own rendering is unaffected by a
+  // process that happened to call the other one first.
+  expect(renderMarkdown(md)).toContain('<img src="/api/photo/12"');
+});
+
 test('the upload ceiling is enforced, and by the server rather than the client', async () => {
   // A fresh server with a tiny ceiling: the running one would need a 10 MB body
   // to cross its own, which is a slow way to prove a comparison.

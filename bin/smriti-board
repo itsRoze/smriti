@@ -92,27 +92,6 @@ function pidAlive(pid: number): boolean {
 // the body is over the cap — the caller turns that into a 413. Byte-counted
 // rather than character-counted on purpose: one emoji is four bytes, so a
 // character budget would admit several times the limit it advertises.
-async function readCapped(req: Request, max: number): Promise<string | null> {
-  if (!req.body) return '';
-  const reader = req.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let n = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    n += value.byteLength;
-    if (n > max) { await reader.cancel(); return null; }
-    chunks.push(value);
-  }
-  const buf = new Uint8Array(n);
-  let at = 0;
-  for (const c of chunks) { buf.set(c, at); at += c.byteLength; }
-  return new TextDecoder().decode(buf);
-}
-// The same running budget, without the decode at the end — a photo is bytes and
-// putting it through a TextDecoder would mangle it. null means the cap was
-// crossed, and crossing it cancels the stream rather than reading the rest of
-// what was sent.
 async function readCappedBytes(req: Request, max: number): Promise<Uint8Array | null> {
   if (!req.body) return new Uint8Array(0);
   const reader = req.body.getReader();
@@ -129,6 +108,14 @@ async function readCappedBytes(req: Request, max: number): Promise<Uint8Array | 
   let at = 0;
   for (const c of chunks) { buf.set(c, at); at += c.byteLength; }
   return buf;
+}
+// Text, for the routes that want a string. The budget above is the whole of the
+// logic; decoding is the only difference, and a photo must NOT be decoded — a
+// TextDecoder mangles the bytes. So one reader, two thin faces on it, rather
+// than the twenty duplicated lines the second one started life as.
+async function readCapped(req: Request, max: number): Promise<string | null> {
+  const buf = await readCappedBytes(req, max);
+  return buf === null ? null : new TextDecoder().decode(buf);
 }
 // shOut, but feeding the child bytes on stdin. `smriti photo add` reads a photo
 // that way precisely so this route never has to invent a spill directory of its

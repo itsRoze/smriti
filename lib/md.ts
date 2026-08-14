@@ -30,6 +30,16 @@ export function escapeHtml(s: string): string {
     .replace(/'/g, '&#39;');
 }
 
+// Whether the caller can actually SERVE a stored photo.
+//
+// The board can — it has an /api/photo route — so it gets real <img> tags.
+// bin/smriti-html cannot: it writes a deliberately self-contained file opened
+// from disk, where /api/photo/12 resolves to file:///api/photo/12 and paints a
+// broken image. It renders the caption instead, which is what the whole markup
+// did before photos existed, and is a truthful degradation rather than a hole
+// in the page.
+let servesPhotos = true;
+
 function inline(s: string): string {
   let h = escapeHtml(s);
 
@@ -61,8 +71,10 @@ function inline(s: string): string {
   // board's existing rule that a click on a link inside a description opens the
   // link rather than the editor.
   h = h.replace(/!\[([^\]]*)\]\(smriti:\/\/photo\/(\d+)\)/g, (_m, alt, id) =>
-    `<a href="/api/photo/${id}" target="_blank" rel="noopener" class="photo">` +
-    `<img src="/api/photo/${id}" alt="${alt}" loading="lazy"></a>`,
+    servesPhotos
+      ? `<a href="/api/photo/${id}" target="_blank" rel="noopener" class="photo">` +
+        `<img src="/api/photo/${id}" alt="${alt}" loading="lazy"></a>`
+      : alt,
   );
   // Any image that is not a stored photo renders as its caption alone — the
   // same fallback a disallowed link scheme already gets.
@@ -76,6 +88,16 @@ function inline(s: string): string {
 
   h = h.replace(SPAN_RE, (_m, i) => '<code>' + spans[Number(i)] + '</code>');
   return h;
+}
+
+// Render without live photos, for a consumer that cannot serve them. Set once
+// at import by such a caller; there is deliberately no per-call option, because
+// a process is one or the other for its whole life and a parameter threaded
+// through every call site is a parameter someone forgets.
+export function renderMarkdownWithoutPhotos(src: string): string {
+  servesPhotos = false;
+  try { return renderMarkdown(src); }
+  finally { servesPhotos = true; }
 }
 
 export function renderMarkdown(src: string): string {

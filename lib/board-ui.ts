@@ -2783,6 +2783,12 @@ export function boardPage(): string {
   const pendingRef = (n) => '![uploading…](smriti://photo/pending-' + n + ')';
   const PENDING_RE = /!\\[uploading…\\]\\(smriti:\\/\\/photo\\/pending-\\d+\\)/g;
 
+  // Long enough that a slow upload of a big screenshot is never mistaken for a
+  // dead one, short enough that a wedged request cannot hold the render guard
+  // indefinitely — the same bargain WRITE_TIMEOUT_MS strikes, with more room
+  // because this carries megabytes rather than a line of text.
+  const UPLOAD_TIMEOUT_MS = 30000;
+
   function insertAtCursor(ta, text){
     const s = ta.selectionStart == null ? ta.value.length : ta.selectionStart;
     const e = ta.selectionEnd == null ? s : ta.selectionEnd;
@@ -2791,16 +2797,41 @@ export function boardPage(): string {
     try { ta.setSelectionRange(at, at); } catch (_) {}
     growEdit(ta);
   }
+  // Swap one exact run of text for another, keeping the caret where the user
+  // left it. Assigning to .value collapses the selection to the end in every
+  // browser — so an upload landing while you are still typing at the top of a
+  // long description would otherwise yank the cursor to the bottom mid-sentence.
+  function replaceInEditor(ta, find, repl){
+    const at = ta.value.indexOf(find);
+    if (at < 0) return false;
+    const s = ta.selectionStart, e = ta.selectionEnd;
+    ta.value = ta.value.slice(0, at) + repl + ta.value.slice(at + find.length);
+    const d = repl.length - find.length;
+    // Before the edit: unmoved. After it: shifted by the length change. Inside
+    // it: there is nowhere faithful left to be, so sit at the end of the swap.
+    const adj = (p) => (p == null ? p : p <= at ? p : p >= at + find.length ? p + d : at + repl.length);
+    try { ta.setSelectionRange(adj(s), adj(e)); } catch (_) {}
+    return true;
+  }
   // Not api(): the body is a file, not JSON, so the content-type that helper
   // sets would be a lie. The server does not believe the declared type anyway —
   // it reads the format out of the bytes — but sending the file's own is still
   // the honest thing to put on the wire.
   async function postPhoto(file){
-    const r = await fetch('/api/photos', {
-      method: 'POST',
-      headers: { 'content-type': file.type || 'application/octet-stream' },
-      body: file,
-    });
+    // Raced against a deadline, for the same reason writeOptimistic is: this
+    // raises uploadsInFlight, which gates every redraw. A request that never
+    // settles — the server killed mid-upload, the laptop asleep — would hold
+    // that guard up for the life of the tab, and unlike a focused editor it
+    // cannot clear itself. The board would simply stop redrawing, silently.
+    const r = await Promise.race([
+      fetch('/api/photos', {
+        method: 'POST',
+        headers: { 'content-type': file.type || 'application/octet-stream' },
+        body: file,
+      }),
+      new Promise((_, rej) => setTimeout(
+        () => rej(new Error('timed out — the board did not answer')), UPLOAD_TIMEOUT_MS)),
+    ]);
     if (!r.ok){
       const raw = await r.text().catch(() => '');
       let msg = raw;
@@ -2823,14 +2854,17 @@ export function boardPage(): string {
     const done = postPhoto(file).then(
       (res) => {
         if (!stillOpen(ta)){ toast('photo stored, but the editor had closed'); return; }
-        ta.value = ta.value.replace(mark, '![](smriti://photo/' + res.id + ')');
+        replaceInEditor(ta, mark, '![](smriti://photo/' + res.id + ')');
         growEdit(ta); preRender(ta.value.trim());
       },
       (e) => {
-        if (stillOpen(ta)){ ta.value = ta.value.replace(mark, ''); growEdit(ta); }
+        if (stillOpen(ta)){ replaceInEditor(ta, mark, ''); growEdit(ta); }
         toast('could not add that photo — ' + e.message);
       },
-    ).then(() => { uploadsInFlight--; });
+    // finally, not then: a throw in either handler above would otherwise skip
+    // the decrement and wedge the render guard for the life of the tab — the
+    // very failure the timeout above exists to prevent, reached by another road.
+    ).finally(() => { uploadsInFlight--; });
     // Held on the node rather than in a module-level list, so a save waits for
     // ITS OWN editor's uploads and not for one belonging to a page you have
     // since navigated away from.
@@ -2864,19 +2898,32 @@ export function boardPage(): string {
       ev.preventDefault();
       for (const f of files) addPhoto(ta, f);
     });
+    // Is this drag carrying FILES, as opposed to a dragged text selection?
+    // During dragover the files themselves are not readable — only their types
+    // are — so this is the only question askable at that moment, and it is the
+    // one that decides whether the browser's default belongs to us.
+    const draggingFiles = (dt) =>
+      Boolean(dt && dt.types && [].indexOf.call(dt.types, 'Files') >= 0);
+
     // dragover must be prevented for a drop to fire at all — without it the
     // browser navigates to the file instead, which loses whatever was typed.
     ta.addEventListener('dragover', (ev) => {
-      if (!ev.dataTransfer) return;
+      if (!draggingFiles(ev.dataTransfer)) return;   // a text drag keeps its native insert
       ev.preventDefault();
       ta.classList.add('dropping');
     });
     ta.addEventListener('dragleave', () => ta.classList.remove('dropping'));
     ta.addEventListener('drop', (ev) => {
       ta.classList.remove('dropping');
-      const files = imagesFrom(ev.dataTransfer);
-      if (!files.length) return;
+      if (!draggingFiles(ev.dataTransfer)) return;
+      // Prevented for ANY file, not only ones we can store. Returning early on
+      // a PDF left the browser's default in place, and its default is to
+      // navigate the page to the dropped file — taking every unsaved word with
+      // it, with no save and no error. A file we will not take has to be
+      // refused out loud instead.
       ev.preventDefault();
+      const files = imagesFrom(ev.dataTransfer);
+      if (!files.length){ toast('only png, jpeg, gif and webp can go in a description'); return; }
       for (const f of files) addPhoto(ta, f);
     });
   }
