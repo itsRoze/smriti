@@ -834,3 +834,73 @@ test('/api/state does not resolve a URL for a run that is not at a gate', async 
   stopSession(sessionId);
   tr(['end', '--run', uid]);
 });
+
+// ─── dependencies (#12) ─────────────────────────────────────────────────────
+
+test('the dependency graph reaches the page, and a blocked start is a 409', async () => {
+  const tk = (args: string[]) =>
+    spawnSync(TICKET, args, { encoding: 'utf8', env: { ...process.env, SMRITI_HOME: HOME_DIR } });
+  // Fresh ids: this file's store is shared across tests, so read them back
+  // rather than assuming what the counter is up to.
+  tk(['add', 'the blocker', '--repo', 'deps-demo']);
+  tk(['add', 'the blocked', '--repo', 'deps-demo']);
+  const all = JSON.parse(tk(['list', '--all', '--json']).stdout) as
+    { id: number; title: string }[];
+  const blocker = all.find((t) => t.title === 'the blocker')!;
+  const blocked = all.find((t) => t.title === 'the blocked')!;
+
+  const drew = await fetch(`${base()}/api/tickets/${blocked.id}/deps`, {
+    method: 'POST', headers: { cookie: jar, 'content-type': 'application/json' },
+    body: JSON.stringify({ blockedBy: blocker.id }),
+  });
+  expect(drew.status).toBe(200);
+
+  // One payload for the whole graph, joined per ticket on the client the way
+  // documents already are.
+  const state = (await (await fetch(`${base()}/api/state`, withCookie())).json()) as
+    { deps: { blocker_id: number; blocked_id: number; blocker_status: string }[] };
+  const edge = state.deps.find((d) => d.blocked_id === blocked.id)!;
+  expect(edge.blocker_id).toBe(blocker.id);
+  expect(edge.blocker_status).toBe('idea');
+
+  // 409, not 500: the ticket is blocked, which is a conflict the user can act
+  // on — not the factory falling over. This route used to collapse every CLI
+  // failure to a 500.
+  const start = await fetch(`${base()}/api/tickets/${blocked.id}/start`, {
+    method: 'POST', headers: { cookie: jar, 'content-type': 'application/json' }, body: '{}',
+  });
+  expect(start.status).toBe(409);
+  const said = (await start.json()) as { error: string; blocked: boolean };
+  expect(said.blocked).toBe(true);
+  expect(said.error).toContain('blocked by unshipped work');
+});
+
+test('a cycle is refused as a 409, and a malformed edge as a 400', async () => {
+  const tk = (args: string[]) =>
+    spawnSync(TICKET, args, { encoding: 'utf8', env: { ...process.env, SMRITI_HOME: HOME_DIR } });
+  tk(['add', 'cycle a', '--repo', 'cyc-demo']);
+  tk(['add', 'cycle b', '--repo', 'cyc-demo']);
+  const all = JSON.parse(tk(['list', '--all', '--json']).stdout) as
+    { id: number; title: string }[];
+  const a = all.find((t) => t.title === 'cycle a')!;
+  const b = all.find((t) => t.title === 'cycle b')!;
+
+  const post = (id: number, body: unknown) =>
+    fetch(`${base()}/api/tickets/${id}/deps`, {
+      method: 'POST', headers: { cookie: jar, 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+  expect((await post(b.id, { blockedBy: a.id })).status).toBe(200);
+  const loop = await post(a.id, { blockedBy: b.id });
+  expect(loop.status).toBe(409);
+  expect(((await loop.json()) as { error: string }).error).toContain('cycle');
+
+  // Not an id: these reach a command line, so NaN/1.5 must never get there.
+  expect((await post(a.id, { blockedBy: 1.5 })).status).toBe(400);
+  expect((await post(a.id, {})).status).toBe(400);
+
+  // And it comes back off again.
+  const cut = await post(b.id, { rm: a.id });
+  expect(cut.status).toBe(200);
+});

@@ -227,6 +227,17 @@ go, the markdown on disk never does).
 ticket page the page itself is the selection, so `s`, `d`, `e` and `p` act on
 the ticket in front of you without a highlight to aim at.
 
+A ticket can say what has to land before it can start. `w` on a ticket page
+records what it waits on; the board then draws a blocked card quietly — faded,
+with what is in the way named on it — because blocked is *not yet* rather than
+urgent, and the colours that mean **live** and **needs you** are not for it.
+`smriti ticket start` refuses a blocked ticket and lists the blockers, with
+`--force` when you mean it, so work that cannot land does not get a worktree by
+accident. When the last blocker lands, the dependents say **freed** and are
+announced under *waiting on you* — below the real gates, and only until you
+pick one up. Edges may cross projects and apps, since the API ticket blocking
+the UI ticket is the ordinary case and the two often live in different repos.
+
 Starting a ticket cuts its worktree and opens a Claude Code session via
 **[herdr](https://herdr.dev)**, then shows the exact attach command — the
 session is a terminal; the button never needed to be. herdr is the only session
@@ -254,6 +265,13 @@ smriti ticket start 7                                       # worktree + branch;
 smriti ticket show 7                                        # detail + its documents
 smriti ticket move 7 --before 12                            # the order you mean to work them
 smriti ticket move 7 --top                                  # ...or straight to the front
+
+smriti ticket dep 12 --blocks 33                            # #12 has to land before #33
+smriti ticket dep 33 --blocked-by 12                        # the same edge, said from the other end
+smriti ticket dep 33 --rm 12                                # ...and off again
+smriti ticket deps                                          # the whole graph
+smriti ticket list --unblocked                              # what you can actually start
+smriti ticket list --blocked                                # what is waiting on something
 
 smriti project add "Search v2"                              # a body of work in this app
 smriti ticket edit 7 --project search-v2                    # file a ticket into it

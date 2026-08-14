@@ -270,6 +270,22 @@ export function boardPage(): string {
   .planlink{color:var(--hi);text-decoration:none;border-bottom:1px solid transparent;font-weight:600}
   .planlink:hover,.planlink:focus-visible{border-bottom-color:currentColor}
   .wait .empty{font-size:19px;color:var(--ink-3);padding:6px}
+  /* Subordinate to the gates above it, and visibly so: a pine rule down the
+     side instead of the highlighter wash, smaller type, no per-row selection
+     highlight competing with a real decision. */
+  .wait .freedgrp{margin-top:18px;padding:10px 0 2px 14px;border-left:3px solid var(--pine-c)}
+  .wait .freedgrp .gh{
+    font-family:ui-monospace,Menlo,monospace;font-size:10px;letter-spacing:.16em;
+    text-transform:uppercase;color:var(--pine-b);margin-bottom:7px}
+  .wait .freedrow{
+    display:flex;align-items:baseline;gap:10px;padding:5px 6px;cursor:pointer;
+    border-radius:8px;font-size:16px;color:var(--ink-2)}
+  .wait .freedrow.sel{background:rgba(88,144,107,.14);box-shadow:inset 3px 0 0 var(--pine-c)}
+  .wait .freedrow .fid{font-family:ui-monospace,Menlo,monospace;font-size:11px;color:var(--ink-3)}
+  .wait .freedrow .fnm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .wait .freedrow .why{
+    margin-left:auto;font-family:ui-monospace,Menlo,monospace;font-size:10px;
+    letter-spacing:.12em;text-transform:uppercase;color:var(--pine-b);white-space:nowrap}
 
   .trees{display:block;width:100%;height:auto;margin:6px 0 -2px;opacity:.95}
   .trees.off{display:none}
@@ -520,6 +536,23 @@ export function boardPage(): string {
   .card.done .tick{position:absolute;top:8px;right:12px;font-size:26px;color:var(--pine-c);transform:rotate(8deg)}
   .card.rev .st{border-color:var(--pine-c);color:var(--pine-b)}
   .card.rev::before{content:"⚑";position:absolute;top:6px;right:12px;color:var(--pine-c);font-size:16px}
+
+  /* Blocked is NOT urgent — it is "not yet" — so it gets the quietest
+     treatment on the board: faded, dashed, and no colour of its own. Orange
+     means live and highlighter means you are the hold-up; borrowing either
+     would make waiting work compete with work that actually needs you. */
+  .card.blocked{opacity:.66;border-style:dashed;border-color:var(--ink-4);box-shadow:1px 2px 0 rgba(var(--sh),.06)}
+  .card.blocked .t{color:var(--ink-2)}
+  .card.blocked::before{content:"⛓";position:absolute;top:6px;right:12px;color:var(--ink-4);font-size:13px}
+  .chip{
+    font-family:ui-monospace,Menlo,monospace;font-size:9.5px;letter-spacing:.08em;
+    padding:3px 8px 4px;border:2px solid var(--ink-4);color:var(--ink-3);white-space:nowrap;
+    border-radius:9px 12px 8px 11px/11px 8px 12px 9px;
+  }
+  /* Freed is the one dependency state that IS news, so it reads in pine —
+     the agent's-own-work colour — rather than highlighter. */
+  .card.freed{border-color:var(--pine-c)}
+  .chip.freed{border-color:var(--pine-c);color:var(--pine-b);background:rgba(88,144,107,.10)}
 
   .keys{
     position:fixed;left:var(--rail-w);right:0;bottom:0;z-index:8;padding:14px 26px;
@@ -784,6 +817,23 @@ export function boardPage(): string {
   .stub .f .held{display:block;margin-top:3px;font-family:ui-monospace,Menlo,monospace;
     font-size:10.5px;color:var(--ink-3);text-transform:none;letter-spacing:0}
   .stub .f .held b{color:var(--ink-2);font-weight:400}
+  /* ── dependency rows ──────────────────────────────────────────────────
+     One line per edge, because several is the normal case (#4 in this repo's
+     own backlog names two). The id leads in mono so the column scans as a
+     list of tickets; the app name only appears when the far end is in a
+     DIFFERENT app, since an edge may cross them and a bare #41 is not
+     something you can place. */
+  .stub .f .dep{display:block;margin-top:4px;font-size:15px;line-height:1.25}
+  .stub .f .dep:first-child{margin-top:0}
+  .stub .f .dep .dnum{font-family:ui-monospace,Menlo,monospace;font-size:11px;
+    color:var(--ink-3);margin-right:6px}
+  .stub .f .dep .far{font-family:ui-monospace,Menlo,monospace;font-size:10px;
+    letter-spacing:.1em;text-transform:uppercase;color:var(--pine-b);margin-left:6px}
+  .stub .f .dep .empty{color:var(--ink-4);font-style:italic}
+  /* A blocker that landed is history, not an obstacle — struck through so the
+     row answers "is anything still in my way" without reading the statuses. */
+  .stub .f .dep.met{color:var(--ink-4)}
+  .stub .f .dep.met .dnum{text-decoration:line-through}
   /* The status stamp is a control too. It straightens as you go to re-stamp
      it — the one flourish, and the same lift .btn:hover already does. */
   .stub .head.edit{position:relative;cursor:pointer;outline:none}
@@ -956,7 +1006,8 @@ export function boardPage(): string {
     <div><b>e</b> — edit the description</div><div><b>⌘⏎</b> — save it, <b>esc</b> — abandon</div>
     <div><b>d</b> — mark done</div><div><b>⌘K / /</b> — palette, apps & projects too</div>
     <div><b>a</b> — move it to another app</div><div><b>f</b> — file it into a project</div>
-    <div><b>x</b> — set the status</div><div class="hnote">a, f and x work on a ticket page</div>
+    <div><b>x</b> — set the status</div><div><b>w</b> — what it waits on (blockers)</div>
+    <div class="hnote">a, f, x and w work on a ticket page</div>
     <div><b>p</b> — open its project / app</div><div><b>m</b> — pace (medians)</div>
     <div><b>b</b> — the margin, open / collapsed</div><div><b>h</b> — completed work, every group</div>
     <div><b>esc</b> — close, then back up a level</div>
@@ -979,7 +1030,7 @@ export function boardPage(): string {
   const $ = (s) => document.querySelector(s);
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
-  let S = { tickets: [], runs: [], documents: [], repositories: [], projects: [], sessions: [] };
+  let S = { tickets: [], runs: [], documents: [], deps: [], repositories: [], projects: [], sessions: [] };
   let sel = -1;            // index into flat selectable list
   let flat = [];           // [{id, kind}] in DOM order
   // The current view, derived from location.hash by route(). Selection is
@@ -1071,6 +1122,37 @@ export function boardPage(): string {
       (t.worktree_path && x.cwd === t.worktree_path) || (x.name && x.name === 't' + t.id));
   }
   function docsFor(t){ return S.documents.filter((d) => d.ticket_id === t.id); }
+
+  // ── dependencies ─────────────────────────────────────────────────────
+  // Joined client-side off the one /api/state graph, exactly like documents.
+  // Nothing here is stored on the ticket: blocked / freed are worked out fresh
+  // on every render, so a status change anywhere is reflected everywhere and
+  // there is no derived field to go stale.
+  //
+  // Edges may cross apps AND projects, so the far end of one is often a ticket
+  // the current view is not drawing. ticketById returns undefined in that case
+  // and every caller has to cope — an edge to a ticket you cannot see is normal,
+  // not an error.
+  function ticketById(id){ return S.tickets.find((t) => t.id === id); }
+  const DEP_SATISFIED = { shipped: 1, cancelled: 1 };
+  function isSatisfied(t){ return !!(t && DEP_SATISFIED[t.status]); }
+  // An edge whose blocker is not on screen: trust the status the server sent
+  // with the edge rather than guessing, so a cross-app blocker still blocks.
+  function edgeSatisfied(e){
+    const t = ticketById(e.blocker_id);
+    return t ? isSatisfied(t) : !!DEP_SATISFIED[e.blocker_status];
+  }
+  function blockersOf(t){ return (S.deps || []).filter((e) => e.blocked_id === t.id); }
+  function blockingOf(t){ return (S.deps || []).filter((e) => e.blocker_id === t.id); }
+  function openBlockers(t){ return blockersOf(t).filter((e) => !edgeSatisfied(e)); }
+  function isBlocked(t){ return openBlockers(t).length > 0; }
+  // Had blockers, has none left, and nobody has picked it up yet. The board's
+  // only reason to distinguish this from plain "unblocked" is that it is news.
+  function isFreed(t){
+    if (isSatisfied(t) || t.branch) return false;
+    const b = blockersOf(t);
+    return b.length > 0 && b.every(edgeSatisfied);
+  }
 
   // The gate this ticket is actually parked at. NOT runFor(): that is a bare
   // find() over a bounded union of active and recent runs, which is no promise
@@ -1199,10 +1281,22 @@ export function boardPage(): string {
           const rel = at ? fmtAgo(at) : '';
           return rel ? '<span class="ago" data-live="ago" data-since="' + esc(at) + '">' + rel + '</span>' : '';
         })();
-    return '<div class="box card ' + stateCls + '" data-tid="' + t.id + '" style="animation-delay:' + (cardIdx++ * 45) + 'ms">' +
+    // Blocked reads as "not yet", never as urgent: muted and dashed, and
+    // deliberately not orange (live) or highlighter (you are the hold-up).
+    // A live run wins the class — work already underway is the more important
+    // fact about a card than an edge someone drew while it was running.
+    const blocked = !run && isBlocked(t);
+    const freed = !run && !blocked && isFreed(t);
+    const depCls = blocked ? ' blocked' : (freed ? ' freed' : '');
+    const chip = blocked
+      ? '<span class="chip" title="waiting on work that has not landed">blocked by ' +
+        openBlockers(t).map((e) => '#' + e.blocker_id).join(' · ') + '</span>'
+      : (freed ? '<span class="chip freed" title="every blocker has landed">freed</span>' : '');
+    return '<div class="box card ' + stateCls + depCls + '" data-tid="' + t.id + '" style="animation-delay:' + (cardIdx++ * 45) + 'ms">' +
       (t.status === 'shipped' ? '<span class="tick">✓</span>' : '') +
       '<div class="t">' + esc(t.title) + '</div>' +
-      '<div class="foot"><span class="id">#' + t.id + '</span><span class="st">' + st + '</span>' + ago + '</div></div>';
+      '<div class="foot"><span class="id">#' + t.id + '</span>' +
+      (chip || '<span class="st">' + st + '</span>') + ago + '</div></div>';
   }
 
   function tallyHtml(list){
@@ -1313,6 +1407,14 @@ export function boardPage(): string {
     // A session stalled at a prompt belongs in "waiting on you" just as much as
     // a /begin gate does — it is the same fact, reported by herdr instead.
     const blocked = S.tickets.filter((t) => (sessionFor(t) || {}).status === 'blocked');
+    // Work whose last blocker just landed. This is WEAKER than the two above —
+    // they mean "something is stopped, right now, pending you"; this only means
+    // "you could pick this up". It is drawn as a subordinate group below them,
+    // in pine rather than highlighter, so a real gate can never be lost in a
+    // list of suggestions. It clears by ACTION, not by clock: starting,
+    // cancelling or re-filing a freed ticket takes it out of the band, so
+    // nothing accumulates here on a timer nobody set.
+    const freed = open.filter(isFreed);
     const running = S.runs.filter((r) => r.status === 'running');
     const day = new Date().toLocaleDateString(undefined,{weekday:'long'});
     $('#eye').innerHTML = esc(day) + ' · <b>' + open.length + '</b> open' +
@@ -1327,7 +1429,7 @@ export function boardPage(): string {
         '<div class="sub2">' + esc(appLabel(appOf(t))) + ' · #' + t.id +
         ' · <b>session is asking for something</b></div></div>';
     }
-    if (!waiting.length && !blocked.length){
+    if (!waiting.length && !blocked.length && !freed.length){
       w += '<div class="empty">nothing needs you — the forest is quiet ✌︎</div>';
     } else if (waiting.length) {
       for (const r of waiting){
@@ -1347,12 +1449,30 @@ export function boardPage(): string {
           planLink(r) + '</div></div>';
       }
     }
+    if (freed.length){
+      w += '<div class="freedgrp"><div class="gh">freed by what just shipped</div>';
+      for (const t of freed){
+        // Name what freed it. A blocker that is not on screen still gets its
+        // id shown — an edge may cross apps, and "#41 landed" is at least
+        // something you can go and look up.
+        const why = blockersOf(t).map((e) => '#' + e.blocker_id).join(' · ');
+        w += '<div class="freedrow" data-tid="' + t.id + '">' +
+          '<span class="fid">#' + t.id + '</span>' +
+          '<span class="fnm">' + esc(t.title) + '</span>' +
+          '<span class="why">' + why + ' landed</span></div>';
+      }
+      w += '</div>';
+    }
     w += '</div>';
     $('#waitwrap').innerHTML = w;
 
     flat = [];
     for (const t of blocked) flat.push({ id: t.id, kind: 'wait' });
     for (const r of waiting) if (r.ticket_id) flat.push({ id: r.ticket_id, kind: 'wait' });
+    // After the gates, deliberately: arrow keys should reach a real decision
+    // before they reach a suggestion. 'wait' also keeps these rows out of
+    // carryStep, which refuses to reorder from the band.
+    for (const t of freed) flat.push({ id: t.id, kind: 'wait' });
 
     let html = '';
     if (!S.tickets.length && !(S.projects || []).length){
@@ -1719,6 +1839,16 @@ export function boardPage(): string {
         if (e.key === 'Enter' || e.key === ' '){ e.preventDefault(); e.stopPropagation(); open(); }
       });
     });
+    // Same contract as data-app / data-proj: the ↗ inside a dependency row
+    // navigates to the other ticket, and must stop the row it sits in from
+    // also opening the dependency picker on the way out.
+    $$('[data-tgo]').forEach((el) => {
+      const open = () => go('#/t/' + el.dataset.tgo);
+      el.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); open(); });
+      el.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' '){ e.preventDefault(); e.stopPropagation(); open(); }
+      });
+    });
     $$('[data-fold]').forEach((el) => el.addEventListener('click', () => {
       const key = el.dataset.fold;
       if (foldFlips.has(key)) foldFlips.delete(key); else foldFlips.add(key);
@@ -1869,11 +1999,13 @@ export function boardPage(): string {
   setInterval(tick, 1000);
 
   function paintSel(){
-    document.querySelectorAll('.card.sel,.item.sel').forEach((e) => e.classList.remove('sel'));
+    document.querySelectorAll('.card.sel,.item.sel,.freedrow.sel').forEach((e) => e.classList.remove('sel'));
     if (sel < 0 || !flat[sel]) return;
     const { id, kind } = flat[sel];
+    // A freed row is a 'wait' row that is not an .item — look for either, or
+    // arrowing into the freed group would silently paint nothing.
     const el = kind === 'wait'
-      ? document.querySelector('.item[data-tid="' + id + '"]')
+      ? document.querySelector('.item[data-tid="' + id + '"], .freedrow[data-tid="' + id + '"]')
       : document.querySelector('.card[data-tid="' + id + '"]');
     if (el){ el.classList.add('sel'); el.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); }
   }
@@ -2391,6 +2523,10 @@ export function boardPage(): string {
   // The two-press delete confirm, and its timer. See ticketAct for why this is
   // not a data attribute on the button.
   let armedDelete = null, armTimer = 0;
+  // Same shape as armedDelete, and a module variable for the same reason: the
+  // card or button that fired the first press is replaced by the next SSE
+  // redraw, so arming anything on the node itself would be forgotten mid-window.
+  let armedStart = null, startArmTimer = 0;
   // The paper-trail document you have open, and what it said. A page is
   // rebuilt by the SSE path and the overlay never was, so a document opened on
   // a ticket used to vanish a second later; app and project pages had the same
@@ -2414,11 +2550,34 @@ export function boardPage(): string {
     }
     tapKey('s');
     const live = Boolean(sessionFor(t));
+    // Say what is in the way before cutting a worktree for work that cannot
+    // land, and make the second press mean "anyway". Armed in a module
+    // variable and confirmed by a toast rather than by confirm(): a modal
+    // would block the SSE-driven page it interrupts, and the two-press arm is
+    // the shape this board already uses for delete.
+    //
+    // Re-attaching a live session is never guarded — the work is already
+    // underway, which is exactly the line bin/smriti-ticket draws by checking
+    // blockers only on the path that CUTS a worktree.
+    const blocked = !live && isBlocked(t);
+    if (blocked && armedStart !== t.id){
+      armedStart = t.id;
+      clearTimeout(startArmTimer);
+      startArmTimer = setTimeout(() => { armedStart = null; }, 6000);
+      toast('#' + t.id + ' waits on ' +
+        openBlockers(t).map((e) => '#' + e.blocker_id).join(' · ') +
+        ' — press again to start it anyway', 6000);
+      return;
+    }
+    clearTimeout(startArmTimer); armedStart = null;
     toast(live ? 'finding the session for <b>#' + t.id + '</b>…'
                : 'cutting a worktree for <b>#' + t.id + '</b>…', 8000);
     try {
       runCache.delete(t.id);          // a start is exactly when the trace moves
-      const res = await api('/api/tickets/' + t.id + '/start', { method: 'POST', body: '{}' });
+      // force only on the second press; an unblocked start sends an empty body
+      // exactly as it always has.
+      const res = await api('/api/tickets/' + t.id + '/start',
+        { method: 'POST', body: blocked ? '{"force":true}' : '{}' });
       // Land on the ticket wherever start was pressed from — the board, the
       // palette, or the page itself. The command has to be somewhere you can
       // read it long enough to copy, which a toast is not.
@@ -2558,6 +2717,34 @@ export function boardPage(): string {
     const goGlyph = (attr, val, what) =>
       '<a class="go" href="#" ' + attr + '="' + esc(String(val)) + '" title="open ' + esc(what) +
       '" aria-label="open ' + esc(what) + '">↗</a>';
+    // One edge, as a line in the filing column. The far end names its app when
+    // that app is not this ticket's — an edge may cross apps and projects, so
+    // a bare "#41" is often something you cannot place. A blocker that has
+    // landed is struck through: the row then reads as history rather than as
+    // something still in the way.
+    const edgeLine = (otherId, satisfied) => {
+      const o = ticketById(otherId);
+      const elsewhere = o && (o.repo_slug || '') !== (t.repo_slug || '');
+      return '<span class="dep' + (satisfied ? ' met' : '') + '">' +
+        '<span class="dnum">#' + otherId + '</span>' +
+        // A ticket the current state does not carry is not an error — say what
+        // is known rather than rendering a blank.
+        (o ? esc(o.title) : '<span class="empty">not in view</span>') +
+        (o && elsewhere ? '<span class="far">' + esc(appLabel(o.repo_slug || NO_APP)) + '</span>' : '') +
+        (o ? goGlyph('data-tgo', otherId, o.title) : '') + '</span>';
+    };
+    const depRowsHtml = (tk) => {
+      const by = blockersOf(tk), bl = blockingOf(tk);
+      let s = '<div class="f edit dep-f" data-k="w" data-field="deps" role="button" tabindex="0">' +
+        '<span class="k2">blocked by</span><span class="v' + (by.length ? '' : ' empty') + '">' +
+        (by.length ? by.map((e) => edgeLine(e.blocker_id, edgeSatisfied(e))).join('')
+                   : 'nothing — free to start') + '</span></div>';
+      if (bl.length){
+        s += '<div class="f"><span class="k2">blocks</span><span class="v">' +
+          bl.map((e) => edgeLine(e.blocked_id, false)).join('') + '</span></div>';
+      }
+      return s;
+    };
     // Its worktree lives in the app's tree, so a started ticket cannot change
     // apps — bin/smriti-ticket refuses it. The row states that rather than
     // offering a picker that would fail on submit.
@@ -2575,6 +2762,7 @@ export function boardPage(): string {
         '<span class="k2">project</span><span class="v' + (proj ? '' : ' empty') + '">' +
         (proj ? esc(proj.name) + goGlyph('data-proj', proj.id, proj.name)
               : 'loose in the app') + '</span></div>' +
+      depRowsHtml(t) +
       '</div>';
     // The re-file <select> that used to sit here has moved up into the project
     // row, which can also do it for a ticket with no app yet — the case a
@@ -2680,6 +2868,7 @@ export function boardPage(): string {
     }
     else if (which === 'project') pickProject(t);
     else if (which === 'status') pickStatus(t);
+    else if (which === 'deps') pickDep(t);
   }
   // All three end the same way: write through the CLI, then redraw. refresh()
   // re-runs route(), which re-renders the ticket page in place — so unlike the
@@ -2753,6 +2942,64 @@ export function boardPage(): string {
         if (!rows.length && !pool.length)
           rows.push({ label: (t.repo_slug ? appLabel(t.repo_slug) : 'no app') + ' has no projects yet',
             r: 'smriti project add', act: () => {} });
+        return rows;
+      },
+    });
+  }
+
+  // Draw or cut a dependency. One picker for both, because "what is this
+  // waiting on" is one question — the existing edges sit at the top, ready to
+  // be removed, and everything else is a candidate blocker.
+  //
+  // Only --blocked-by is offered. The reverse direction is the same edge said
+  // backwards, and a picker that could write either way would need the user to
+  // choose a direction before choosing a ticket — two decisions where the page
+  // already answers one of them by being the page it is. "dep --blocks" is
+  // still there on the CLI for when you are looking at it from the other end.
+  function pickDep(t){
+    tapKey('w');
+    pickOpen({
+      cue: 'blocked by', placeholder: 'which ticket has to land first?',
+      build: (q) => {
+        const ql = q.trim().toLowerCase();
+        const rows = [];
+        for (const e of blockersOf(t)){
+          const o = ticketById(e.blocker_id);
+          const label = o ? o.title : 'ticket #' + e.blocker_id;
+          if (ql && !label.toLowerCase().includes(ql) && !String(e.blocker_id).includes(ql)) continue;
+          rows.push({
+            label: label, group: 'remove',
+            r: edgeSatisfied(e) ? 'landed' : 'waiting',
+            act: () => writeField('#' + e.blocker_id + ' no longer blocks #' + t.id,
+              () => api('/api/tickets/' + t.id + '/deps',
+                { method: 'POST', body: JSON.stringify({ rm: e.blocker_id }) })),
+          });
+        }
+        // Candidates: everything except itself and what it is already waiting
+        // on. Tickets in other apps are offered too — a cross-app edge is the
+        // common case, not an exotic one — and are grouped by app so the list
+        // stays readable when it spans several.
+        const already = new Set(blockersOf(t).map((e) => e.blocker_id));
+        const pool = S.tickets
+          .filter((x) => x.id !== t.id && !already.has(x.id) && !isSatisfied(x))
+          .filter((x) => !ql || x.title.toLowerCase().includes(ql) || String(x.id).includes(ql));
+        // Unfiltered, this is every open ticket in the factory, which is a wall
+        // rather than a choice. Same app first, then a bounded remainder — type
+        // to reach anything past it.
+        const mine = pool.filter((x) => (x.repo_slug || '') === (t.repo_slug || ''));
+        const others = pool.filter((x) => (x.repo_slug || '') !== (t.repo_slug || ''));
+        for (const x of mine.concat(others).slice(0, ql ? 40 : 12)){
+          rows.push({
+            label: x.title,
+            group: (x.repo_slug || '') === (t.repo_slug || '') ? 'add' : appLabel(x.repo_slug || NO_APP),
+            r: '#' + x.id + ' · ' + (STATUS[x.status] || x.status),
+            act: () => writeField('#' + t.id + ' now waits on #' + x.id,
+              () => api('/api/tickets/' + t.id + '/deps',
+                { method: 'POST', body: JSON.stringify({ blockedBy: x.id }) })),
+          });
+        }
+        if (!rows.length)
+          rows.push({ label: 'nothing to link to', r: 'no other open tickets', act: () => {} });
         return rows;
       },
     });
@@ -3267,6 +3514,10 @@ export function boardPage(): string {
       case 'a': if (view.kind === 'ticket' && t && !isStarted(t)){ e.preventDefault(); pickApp(t); } break;
       case 'f': if (view.kind === 'ticket' && t){ e.preventDefault(); pickProject(t); } break;
       case 'x': if (view.kind === 'ticket' && t){ e.preventDefault(); pickStatus(t); } break;
+      // w for "waits on". NOT b, however well it would have read: b is the
+      // margin toggle, and a second case 'b' in this switch is unreachable
+      // code that looks like a working binding.
+      case 'w': if (view.kind === 'ticket' && t){ e.preventDefault(); pickDep(t); } break;
       case 'p': {
         tapKey('p');
         if (view.kind === 'ticket' && t){

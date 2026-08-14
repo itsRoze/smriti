@@ -350,17 +350,23 @@ describe('board UI', () => {
       expect(await stamp.innerText()).toBe('READY');
       expect(await stamp.getAttribute('class')).toContain('s-ready');
 
-      // Filed under: app and project, both rows emitted whether or not they are
-      // filled. This fixture ticket has an app and no project.
+      // Filed under: app, project and what it waits on — all emitted whether or
+      // not they are filled, because each row is also the control that fills it
+      // and a ticket with no blockers is exactly when you go to add one.
+      // "blocks" is the exception: it is not editable from this end, so it
+      // appears only when something is actually waiting.
       const labels = await page.locator('.stub .f .k2').allInnerTexts();
-      expect(labels).toEqual(['APP', 'PROJECT']);
-      expect(await page.locator('.stub .f .v.empty').count()).toBe(1);
+      expect(labels).toEqual(['APP', 'PROJECT', 'BLOCKED BY']);
+      // Two blanks: no project, and nothing blocking it.
+      expect(await page.locator('.stub .f .v.empty').count()).toBe(2);
       // The value carries a ↗ that opens the app page — the click that used to
       // be the whole row, moved aside so the row itself can edit.
       expect(await page.locator('.stub .f .v').first().innerText()).toContain('test-demo');
-      // Both rows are writable, and each names the key that opens its picker.
+      // All three rows are writable, and each names the key that opens its picker.
       expect(await page.locator('.stub .f[data-field="app"]').getAttribute('data-k')).toBe('a');
       expect(await page.locator('.stub .f[data-field="project"]').getAttribute('data-k')).toBe('f');
+      // w for "waits on", not b — b is already the margin toggle.
+      expect(await page.locator('.stub .f[data-field="deps"]').getAttribute('data-k')).toBe('w');
       expect(await page.locator('.stub .head[data-field="status"]').getAttribute('data-k')).toBe('x');
       expect(errors).toEqual([]);
     } finally { await context.close(); }
@@ -1588,6 +1594,118 @@ describe('reordering', () => {
       expect(await page.locator('.card.drag').count()).toBe(0);
       expect(await page.locator('.slot').count()).toBe(0);
       await page.mouse.up();
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+});
+
+// ─── dependencies (#12) ─────────────────────────────────────────────────────
+//
+// The fixtures for these live here rather than in the shared beforeAll: an
+// edge changes how OTHER tests' cards draw (a blocked card loses its status
+// chip), and the board's own suite should not have to know about that.
+
+describe('dependencies', () => {
+  it('a blocked card reads as not-yet, and names what it waits on', async () => {
+    if (!HAS_CHROMIUM) return;
+    must(run(TICKET, ['add', 'the API piece', '--ready'], appDir), 'add blocker');
+    must(run(TICKET, ['add', 'the UI piece', '--ready'], appDir), 'add blocked');
+    const blocker = idOf('the API piece');
+    const blocked = idOf('the UI piece');
+    must(run(TICKET, ['dep', blocked, '--blocked-by', blocker], appDir), 'dep');
+
+    const { context, page, errors } = await open('#/r/test-demo');
+    try {
+      const card = page.locator('.card[data-tid="' + blocked + '"]');
+      await card.waitFor();
+      expect(await card.getAttribute('class')).toContain('blocked');
+      // The chip replaces the status chip: what is in the way is the more
+      // useful fact about a card that cannot be started.
+      expect(await card.locator('.chip').innerText()).toBe('blocked by #' + blocker);
+      // Not orange, not highlighter — blocked is quiet, not urgent.
+      expect(await card.locator('.st').count()).toBe(0);
+
+      // The blocker itself is untouched.
+      const other = page.locator('.card[data-tid="' + blocker + '"]');
+      expect(await other.getAttribute('class')).not.toContain('blocked');
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+
+  it('the ticket page names both directions and links through', async () => {
+    if (!HAS_CHROMIUM) return;
+    const blocker = idOf('the API piece');
+    const blocked = idOf('the UI piece');
+    const { context, page, errors } = await open('#/t/' + blocked);
+    try {
+      await page.waitForSelector('.stub');
+      const by = page.locator('.stub .f', { hasText: 'blocked by' }).first();
+      expect(await by.innerText()).toContain('the API piece');
+      // The ↗ inside the row navigates to the other ticket without also
+      // opening the row's own picker.
+      await by.locator('[data-tgo]').first().click();
+      await page.waitForFunction((id) => location.hash === '#/t/' + id, blocker);
+
+      // And from the blocker's side, the same edge reads as "blocks".
+      const bl = page.locator('.stub .f', { hasText: 'blocks' }).first();
+      expect(await bl.innerText()).toContain('the UI piece');
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+
+  it('starting blocked work says what is in the way instead of cutting a worktree', async () => {
+    if (!HAS_CHROMIUM) return;
+    const blocked = idOf('the UI piece');
+    const { context, page, errors } = await open('#/t/' + blocked);
+    try {
+      await page.waitForSelector('[data-act="start"]');
+      await page.locator('[data-act="start"]').click();
+      // A toast, not a modal: confirm() would block the SSE-driven page it
+      // interrupts, and this board already arms delete the same way.
+      await page.waitForFunction(() =>
+        (document.querySelector('#toast') || {}).textContent?.includes('press again'));
+      // Still not started: no branch was cut, which is the thing the refusal
+      // exists to prevent. Read from the store rather than the page, since the
+      // page is what is under test.
+      const t = JSON.parse(run(TICKET, ['show', blocked, '--json'], appDir).stdout);
+      expect(t.ticket.branch).toBeNull();
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+
+  it('a landed blocker stops blocking, and the card says freed', async () => {
+    if (!HAS_CHROMIUM) return;
+    const blocker = idOf('the API piece');
+    const blocked = idOf('the UI piece');
+    must(run(TICKET, ['done', blocker], appDir), 'ship the blocker');
+
+    const { context, page, errors } = await open('#/r/test-demo');
+    try {
+      const card = page.locator('.card[data-tid="' + blocked + '"]');
+      await card.waitFor();
+      expect(await card.getAttribute('class')).not.toContain('blocked');
+      expect(await card.locator('.chip.freed').innerText()).toBe('freed');
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+
+  it('freed work is announced on the board, below the real gates', async () => {
+    if (!HAS_CHROMIUM) return;
+    const blocked = idOf('the UI piece');
+    const { context, page, errors } = await open('');
+    try {
+      await page.waitForSelector('.wait');
+      const row = page.locator('.wait .freedgrp .freedrow[data-tid="' + blocked + '"]');
+      expect(await row.count()).toBe(1);
+      expect(await row.innerText()).toContain('the UI piece');
+      // Subordinate, not equal: the group is drawn AFTER the gates, so a real
+      // decision is never buried under a list of suggestions.
+      const order = await page.evaluate(() => {
+        const w = document.querySelector('.wait');
+        return Array.from(w.children).map((c) => c.className);
+      });
+      const grp = order.findIndex((c) => c.includes('freedgrp'));
+      expect(grp).toBe(order.length - 1);
       expect(errors).toEqual([]);
     } finally { await context.close(); }
   }, T);

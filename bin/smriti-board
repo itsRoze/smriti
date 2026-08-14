@@ -778,6 +778,11 @@ async function cmdServer(): Promise<never> {
           readJsonAsync<Run[]>(['list', '--active', '--json'], TRACE),
         ]);
         const documents = readJsonCmd(['docs', '--json']);
+        // The whole dependency graph in one read, joined per ticket on the
+        // client exactly the way documents already are. The alternative was
+        // widening `ticket list --json`, which smriti-factory also consumes —
+        // and two mechanisms for the same job is how the two drift.
+        const deps = readJsonCmd(['deps', '--json']);
         const repositories = readJsonCmd(['list', '--json'], REPO);
         const projects = readJsonCmd(['list', '--all', '--json'], PROJECT);
         if (tickets === null) {
@@ -791,6 +796,7 @@ async function cmdServer(): Promise<never> {
           tickets,
           runs,
           documents: documents ?? [],
+          deps: deps ?? [],
           repositories: repositories ?? [],
           projects: projects ?? [],
           sessions: herdrSessions(),
@@ -1004,8 +1010,21 @@ async function cmdServer(): Promise<never> {
         // yet started its replacement. Starting into that gap duplicates the
         // session the restart is about to create.
         if (sessionBusy.has(id)) return json({ error: 'a restart is already in flight' }, 409);
-        const r = sh(TICKET, ['start', String(id)], 30000);
-        if (!r.ok) return json({ error: r.errOut || 'could not start' }, 500);
+        // The page sends {force:true} only after the user has been told what is
+        // in the way and said start it anyway. An empty body is the normal case.
+        const sb = (await req.json().catch(() => ({}))) as { force?: boolean };
+        const args = ['start', String(id)];
+        if (sb.force === true) args.push('--force');
+        const r = sh(TICKET, args, 30000);
+        // Same reasoning as the move route below: the CLI's exit codes carry
+        // more than "it failed", and collapsing them all to 500 told the user
+        // the factory had fallen over when in fact the ticket was merely
+        // blocked. 7 is that refusal — a conflict with the dependency graph,
+        // not a fault — and the page offers to force past it.
+        if (!r.ok) {
+          const code = r.code === 7 ? 409 : r.code === 4 ? 404 : r.code === 2 ? 400 : 500;
+          return json({ error: r.errOut || 'could not start', blocked: r.code === 7 }, code);
+        }
         const dir = r.out.split('\n')[0].trim();
         const launch = launchSession(dir, id);
         broadcast();
@@ -1117,6 +1136,34 @@ async function cmdServer(): Promise<never> {
         // anything else and its message names the whole set.
         const r = sh(TICKET, ['status', setStatus[1], b.status]);
         if (!r.ok) return json({ error: r.errOut || 'could not set the status' }, 500);
+        broadcast();
+        return json({ ok: true });
+      }
+
+      // Draw or cut a dependency edge. Its own route for the same reason
+      // /status has one: `dep` is a separate CLI verb, and the direction is
+      // part of the request rather than a field being written.
+      const dep = url.pathname.match(/^\/api\/tickets\/(\d+)\/deps$/);
+      if (dep && req.method === 'POST') {
+        touch();
+        const b = (await req.json().catch(() => ({}))) as
+          { blocks?: number; blockedBy?: number; rm?: number };
+        // Integer-checked here rather than trusted: these reach a command line,
+        // and NaN/1.5/Infinity would arrive as strings that mean nothing to the
+        // CLI. Same guard the move route already applies to before/after.
+        const isId = (v: unknown): v is number => Number.isInteger(v) && (v as number) > 0;
+        let args: string[];
+        if (isId(b.blocks))         args = ['dep', dep[1], '--blocks', String(b.blocks)];
+        else if (isId(b.blockedBy)) args = ['dep', dep[1], '--blocked-by', String(b.blockedBy)];
+        else if (isId(b.rm))        args = ['dep', dep[1], '--rm', String(b.rm)];
+        else return json({ error: 'say which edge: blocks, blockedBy or rm' }, 400);
+        const r = sh(TICKET, args);
+        // 7 is a refusal the user can act on — a self-link or a cycle — and
+        // reads as a conflict, not as the factory falling over.
+        if (!r.ok) {
+          const code = r.code === 7 ? 409 : r.code === 4 ? 404 : r.code === 2 ? 400 : 500;
+          return json({ error: r.errOut || 'could not change the dependency' }, code);
+        }
         broadcast();
         return json({ ok: true });
       }
