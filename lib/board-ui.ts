@@ -2220,8 +2220,24 @@ export function boardPage(): string {
     if (!e) return;
     pendingRows.delete(rowKey(kind, tmp));
     e.id = realId;
-    e.row = Object.assign({}, e.row, { id: realId });
+    // _pending goes with the placeholder. It is what greys a card out and
+    // withholds its data-tid, and the row is no longer provisional — the server
+    // has just named it. Leaving it set left a real ticket looking unsaved and
+    // refusing to open until some later refresh happened to replace the row.
+    e.row = Object.assign({}, e.row, { id: realId, _pending: false });
     pendingRows.set(rowKey(kind, realId), e);
+
+    // The row already IN the live state still carries the placeholder, and
+    // re-keying the entry alone does not touch it — so the next apply would
+    // look for the real id, not find it, and push a SECOND row. That is exactly
+    // what happened: two identical projects in the margin until a refresh
+    // replaced the state wholesale and one of them vanished.
+    //
+    // Rewritten in place rather than removed and re-added, so the row keeps its
+    // position instead of jumping to the end of the list under the user.
+    const coll = collFor(S, kind);
+    const at = coll.findIndex((x) => Number(x.id) === Number(tmp));
+    if (at >= 0) coll[at] = e.row;
   }
 
   // 'prev' is captured here, from the state as it stands, because rolling back

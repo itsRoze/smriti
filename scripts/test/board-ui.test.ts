@@ -1345,10 +1345,20 @@ describe('board UI', () => {
       await page.locator('[data-act="delproj"]').click();
       await page.waitForSelector('#toast:has-text("still being created")');
 
+      // Exactly one row in the margin, not two. The placeholder row is the one
+      // the state already holds; promoting the entry without rewriting it left
+      // a second row beside it until a refresh replaced the state wholesale.
+      const railRows = () => page.locator('#rail .rproj:has-text("Optimistically Made")').count();
+      expect(await railRows()).toBe(1);
+
       release();
       // The real id takes over, and the placeholder route is replaced rather
       // than left behind as a back-button destination.
       await page.waitForFunction(() => !/#\/p\/-/.test(location.hash));
+      // Still one, now under the real id — and it stays one once the server's
+      // own copy arrives.
+      expect(await railRows()).toBe(1);
+      expect(await page.locator('#rail .rproj[data-proj^="-"]').count()).toBe(0);
       await untilStore(() => (JSON.parse(run(PROJECT, ['list', '--all', '--json'], appDir).stdout) as any[])
         .some((p) => p.name === 'Optimistically Made'), true, 'project create');
       const made = (JSON.parse(run(PROJECT, ['list', '--all', '--json'], appDir).stdout) as any[])
@@ -1435,6 +1445,12 @@ describe('board UI', () => {
         return route.continue();
       });
 
+      // /api/state blocked from here on. The duplicate this guards against is
+      // erased by the very next full read — which is why it presented as "one
+      // of them went away" rather than as a bug — so a resync must not be
+      // allowed to answer the question the assertion is asking.
+      await page.route('**/api/state', (route) => route.abort());
+
       await page.keyboard.press('c');
       await page.locator('#palq').fill('captured optimistically');
       await page.locator('#palopts .o:has-text("New ticket")').click();
@@ -1446,8 +1462,12 @@ describe('board UI', () => {
       expect((await card.innerText()).toLowerCase()).toContain('saving');
       expect(await card.getAttribute('data-tid')).toBeNull();
 
+      expect(await page.locator('.card:has-text("captured optimistically")').count()).toBe(1);
+
       release();
       await page.waitForSelector('.card[data-tid]:has-text("captured optimistically")');
+      // One card, not the placeholder plus the real one.
+      expect(await page.locator('.card:has-text("captured optimistically")').count()).toBe(1);
       const made = (JSON.parse(run(TICKET, ['list', '--all', '--json'], appDir).stdout) as any[])
         .find((t) => t.title === 'captured optimistically');
       expect(made).toBeTruthy();
