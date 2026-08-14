@@ -16,8 +16,10 @@ setup() {
   ln -s "$ROOT/bin/smriti-ticket"  "$FAKE_BIN/smriti-ticket"
   ln -s "$ROOT/bin/smriti-project" "$FAKE_BIN/smriti-project"
   ln -s "$ROOT/bin/smriti-slug"    "$FAKE_BIN/smriti-slug"
+  ln -s "$ROOT/bin/smriti-trace"   "$FAKE_BIN/smriti-trace"
   CLI="$FAKE_BIN/smriti-ticket"
   PROJECT="$FAKE_BIN/smriti-project"
+  TRACE="$FAKE_BIN/smriti-trace"
 
   export SMRITI_HOME="$WORK/state"
   mkdir -p "$SMRITI_HOME"
@@ -1318,4 +1320,533 @@ seed_commit() { echo seed > f && git add f && git commit -q -m init; }
   # And a second run has nothing left to do.
   run "$CLI" doc-adopt
   [[ "$output" == *"adopted 0, already known 1, skipped 0"* ]]
+}
+
+# ─── terminal status ends the ticket's open runs ────────────────────────────
+#
+# The durable half of the "waiting on you is lying" fix. Closing a run used to
+# depend on an agent reaching a line of skill markdown, every such call suffixed
+# `|| true` — so shipping from a second terminal, shipping by hand, or shipping
+# after the pane died all left the run open forever. No route to shipping can
+# avoid moving the ticket, which is why the hook lives here.
+
+open_run_for() {
+  "$TRACE" start begin --ticket "$1" | cut -d= -f2-
+}
+run_status_of() {
+  "$TRACE" list --ticket "$1" --json | grep -o '"status":"[^"]*"' | head -1 | cut -d'"' -f4
+}
+
+@test "status shipped: ends the ticket's open runs" {
+  "$CLI" add "a thing" >/dev/null
+  open_run_for 1 >/dev/null
+  "$CLI" status 1 shipped
+  [ "$(run_status_of 1)" = "failed" ]
+}
+
+@test "done: ends the ticket's open runs too" {
+  # `done` is shorthand for `status shipped`, so it must not be a second path
+  # with its own behaviour — this is what smriti-clean calls when a branch lands.
+  "$CLI" add "a thing" >/dev/null
+  open_run_for 1 >/dev/null
+  "$CLI" done 1
+  [ "$(run_status_of 1)" = "failed" ]
+}
+
+@test "cancel: ends the ticket's open runs" {
+  "$CLI" add "a thing" >/dev/null
+  open_run_for 1 >/dev/null
+  "$CLI" cancel 1
+  [ "$(run_status_of 1)" = "failed" ]
+}
+
+@test "status in_review: deliberately does NOT end the runs" {
+  # `ticket pr` sets in_review BEFORE the merge and clean it still has to do.
+  # Ending runs there would kill the normal ship path mid-flight.
+  "$CLI" add "a thing" >/dev/null
+  open_run_for 1 >/dev/null
+  "$CLI" status 1 in_review
+  [ "$(run_status_of 1)" = "running" ]
+}
+
+@test "status ready/in_progress: leave the runs open" {
+  "$CLI" add "a thing" >/dev/null
+  open_run_for 1 >/dev/null
+  "$CLI" status 1 in_progress
+  [ "$(run_status_of 1)" = "running" ]
+  "$CLI" status 1 ready
+  [ "$(run_status_of 1)" = "running" ]
+}
+
+@test "shipping: a run still open did not finish, so it reads failed not done" {
+  # `end --ticket` only touches runs still running or awaiting, and a run that
+  # finished properly already ended ITSELF as done. So anything this catches is
+  # by definition a run that never reached its own ending — which is what the
+  # board says of a pane it had to close on a run's behalf.
+  "$CLI" add "a thing" >/dev/null
+  local uid; uid=$(open_run_for 1)
+  "$TRACE" end --run "$uid" --status done
+  "$CLI" status 1 shipped
+  run "$TRACE" show "$uid"
+  [[ "$output" == *"done"* ]]
+}
+
+@test "shipping a ticket with no runs at all is not an error" {
+  "$CLI" add "a thing" >/dev/null
+  run "$CLI" done 1
+  [ "$status" -eq 0 ]
+}
+
+@test "rm: ends the ticket's open runs before deleting it" {
+  # runs.ticket_id is ON DELETE SET NULL, so a run left open here survives as an
+  # orphan with nothing to reconcile it against — the board needs a ticket for
+  # two of its three proofs and a stamped pane for the third. It would sit in
+  # "waiting on you" forever: the exact failure this area exists to remove,
+  # reintroduced by the one verb that destroys the evidence.
+  "$CLI" add "a thing" >/dev/null
+  local uid; uid=$(open_run_for 1)
+  "$CLI" rm 1 --yes >/dev/null
+
+  run "$TRACE" show "$uid"
+  [[ "$output" == *"failed"* ]]
+  # And nothing is left claiming to be open.
+  [ -z "$("$TRACE" list --active --json | grep -o "$uid" || true)" ]
+}
+
+# ─── dependencies (#12: blocks and blocked-by) ──────────────────────────────
+#
+# The graph is an edge table with nothing stored on the tickets themselves, so
+# every assertion below is about what gets DERIVED — which is also why
+# un-cancelling a blocker needs no reconciliation step to re-block its
+# dependents, and why there is a test for exactly that.
+
+dq() { sqlite3 "$SMRITI_HOME/factory.db" "$1"; }
+
+# Three tickets in one app, nothing linked yet.
+three_deps() {
+  "$CLI" add alpha --repo demo >/dev/null
+  "$CLI" add beta  --repo demo >/dev/null
+  "$CLI" add gamma --repo demo >/dev/null
+}
+
+# The same three, but filed under the app this repo actually resolves to and
+# with a commit to branch from — `start` needs both, and a ticket filed under a
+# slug no repo maps to cannot be started at all.
+three_startable() {
+  echo seed > f && git add f && git commit -q -m init
+  "$CLI" add alpha >/dev/null
+  "$CLI" add beta  >/dev/null
+  "$CLI" add gamma >/dev/null
+}
+
+@test "dep: --blocks and --blocked-by draw the same edge from either end" {
+  three_deps
+  run "$CLI" dep 1 --blocks 2
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"#1 → #2"* ]]
+  [ "$(dq "SELECT count(*) FROM ticket_deps WHERE blocker_id=1 AND blocked_id=2;")" = "1" ]
+
+  # Said from the other end, it is still blocker=2, blocked=3.
+  run "$CLI" dep 3 --blocked-by 2
+  [ "$status" -eq 0 ]
+  [ "$(dq "SELECT count(*) FROM ticket_deps WHERE blocker_id=2 AND blocked_id=3;")" = "1" ]
+}
+
+@test "dep: several edges in one invocation" {
+  three_deps
+  "$CLI" add delta --repo demo >/dev/null
+  run "$CLI" dep 1 --blocks 2 --blocks 3 --blocks 4
+  [ "$status" -eq 0 ]
+  [ "$(dq "SELECT count(*) FROM ticket_deps WHERE blocker_id=1;")" = "3" ]
+}
+
+@test "dep: a ticket cannot block itself" {
+  three_deps
+  run "$CLI" dep 1 --blocks 1
+  [ "$status" -eq 7 ]
+  [[ "$output" == *"cannot block itself"* ]]
+  [ "$(dq "SELECT count(*) FROM ticket_deps;")" = "0" ]
+}
+
+@test "dep: a direct cycle is refused" {
+  three_deps
+  "$CLI" dep 1 --blocks 2 >/dev/null
+  run "$CLI" dep 2 --blocks 1
+  [ "$status" -eq 7 ]
+  [[ "$output" == *"cycle"* ]]
+  [ "$(dq "SELECT count(*) FROM ticket_deps;")" = "1" ]
+}
+
+@test "dep: a transitive cycle is refused" {
+  # A→B→C, so C→A closes the loop. The walk has to follow more than one hop:
+  # inside a cycle 'what can I start' has no answer at all.
+  three_deps
+  "$CLI" dep 1 --blocks 2 >/dev/null
+  "$CLI" dep 2 --blocks 3 >/dev/null
+  run "$CLI" dep 3 --blocks 1
+  [ "$status" -eq 7 ]
+  [[ "$output" == *"cycle"* ]]
+  [ "$(dq "SELECT count(*) FROM ticket_deps;")" = "2" ]
+}
+
+@test "dep: drawing the same edge twice is a no-op, not a duplicate" {
+  three_deps
+  "$CLI" dep 1 --blocks 2 >/dev/null
+  run "$CLI" dep 1 --blocks 2
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"already recorded"* ]]
+  [ "$(dq "SELECT count(*) FROM ticket_deps;")" = "1" ]
+}
+
+@test "dep: --rm drops the edge whichever way it was drawn" {
+  three_deps
+  "$CLI" dep 1 --blocks 2 >/dev/null
+  # Removed from the BLOCKED end, though it was drawn from the blocker's.
+  run "$CLI" dep 2 --rm 1
+  [ "$status" -eq 0 ]
+  [ "$(dq "SELECT count(*) FROM ticket_deps;")" = "0" ]
+}
+
+@test "dep: removing an edge that is not there says so without failing" {
+  three_deps
+  run "$CLI" dep 1 --rm 2
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"no dependency between"* ]]
+}
+
+@test "dep: refuses a ticket that does not exist" {
+  three_deps
+  run "$CLI" dep 1 --blocks 99
+  [ "$status" -eq 4 ]
+}
+
+@test "dep: edges may cross apps" {
+  # The common case is an API ticket blocking a UI ticket, and those often live
+  # in different repositories — so nothing here is scoped the way position is.
+  "$CLI" add api --repo backend >/dev/null
+  "$CLI" add ui  --repo frontend >/dev/null
+  run "$CLI" dep 2 --blocked-by 1
+  [ "$status" -eq 0 ]
+  [ "$(dq "SELECT count(*) FROM ticket_deps;")" = "1" ]
+  # And the far end names its app, since it is not the one you are looking at.
+  run "$CLI" show 2
+  [[ "$output" == *"backend"* ]]
+}
+
+@test "deps: lists the graph, and --json carries the blocker's status" {
+  three_deps
+  "$CLI" dep 1 --blocks 2 >/dev/null
+  run "$CLI" deps
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"alpha"* ]]
+  [[ "$output" == *"beta"* ]]
+
+  run "$CLI" deps --json
+  [ "$(echo "$output" | jq -r '.[0].blocker_id')" = "1" ]
+  [ "$(echo "$output" | jq -r '.[0].blocked_id')" = "2" ]
+  # The board renders cross-app edges whose far end it may not be drawing, so
+  # the status rides along with the edge rather than being looked up.
+  [ "$(echo "$output" | jq -r '.[0].blocker_status')" = "idea" ]
+}
+
+@test "deps: asking never creates the store" {
+  rm -rf "$SMRITI_HOME"
+  mkdir -p "$SMRITI_HOME"
+  run "$CLI" deps --json
+  [ "$status" -eq 0 ]
+  [ "$output" = "[]" ]
+  [ ! -f "$SMRITI_HOME/factory.db" ]
+}
+
+@test "start: refuses a blocked ticket, and --force overrides" {
+  three_startable
+  "$CLI" dep 1 --blocks 2 >/dev/null
+  run "$CLI" start 2
+  [ "$status" -eq 7 ]
+  [[ "$output" == *"blocked by unshipped work"* ]]
+  [[ "$output" == *"#1"* ]]
+  [[ "$output" == *"--force"* ]]
+  # Nothing was cut.
+  [ "$(dq "SELECT count(*) FROM tickets WHERE id=2 AND branch IS NOT NULL;")" = "0" ]
+
+  run "$CLI" start 2 --force
+  [ "$status" -eq 0 ]
+  [ "$(dq "SELECT status FROM tickets WHERE id=2;")" = "in_progress" ]
+}
+
+@test "start: an unblocked ticket is untouched by any of this" {
+  three_startable
+  "$CLI" dep 1 --blocks 2 >/dev/null
+  run "$CLI" start 3
+  [ "$status" -eq 0 ]
+  [ "$(dq "SELECT status FROM tickets WHERE id=3;")" = "in_progress" ]
+}
+
+@test "start: a shipped or cancelled blocker stops blocking" {
+  three_startable
+  "$CLI" dep 1 --blocks 2 >/dev/null
+  "$CLI" done 1 >/dev/null
+  run "$CLI" start 2
+  [ "$status" -eq 0 ]
+
+  "$CLI" add later >/dev/null
+  "$CLI" dep 3 --blocks 4 >/dev/null
+  "$CLI" cancel 3 >/dev/null
+  run "$CLI" start 4
+  [ "$status" -eq 0 ]
+}
+
+@test "start: an in_review blocker still blocks" {
+  # A PR that has not merged has not landed, and `ticket pr` sets in_review
+  # long before smriti clean confirms the merge.
+  three_startable
+  "$CLI" dep 1 --blocks 2 >/dev/null
+  "$CLI" pr 1 https://github.com/test/demo/pull/1 >/dev/null
+  run "$CLI" start 2
+  [ "$status" -eq 7 ]
+}
+
+@test "start: re-attaching an in-progress ticket is never refused" {
+  # Re-entering a worktree that already exists is not starting work. Refusing
+  # here would break `cd "$(smriti ticket start N)"` mid-run and the board's
+  # restart, both of which come back through this path.
+  three_startable
+  "$CLI" start 2 >/dev/null
+  "$CLI" dep 1 --blocks 2 >/dev/null
+  run "$CLI" start 2
+  [ "$status" -eq 0 ]
+}
+
+@test "list: --unblocked is startable, --blocked is its complement" {
+  three_deps
+  "$CLI" add delta --repo demo >/dev/null
+  "$CLI" dep 1 --blocks 2 >/dev/null
+  "$CLI" dep 2 --blocks 3 >/dev/null
+
+  run "$CLI" list --repo demo --unblocked
+  [[ "$output" == *"alpha"* ]]
+  [[ "$output" == *"delta"* ]]
+  ! [[ "$output" == *"beta"* ]]
+  ! [[ "$output" == *"gamma"* ]]
+
+  run "$CLI" list --repo demo --blocked
+  [[ "$output" == *"beta"* ]]
+  [[ "$output" == *"gamma"* ]]
+  ! [[ "$output" == *"alpha"* ]]
+}
+
+@test "list: --unblocked excludes work already started" {
+  # The load-bearing clause. `start` is idempotent, so a frontier meaning only
+  # 'blockers satisfied' would hand a dispatcher work already running, forever,
+  # and start would keep saying yes.
+  three_startable
+  "$CLI" start 1 >/dev/null
+  run "$CLI" list --unblocked
+  ! [[ "$output" == *"alpha"* ]]
+  [[ "$output" == *"beta"* ]]
+  # And it is not in --blocked either: it is in neither, which is what stops a
+  # dispatcher rediscovering it.
+  run "$CLI" list --blocked
+  ! [[ "$output" == *"alpha"* ]]
+}
+
+@test "list: --unblocked and --blocked are opposites, not a pair" {
+  three_deps
+  run "$CLI" list --unblocked --blocked
+  [ "$status" -eq 2 ]
+}
+
+@test "list: an empty frontier does not claim an empty store" {
+  three_startable
+  "$CLI" dep 1 --blocks 2 >/dev/null
+  "$CLI" dep 1 --blocks 3 >/dev/null
+  "$CLI" start 1 >/dev/null
+  run "$CLI" list --unblocked
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"nothing startable"* ]]
+  ! [[ "$output" == *"no tickets yet"* ]]
+}
+
+@test "deps: satisfaction reverses, because nothing is stored" {
+  three_deps
+  "$CLI" dep 1 --blocks 2 >/dev/null
+  "$CLI" cancel 1 >/dev/null
+  run "$CLI" list --repo demo --unblocked
+  [[ "$output" == *"beta"* ]]
+  # Cancel is advertised as reversible; bringing the blocker back has to block
+  # again, with no reconciliation step.
+  "$CLI" status 1 ready >/dev/null
+  run "$CLI" list --repo demo --blocked
+  [[ "$output" == *"beta"* ]]
+}
+
+@test "done: says what it just freed" {
+  three_deps
+  "$CLI" dep 1 --blocks 2 >/dev/null
+  "$CLI" dep 1 --blocks 3 >/dev/null
+  run "$CLI" done 1
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"unblocks"* ]]
+  [[ "$output" == *"#2"* ]]
+  [[ "$output" == *"#3"* ]]
+}
+
+@test "done: says nothing when it freed nothing" {
+  three_deps
+  "$CLI" dep 1 --blocks 2 >/dev/null
+  "$CLI" dep 3 --blocks 2 >/dev/null
+  # #2 still waits on #3, so shipping #1 has not made it startable.
+  run "$CLI" done 1
+  ! [[ "$output" == *"unblocks"* ]]
+}
+
+@test "cancel: frees dependents too, and says so" {
+  three_deps
+  "$CLI" dep 1 --blocks 2 >/dev/null
+  run "$CLI" cancel 1
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"unblocks"* ]]
+  [[ "$output" == *"#2"* ]]
+}
+
+@test "rm: takes its edges with it and says how many" {
+  three_deps
+  "$CLI" dep 1 --blocks 2 >/dev/null
+  "$CLI" dep 3 --blocks 1 >/dev/null
+  [ "$(dq "SELECT count(*) FROM ticket_deps;")" = "2" ]
+  run "$CLI" rm 1 --yes
+  [ "$status" -eq 0 ]
+  # ON DELETE CASCADE: an edge with one end missing is not an edge.
+  [ "$(dq "SELECT count(*) FROM ticket_deps;")" = "0" ]
+  # And #2 is startable again, which is a change to a ticket that was not
+  # deleted — the reason the prompt counts the edges out loud.
+  run "$CLI" list --repo demo --unblocked
+  [[ "$output" == *"beta"* ]]
+}
+
+@test "show: names both directions, and marks what has landed" {
+  three_deps
+  "$CLI" dep 1 --blocks 2 >/dev/null
+  "$CLI" dep 2 --blocks 3 >/dev/null
+  run "$CLI" show 2
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"blocked by:"* ]]
+  [[ "$output" == *"blocks:"* ]]
+  # Open blockers are bulleted; a landed one is not.
+  [[ "$output" == *"• #1"* ]]
+  "$CLI" done 1 >/dev/null
+  run "$CLI" show 2
+  ! [[ "$output" == *"• #1"* ]]
+}
+
+@test "show --json: carries both directions" {
+  three_deps
+  "$CLI" dep 1 --blocks 2 >/dev/null
+  "$CLI" dep 2 --blocks 3 >/dev/null
+  run "$CLI" show 2 --json
+  [ "$(echo "$output" | jq -r '.blocked_by[0].id')" = "1" ]
+  [ "$(echo "$output" | jq -r '.blocked_by[0].blocking')" = "1" ]
+  [ "$(echo "$output" | jq -r '.blocks[0].id')" = "3" ]
+}
+
+@test "move: warns when the order contradicts the graph, and does not reorder" {
+  three_deps
+  "$CLI" dep 1 --blocks 2 >/dev/null
+  # Drag the blocked ticket above its blocker. You may be sequencing
+  # deliberately, so this says so and leaves it exactly where you put it.
+  run "$CLI" move 2 --before 1
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"sits above"* ]]
+  [ "$(ord demo)" = "2,1,3" ]
+}
+
+@test "move: says nothing when the order agrees with the graph" {
+  three_deps
+  "$CLI" dep 1 --blocks 2 >/dev/null
+  run "$CLI" move 3 --top
+  [ "$status" -eq 0 ]
+  ! [[ "$output" == *"sits above"* ]]
+}
+
+# ─── dependency review fixes ────────────────────────────────────────────────
+
+@test "dep: operations run in the order they were typed" {
+  # Buckets meant every --rm ran before every --blocks whatever you typed, so
+  # "draw it, then cut it" left the edge in place and printed two contradictory
+  # lines about it.
+  three_deps
+  run "$CLI" dep 1 --blocks 2 --rm 2
+  [ "$status" -eq 0 ]
+  [ "$(dq "SELECT count(*) FROM ticket_deps;")" = "0" ]
+  # ...and the other way round it survives, because that is what was asked.
+  run "$CLI" dep 1 --rm 2 --blocks 2
+  [ "$status" -eq 0 ]
+  [ "$(dq "SELECT count(*) FROM ticket_deps;")" = "1" ]
+}
+
+@test "move: dragging the BLOCKER below its dependent warns too" {
+  # The same contradiction as dragging the dependent up, and it used to be
+  # silent because the check only looked at the moved ticket's blocked end.
+  three_deps
+  "$CLI" dep 1 --blocks 2 >/dev/null
+  run "$CLI" move 1 --after 2
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"sits above"* ]]
+  [[ "$output" == *"#2"* ]]
+  [ "$(ord demo)" = "2,1,3" ]
+}
+
+@test "list --unblocked: an app-less idea is not startable" {
+  # `start` refuses it with exit 5, so listing it as startable would hand a
+  # dispatcher work it can never begin — the same spin the branch clause
+  # prevents, through a different door.
+  three_deps
+  cd "$WORK"
+  "$CLI" add "a pure idea" >/dev/null
+  cd "$REPO"
+  run "$CLI" list --all --unblocked
+  ! [[ "$output" == *"a pure idea"* ]]
+  run "$CLI" list --all --blocked
+  ! [[ "$output" == *"a pure idea"* ]]
+}
+
+@test "done: re-shipping does not re-announce what it freed once" {
+  # smriti-clean calls `done` for every merged branch it sees, so a second
+  # clean over the same branch used to re-announce work unblocked days ago.
+  three_deps
+  "$CLI" dep 1 --blocks 2 >/dev/null
+  run "$CLI" done 1
+  [[ "$output" == *"unblocks"* ]]
+  run "$CLI" done 1
+  ! [[ "$output" == *"unblocks"* ]]
+}
+
+@test "cancel: re-cancelling does not re-announce either" {
+  three_deps
+  "$CLI" dep 1 --blocks 2 >/dev/null
+  run "$CLI" cancel 1
+  [[ "$output" == *"unblocks"* ]]
+  run "$CLI" cancel 1
+  ! [[ "$output" == *"unblocks"* ]]
+}
+
+@test "rm --yes: says what deleting freed, not only the interactive path" {
+  # The board always calls `rm --yes`, so the one case where deleting silently
+  # changed OTHER tickets' state was the case you could not see.
+  three_deps
+  "$CLI" dep 1 --blocks 2 >/dev/null
+  run "$CLI" rm 1 --yes
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"unblocks"* ]]
+  [[ "$output" == *"#2"* ]]
+}
+
+@test "list: an empty frontier does not claim a cause it has not checked" {
+  # Another filter can empty the result; saying "everything is blocked" then
+  # would be a different lie from the one the message replaced.
+  three_deps
+  run "$CLI" list --repo demo --status ready --unblocked
+  [ "$status" -eq 0 ]
+  ! [[ "$output" == *"blocked or already started"* ]]
+  ! [[ "$output" == *"no tickets yet"* ]]
 }

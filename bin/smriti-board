@@ -240,9 +240,17 @@ async function resolveHtmlUrls(runs: Run[]): Promise<void> {
 // so a nameless agent reporting an empty cwd is exactly the session the close
 // sweep exists to find — and dropping it here would have made the pane fallback
 // permanently unreachable.
-function parseAgents(out: string): Session[] {
+// Returns null when the output could not be decoded at all, which is NOT the
+// same fact as "herdr listed no agents". The reconcile pass ends runs whose
+// stamped pane is absent from this list, and an empty array is exactly the state
+// where every stamped run is provably dead — so collapsing a parse failure into
+// one would reap the whole board on a single bad tick. Everything that only
+// needs a best-effort list keeps using parseAgents() below.
+function parseAgentsOrNull(out: string): Session[] | null {
   try {
-    return (JSON.parse(out)?.result?.agents ?? [])
+    const agents = JSON.parse(out)?.result?.agents;
+    if (!Array.isArray(agents)) return null;
+    return agents
       .map((a: { name?: string; agent_status?: string; status?: string; cwd?: string; pane_id?: string }) => ({
         name: a?.name ?? '',
         status: a?.agent_status ?? a?.status ?? 'unknown',
@@ -250,13 +258,27 @@ function parseAgents(out: string): Session[] {
         pane: a?.pane_id ?? '',
       }))
       .filter((s: Session) => s.name || s.cwd || s.pane);
-  } catch { return []; }
+  } catch { return null; }
+}
+
+function parseAgents(out: string): Session[] {
+  return parseAgentsOrNull(out) ?? [];
 }
 
 function herdrSessions(): Session[] {
-  if (!Bun.which('herdr')) return [];
+  return herdrSessionsSync() ?? [];
+}
+
+// The synchronous tri-state, for /api/state. Same distinction the reconcile
+// pass needs, and the page needs it for the same reason: it decides whether a
+// ticket reads as running by looking for a live session, so "herdr said
+// nothing is running" and "we never got to ask" must not arrive as the same
+// empty array. On a machine with no herdr at all, the second is permanent —
+// and treating it as the first would mean no run ever reads as running again.
+function herdrSessionsSync(): Session[] | null {
+  if (!Bun.which('herdr')) return null;
   const r = sh('herdr', ['agent', 'list'], 8000);
-  return r.ok ? parseAgents(r.out) : [];
+  return r.ok ? parseAgentsOrNull(r.out) : null;
 }
 
 // Is there already a session for this ticket? Without this check, starting an
@@ -335,9 +357,16 @@ async function shIn(bin: string, args: string[], input: string, timeoutMs: numbe
 // freeze the loop. They share the decode below rather than carrying two copies
 // of it — the first draft duplicated it and the two filters had already drifted.
 async function herdrSessionsAsync(): Promise<Session[]> {
-  if (!Bun.which('herdr')) return [];
+  return (await herdrSessionsRead()) ?? [];
+}
+
+// The tri-state read: Session[] means herdr answered and this IS the live set
+// (empty included); null means we did not get an answer and know nothing. Only
+// the reconcile pass needs the distinction — see parseAgentsOrNull.
+async function herdrSessionsRead(): Promise<Session[] | null> {
+  if (!Bun.which('herdr')) return null;
   const r = await shOut('herdr', ['agent', 'list'], 8000);
-  return r.ok ? parseAgents(r.out) : [];
+  return r.ok ? parseAgentsOrNull(r.out) : null;
 }
 
 // Type the prompt into the session, the way you would.
@@ -401,7 +430,10 @@ type ArtifactRow = {
   run_uid: string; kind: string; source?: string; status?: string | null;
   body?: string | null; path?: string | null;
 };
-type RunRow = { run_uid: string; ticket_id?: number | null; status?: string; herdr_pane?: string | null };
+type RunRow = {
+  run_uid: string; ticket_id?: number | null; status?: string;
+  herdr_pane?: string | null; html_session?: string | null;
+};
 type ShipTicket = { id: number; status: string; worktree_path?: string | null };
 
 async function closeOnShipEnabled(): Promise<boolean> {
@@ -422,7 +454,21 @@ let sweeping = false;
 // so a second restart, or a `start` arriving in the gap, would launch against a
 // pane the first one is still working on. It was a narrow race while restart
 // was synchronous end to end; capturing first makes it slower and reachable.
+//
+// Now shared by everything that closes a pane or ends a run — restart, stop,
+// the ship sweep and the reconcile pass. Four paths reaching captureThenClose()
+// with only `sweeping` (which guards the sweep against itself) and this set
+// (which guarded only restart) between them was a real race on the same pane.
 const sessionBusy = new Set<number>();
+
+// Run the body with this ticket claimed, or skip it entirely if something else
+// already holds it. Returns undefined when it did not run — a caller that needs
+// to tell "skipped" from "ran and produced nothing" gets it from that.
+async function withSession<T>(id: number, body: () => Promise<T>): Promise<T | undefined> {
+  if (sessionBusy.has(id)) return undefined;
+  sessionBusy.add(id);
+  try { return await body(); } finally { sessionBusy.delete(id); }
+}
 
 // Which of a ticket's runs is the one sitting in this pane.
 //
@@ -530,6 +576,84 @@ async function captureThenClose(
   return { captured, closed: true };
 }
 
+// Runs that say they are alive, when nothing is.
+//
+// The inverse of sweepShippedSessions below, and it exists because that sweep
+// cannot reach this case at all: it walks LIVE herdr agents, so a run whose pane
+// already died is never visited, and its candidate filter is hardcoded to
+// shipped, so a cancelled ticket is never even a candidate. Between them, four
+// finished tickets sat in "waiting on you" for days with their counters still
+// climbing, and every minute was booked against your time.
+//
+// This walks the open runs instead — `trace list --active`, a handful of rows,
+// which is why the cost objection that shaped the sweep's direction (see its
+// comment on `done` only ever growing) does not apply here.
+//
+// A run is ended ONLY on proof. Three, each independently sufficient:
+//
+//   1. its ticket is shipped or cancelled — the work is over, whoever ended it;
+//   2. its ticket's worktree is gone from disk — nothing runs in a directory
+//      that does not exist;
+//   3. it recorded a herdr pane at start and a SUCCESSFUL read no longer lists
+//      that pane.
+//
+// Rule 3 is why herdrSessionsRead is tri-state. A failed read and an empty one
+// are different facts and only one of them is evidence: `null` disables this
+// rule for the tick, while a genuine empty list is exactly the state in which
+// every stamped run is dead. Rule 3 also applies only to runs that RECORDED a
+// pane — a /begin started in a plain terminal has none, so it can never be
+// reaped by liveness, only by rules 1 and 2, which hold however it was launched.
+//
+// Nothing here closes a pane; a run whose pane is somehow still alive is left to
+// the sweep, which captures it first.
+async function reconcileOpenRuns(agents: Session[] | null, tickets: ShipTicket[]): Promise<void> {
+  const runs = await readJsonAsync<RunRow[]>(['list', '--active', '--json'], TRACE);
+  if (!runs?.length) return;
+  const byId = new Map(tickets.map((t) => [t.id, t]));
+  const livePanes = agents ? new Set(agents.map((s) => s.pane).filter(Boolean)) : null;
+
+  for (const run of runs) {
+    const t = run.ticket_id != null ? byId.get(run.ticket_id) : undefined;
+
+    // Proof of LIFE outranks every proof of death below, and this is not just
+    // caution — it is a handover. A run whose pane is still up belongs to the
+    // sweep, which reads the pane before closing it and records the run as
+    // `failed` because it did not finish. Ending it from here first would
+    // preempt that with a coarser word, for no gain: the ticket has shipped
+    // either way, and the sweep reaches this case perfectly well.
+    //
+    // Matched on the stamped pane or on the ticket's worktree, the same two
+    // handles the sweep uses. A null read proves nothing either way, so rules 1
+    // and 2 — which never needed herdr — still stand on their own.
+    const alive = !!agents && (
+      (!!run.herdr_pane && !!livePanes?.has(run.herdr_pane)) ||
+      (!!t?.worktree_path && agents.some((s) => s.cwd === t.worktree_path))
+    );
+    if (alive) continue;
+
+    // `failed` for all four, including a ticket that shipped, and that is not
+    // pessimism — it is what being OPEN at this moment means. Only runs still
+    // `running`/`awaiting` reach here, and a run that finished properly already
+    // ended itself as `done`. So everything this pass catches is by definition a
+    // run that never reached its own ending, whatever became of the ticket.
+    //
+    // The same reading captureThenClose applies to a pane it had to close, and
+    // the same one smriti-ticket applies on a terminal status. Three places
+    // decide this; they must not disagree about the word.
+    const doomed = !!t && (t.status === 'shipped' || t.status === 'cancelled')
+      || !!t?.worktree_path && !existsSync(t.worktree_path)
+      || !!run.herdr_pane && !!livePanes && !livePanes.has(run.herdr_pane);
+    if (!doomed) continue;
+    const status = 'failed';
+
+    // Claimed while ending, so this cannot race the sweep or a restart working
+    // the same ticket. A run with no ticket has nothing to contend over.
+    const end = () => shAsync(TRACE, ['end', '--run', run.run_uid, '--status', status], 5000);
+    if (run.ticket_id != null) await withSession(run.ticket_id, end);
+    else await end();
+  }
+}
+
 async function sweepShippedSessions(): Promise<void> {
   // A slow herdr must not let sweeps stack on top of each other.
   if (sweeping) return;
@@ -543,16 +667,34 @@ async function sweepShippedSessions(): Promise<void> {
     try { ownsState = parseInt(readFileSync(join(STATE_DIR, 'pidfile'), 'utf8').trim(), 10) === process.pid; } catch {}
     if (!ownsState) return;
 
-    if (!Bun.which('herdr')) return;
+    // ONE herdr read serves both passes. Taking a second would not just cost a
+    // spawn — the two passes would be reasoning about different moments, and
+    // the reconcile could end a run for a pane the sweep is at that instant
+    // capturing.
+    const agents = await herdrSessionsRead();
 
-    const agents = await herdrSessionsAsync();
-    if (!agents.length) return;
-
+    // ONE ticket read too, for the same reason as the herdr read above: taking
+    // a second would not merely cost a spawn, it would have the two passes
+    // reasoning about two different moments of the same table.
     const tickets = await readJsonAsync<ShipTicket[]>(['list', '--all', '--json']);
     if (!tickets) return;
-    // Shipped, and the worktree actually gone. Both, because a shipped ticket
+
+    // Runs first, and unconditionally: this is the pass that reaches a run whose
+    // pane is already gone, which is precisely the case the sweep below cannot
+    // see. It tolerates a null read by skipping only the liveness rule.
+    await reconcileOpenRuns(agents, tickets);
+
+    if (!agents?.length) return;
+    // Finished, and the worktree actually gone. Both, because a finished ticket
     // whose worktree is still there is a session someone may still be using.
-    const done = tickets.filter((t) => t.status === 'shipped' && t.worktree_path && !existsSync(t.worktree_path));
+    //
+    // `cancelled` counts as finished here. It did not used to, which left the
+    // mirror of the bug this sweep exists for: a session abandoned along with
+    // its ticket kept running in a directory nobody would return to, and no
+    // route on the board could reach it.
+    const done = tickets.filter((t) =>
+      (t.status === 'shipped' || t.status === 'cancelled') &&
+      t.worktree_path && !existsSync(t.worktree_path));
     if (!done.length) return;
 
     // Driven by AGENTS, not by shipped tickets. `done` only ever grows — every
@@ -619,11 +761,18 @@ async function sweepShippedSessions(): Promise<void> {
       // false: an uncapturable pane stays open and visible, because losing the
       // only copy of what the run said is the bug this exists to prevent. See
       // the helper for why restart is allowed the opposite.
-      const { captured, closed } = await captureThenClose(sess.pane, run, { closeWhenUncaptured: false });
+      //
+      // Claimed for the duration, so a restart or a stop cannot be working the
+      // same pane. Skipped entirely (undefined) means one of them already is —
+      // and that path closes the pane itself, so there is nothing left to do and
+      // nothing to give up on.
+      const res = await withSession(t.id, () =>
+        captureThenClose(sess.pane, run!, { closeWhenUncaptured: false }));
+      if (!res) continue;
 
       // Whether the read failed or the close did, this pane is not worth
       // retrying every ten seconds for the life of the process.
-      if (!captured || !closed) closeGaveUp.add(sess.pane);
+      if (!res.captured || !res.closed) closeGaveUp.add(sess.pane);
     }
   } catch {
     // A sweep is housekeeping. It must never be able to take the board down.
@@ -775,6 +924,11 @@ async function cmdServer(): Promise<never> {
           readJsonAsync<Run[]>(['list', '--active', '--json'], TRACE),
         ]);
         const documents = readJsonCmd(['docs', '--json']);
+        // The whole dependency graph in one read, joined per ticket on the
+        // client exactly the way documents already are. The alternative was
+        // widening `ticket list --json`, which smriti-factory also consumes —
+        // and two mechanisms for the same job is how the two drift.
+        const deps = readJsonCmd(['deps', '--json']);
         const repositories = readJsonCmd(['list', '--json'], REPO);
         const projects = readJsonCmd(['list', '--all', '--json'], PROJECT);
         if (tickets === null) {
@@ -788,9 +942,13 @@ async function cmdServer(): Promise<never> {
           tickets,
           runs,
           documents: documents ?? [],
+          deps: deps ?? [],
           repositories: repositories ?? [],
           projects: projects ?? [],
-          sessions: herdrSessions(),
+          // null, not [], when herdr could not be asked. The page treats an
+          // empty list as proof that nothing is running and an absent one as
+          // proof of nothing — see isLiveRun.
+          sessions: herdrSessionsSync(),
         });
       }
 
@@ -1012,9 +1170,22 @@ async function cmdServer(): Promise<never> {
         // A restart in flight has already closed this ticket's pane and has not
         // yet started its replacement. Starting into that gap duplicates the
         // session the restart is about to create.
-        if (sessionBusy.has(id)) return json({ error: 'a restart is already in flight' }, 409);
-        const r = sh(TICKET, ['start', String(id)], 30000);
-        if (!r.ok) return json({ error: r.errOut || 'could not start' }, 500);
+        if (sessionBusy.has(id)) return json({ error: 'that session is already being changed' }, 409);
+        // The page sends {force:true} only after the user has been told what is
+        // in the way and said start it anyway. An empty body is the normal case.
+        const sb = (await req.json().catch(() => ({}))) as { force?: boolean };
+        const args = ['start', String(id)];
+        if (sb.force === true) args.push('--force');
+        const r = sh(TICKET, args, 30000);
+        // Same reasoning as the move route below: the CLI's exit codes carry
+        // more than "it failed", and collapsing them all to 500 told the user
+        // the factory had fallen over when in fact the ticket was merely
+        // blocked. 7 is that refusal — a conflict with the dependency graph,
+        // not a fault — and the page offers to force past it.
+        if (!r.ok) {
+          const code = r.code === 7 ? 409 : r.code === 4 ? 404 : r.code === 2 ? 400 : 500;
+          return json({ error: r.errOut || 'could not start', blocked: r.code === 7 }, code);
+        }
         const dir = r.out.split('\n')[0].trim();
         const launch = launchSession(dir, id);
         broadcast();
@@ -1031,7 +1202,7 @@ async function cmdServer(): Promise<never> {
         // starts a replacement, so two of them interleaved start two sessions
         // against one closed pane. It was a narrow race while the whole thing
         // was synchronous; capturing first makes it slower and reachable.
-        if (sessionBusy.has(id)) return json({ error: 'a restart is already in flight' }, 409);
+        if (sessionBusy.has(id)) return json({ error: 'that session is already being changed' }, 409);
         sessionBusy.add(id);
         try {
           // `start` is idempotent and reports the existing worktree, which is how
@@ -1078,6 +1249,58 @@ async function cmdServer(): Promise<never> {
         } finally {
           sessionBusy.delete(id);
         }
+      }
+
+      // End a session, deliberately. The board could start one and replace one
+      // and had no verb for stopping one, so ending a run meant closing the pane
+      // in herdr by hand — and the board then went on claiming the ticket was
+      // running, because nothing reconciled that.
+      //
+      // Not built on `ticket start` the way restart is: that verb is idempotent
+      // only in the sense that it CREATES the worktree if it is missing and flips
+      // the ticket to in_progress. Stopping must not do either, so the worktree
+      // is read off the ticket instead, and a ticket without one has no session
+      // to end by definition.
+      const stop = url.pathname.match(/^\/api\/tickets\/(\d+)\/stop$/);
+      if (stop && req.method === 'POST') {
+        touch();
+        const id = Number(stop[1]);
+        // Two different failures, told apart rather than both blamed on the
+        // worktree: `show` exits 4 for a ticket that does not exist, and saying
+        // "it has no worktree" about a number you mistyped is a false statement
+        // about a thing that was never there.
+        const shown = await readJsonAsync<{ ticket?: { worktree_path?: string | null } }>(
+          ['show', String(id), '--json']);
+        if (!shown?.ticket) return json({ error: 'no ticket #' + id }, 404);
+        const dir = shown.ticket.worktree_path ?? '';
+        if (!dir) return json({ error: 'that ticket has no worktree, so it has no session' }, 400);
+
+        const res = await withSession(id, async () => {
+          const live = await existingAgentAsync(dir);
+          if (!live.found || !live.pane) return { none: true as const };
+          const run = await runForPane(id, live.pane);
+
+          // Stop the plan review BEFORE the pane, when there is one. Closing only
+          // the pane leaves smriti-html serving a page for an agent that no longer
+          // exists, until its own idle reaper eventually notices — and `html stop`
+          // is also what closes the gate in the trace, so skipping it would leave
+          // the run parked in "waiting on you" that much longer.
+          if (run?.html_session) {
+            await shAsync(HTML, ['stop', '--session', run.html_session], 5000);
+          }
+
+          // true, like restart and unlike the sweep: you asked for this session
+          // to end, and refusing because its pane could not be read would leave
+          // you holding the one you asked to be rid of. The capture still runs
+          // first either way.
+          const { captured, closed } = await captureThenClose(live.pane, run, { closeWhenUncaptured: true });
+          return { captured, closed };
+        });
+
+        if (!res) return json({ error: 'that session is already being changed' }, 409);
+        if ('none' in res) return json({ error: 'no live session for that ticket' }, 404);
+        broadcast();
+        return json({ ok: true, captured: res.captured, closed: res.closed });
       }
 
       const edit = url.pathname.match(/^\/api\/tickets\/(\d+)$/);
@@ -1130,6 +1353,34 @@ async function cmdServer(): Promise<never> {
         return json({ ok: true });
       }
 
+      // Draw or cut a dependency edge. Its own route for the same reason
+      // /status has one: `dep` is a separate CLI verb, and the direction is
+      // part of the request rather than a field being written.
+      const dep = url.pathname.match(/^\/api\/tickets\/(\d+)\/deps$/);
+      if (dep && req.method === 'POST') {
+        touch();
+        const b = (await req.json().catch(() => ({}))) as
+          { blocks?: number; blockedBy?: number; rm?: number };
+        // Integer-checked here rather than trusted: these reach a command line,
+        // and NaN/1.5/Infinity would arrive as strings that mean nothing to the
+        // CLI. Same guard the move route already applies to before/after.
+        const isId = (v: unknown): v is number => Number.isInteger(v) && (v as number) > 0;
+        let args: string[];
+        if (isId(b.blocks))         args = ['dep', dep[1], '--blocks', String(b.blocks)];
+        else if (isId(b.blockedBy)) args = ['dep', dep[1], '--blocked-by', String(b.blockedBy)];
+        else if (isId(b.rm))        args = ['dep', dep[1], '--rm', String(b.rm)];
+        else return json({ error: 'say which edge: blocks, blockedBy or rm' }, 400);
+        const r = sh(TICKET, args);
+        // 7 is a refusal the user can act on — a self-link or a cycle — and
+        // reads as a conflict, not as the factory falling over.
+        if (!r.ok) {
+          const code = r.code === 7 ? 409 : r.code === 4 ? 404 : r.code === 2 ? 400 : 500;
+          return json({ error: r.errOut || 'could not change the dependency' }, code);
+        }
+        broadcast();
+        return json({ ok: true });
+      }
+
       // Reorder. Relative to another card, never a raw position — the CLI owns
       // the arithmetic, so the drag and the keyboard both land on one place
       // that can decide about midpoints and renumbering.
@@ -1162,7 +1413,17 @@ async function cmdServer(): Promise<never> {
           return json({ error: r.errOut || 'could not move it' }, code);
         }
         broadcast();
-        return json({ ok: true });
+        // A move can SUCCEED and still have something to say: dropping a ticket
+        // above one it is blocked by is a contradiction the CLI reports on
+        // stderr and deliberately does not correct. Dropping stderr on the ok
+        // path meant the board — the only surface where dragging exists — never
+        // said anything at all.
+        const note = (r.errOut || '')
+          .split('\n')
+          .filter((l) => l.includes('heads up'))
+          .map((l) => l.replace(/^[a-z-]+:\s*heads up —\s*/, ''))
+          .join('; ');
+        return json({ ok: true, ...(note ? { note } : {}) });
       }
 
       const done = url.pathname.match(/^\/api\/tickets\/(\d+)\/done$/);

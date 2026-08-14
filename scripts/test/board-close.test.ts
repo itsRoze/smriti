@@ -36,9 +36,15 @@ printf '%s\\n' "$*" >> "$HERDR_LOG"
 # Three separate files, read separately, let a sweep see a new cwd beside an
 # old pane — which is a state that never exists in reality and made the
 # negative tests intermittently fail under load.
-{ read -r cwd; read -r st; read -r pane; } < "$STUB_STATE_FILE" 2>/dev/null
+{ read -r cwd; read -r st; read -r pane; read -r mode; } < "$STUB_STATE_FILE" 2>/dev/null
 case "$1 $2" in
-  "agent list")  echo "{\\"result\\":{\\"agents\\":[{\\"agent\\":\\"claude\\",\\"agent_status\\":\\"$st\\",\\"cwd\\":\\"$cwd\\",\\"pane_id\\":\\"$pane\\"}]}}" ;;
+  # A herdr that cannot answer. Distinct from one that answers "nothing is
+  # running", which is the whole point: the reconcile pass ends runs whose
+  # stamped pane is absent from the list, so the two must not look alike.
+  "agent list")
+    if [ "$mode" = "fail" ]; then echo "herdr: could not reach the daemon" >&2; exit 1; fi
+    if [ "$mode" = "none" ]; then echo '{"result":{"agents":[]}}'; exit 0; fi
+    echo "{\\"result\\":{\\"agents\\":[{\\"agent\\":\\"claude\\",\\"agent_status\\":\\"$st\\",\\"cwd\\":\\"$cwd\\",\\"pane_id\\":\\"$pane\\"}]}}" ;;
   "pane read")   cat "$STUB_READ_FILE" 2>/dev/null ;;
   "pane close")  echo '{"result":{"closed":true}}' ;;
   *)             echo '{"result":{}}' ;;
@@ -55,6 +61,12 @@ const env = (extra: Record<string, string> = {}) => ({
   HERDR_LOG: LOG,
   STUB_STATE_FILE: STATE_FILE,
   STUB_READ_FILE: READ_FILE,
+  // Cleared, never merely absent. `trace start` stamps runs.herdr_pane from
+  // this, and these tests run inside a real herdr pane often enough that
+  // inheriting it silently stamped every "started outside herdr" fixture with
+  // the developer's own pane — which the stub does not list, so the fixture was
+  // reaped and the test read as a product bug.
+  HERDR_PANE_ID: '',
   ...extra,
 });
 
@@ -116,10 +128,14 @@ function storeReport(uid: string, body: string, source = 'run') {
 // Written to a temp file and RENAMED over the real one, because rename is
 // atomic: the sweep runs on its own timer and would otherwise catch this
 // mid-update.
-function session(wt: string, status: string, pane: string) {
-  writeFileSync(STATE_FILE + '.tmp', [wt, status, pane].join('\n') + '\n');
+function session(wt: string, status: string, pane: string, mode = '') {
+  writeFileSync(STATE_FILE + '.tmp', [wt, status, pane, mode].join('\n') + '\n');
   renameSync(STATE_FILE + '.tmp', STATE_FILE);
 }
+// herdr answers, and lists nothing. Proof that every stamped pane is gone.
+const noSessions = () => session('/nowhere/unrelated', 'idle', 'w0:p0', 'none');
+// herdr does not answer at all. Proof of nothing.
+const herdrDown = () => session('/nowhere/unrelated', 'idle', 'w0:p0', 'fail');
 
 beforeAll(() => {
   HOME_DIR = mkdtempSync(join(tmpdir(), 'smriti-close-'));
@@ -358,4 +374,149 @@ test('a scrape never overwrites the report the run wrote itself', async () => {
   expect(rows.length).toBe(1);
   expect(rows[0].source).toBe('run');
   expect(rows[0].body).toContain("run's own complete words");
+});
+
+
+// ─── reconciling runs whose session is simply gone ──────────────────────────
+//
+// The sweep above walks LIVE agents, so a run whose pane already died is
+// invisible to it, and its candidate filter is hardcoded to shipped, so a
+// cancelled ticket is never a candidate either. Between them, four finished
+// tickets sat in the board's "waiting on you" for days with their counters
+// climbing. This pass walks the OPEN RUNS instead.
+//
+// Every negative case here is load-bearing in the same way the sweep's are: a
+// reconcile that is merely eager ends runs that are still working.
+
+// A ticket that is still in progress, with its worktree intact — so the ONLY
+// thing that can end its run is the pane rule.
+function liveTicket(title: string, pane: string): { id: string; wt: string; uid: string } {
+  const add = cli(TICKET, ['add', title, '--ready']);
+  expect(add.status).toBe(0);
+  const id = (add.stdout.match(/#(\d+)/) ?? [])[1]!;
+  const start = cli(TICKET, ['start', id]);
+  expect(start.status).toBe(0);
+  const wt = start.stdout.trim().split('\n')[0];
+  expect(existsSync(wt)).toBe(true);
+  const run = spawnSync(TRACE, ['start', 'begin', '--ticket', id], {
+    encoding: 'utf8', cwd: wt, env: env(pane ? { HERDR_PANE_ID: pane } : {}),
+  });
+  expect(run.status).toBe(0);
+  return { id, wt, uid: run.stdout.trim().split('=')[1]! };
+}
+
+const runRow = (uid: string) =>
+  (JSON.parse(spawnSync(TRACE, ['list', '--limit', '500', '--json'],
+    { encoding: 'utf8', cwd: REPO, env: env() }).stdout) as
+      { run_uid: string; status: string; ended_at: string | null }[]).find((r) => r.run_uid === uid);
+
+test('a run whose stamped pane herdr no longer lists is ended', async () => {
+  const { uid } = liveTicket('its pane died', 'wR:p1');
+  // herdr answers, and wR:p1 is not in the answer.
+  noSessions();
+  expect(await until(() => runRow(uid)?.status === 'failed')).toBe(true);
+  expect(runRow(uid)!.ended_at).toBeTruthy();
+});
+
+test('a FAILED herdr read ends nothing at all', async () => {
+  // The one that would have been catastrophic. herdr failing, herdr crashing
+  // and herdr genuinely running nothing all used to decode to the same empty
+  // array — so a reconcile acting on it would reap every stamped run on the
+  // board the first time herdr hiccuped.
+  // Down BEFORE the fixture exists, not after. Building a stamped run takes
+  // several spawns and the sweep runs every 300ms here, so a fixture created
+  // while herdr is still answering can be reaped in the gap before the test
+  // gets to its own setup — which would pass for the wrong reason.
+  herdrDown();
+  const { uid } = liveTicket('herdr is down, not empty', 'wS:p1');
+  await sweepsPassed();
+  expect(runRow(uid)?.status).toBe('running');
+  expect(runRow(uid)?.ended_at).toBeFalsy();
+  session('/nowhere/unrelated', 'idle', 'w0:p0');   // put herdr back for what follows
+});
+
+test('an unstamped run in a live worktree is left alone', async () => {
+  // No pane was recorded, so there is nothing to check liveness against — this
+  // is a /begin started in a plain terminal, and guessing it dead would kill
+  // work that is still going.
+  const { uid } = liveTicket('started outside herdr', '');
+  noSessions();
+  await sweepsPassed();
+  expect(runRow(uid)?.status).toBe('running');
+  session('/nowhere/unrelated', 'idle', 'w0:p0');
+});
+
+test('a cancelled ticket has its run ended, though no sweep would touch it', async () => {
+  // The sweep only ever considers shipped tickets, so before this pass a
+  // cancelled ticket kept a run that said "running" for good.
+  const { id, uid } = liveTicket('decided against', 'wT:p1');
+  expect(cli(TICKET, ['cancel', id]).status).toBe(0);
+  expect(await until(() => runRow(uid)?.status === 'failed')).toBe(true);
+});
+
+test('a run whose worktree is gone is ended even with herdr listing nothing', async () => {
+  // Nothing can be running in a directory that does not exist. True without
+  // asking herdr anything, which is why it survives a failed read.
+  const { wt, uid } = liveTicket('its worktree went', 'wU:p1');
+  spawnSync('git', ['-C', REPO, 'worktree', 'remove', '--force', wt], { encoding: 'utf8' });
+  expect(existsSync(wt)).toBe(false);
+  herdrDown();
+  expect(await until(() => runRow(uid)?.status === 'failed')).toBe(true);
+  session('/nowhere/unrelated', 'idle', 'w0:p0');
+});
+
+// A ticket at a chosen status, worktree intact, and an open run created AFTER
+// it got there — so the ticket's own status is the only thing that can doom it.
+// Unstamped deliberately: a stamped pane would let the liveness rule fire and
+// the test would stop proving which rule did the work.
+function strandedRun(title: string, status: string): { id: string; uid: string } {
+  const add = cli(TICKET, ['add', title, '--ready']);
+  expect(add.status).toBe(0);
+  const id = (add.stdout.match(/#(\d+)/) ?? [])[1]!;
+  const start = cli(TICKET, ['start', id]);
+  expect(start.status).toBe(0);
+  const wt = start.stdout.trim().split('\n')[0];
+  expect(existsSync(wt)).toBe(true);
+  expect(cli(TICKET, ['status', id, status]).status).toBe(0);
+  const run = spawnSync(TRACE, ['start', 'begin', '--ticket', id], {
+    encoding: 'utf8', cwd: wt, env: env(),
+  });
+  expect(run.status).toBe(0);
+  return { id, uid: run.stdout.trim().split('=')[1]! };
+}
+
+test("a shipped ticket's leftover run is ended, and reads failed not done", async () => {
+  // The shape the real rows had: the ticket moved on and the run row never did.
+  //
+  // `failed` rather than `done` because only OPEN runs reach this pass, and a
+  // run that finished properly had already ended itself — so anything caught
+  // here never reached its own ending, whatever became of the ticket. The
+  // ticket hook and captureThenClose say the same word for the same reason, and
+  // three places deciding this must not disagree about which word.
+  const { uid } = strandedRun('shipped without closing out', 'shipped');
+  noSessions();
+  expect(await until(() => runRow(uid)?.status === 'failed')).toBe(true);
+  session('/nowhere/unrelated', 'idle', 'w0:p0');
+});
+
+test('an in_review ticket is deliberately NOT terminal here', async () => {
+  // `ticket pr` sets in_review BEFORE the merge and clean it still has to do,
+  // so ending its runs would kill the normal ship path mid-flight.
+  const { uid } = strandedRun('waiting on a merge', 'in_review');
+  noSessions();
+  await sweepsPassed();
+  expect(runRow(uid)?.status).toBe('running');
+  session('/nowhere/unrelated', 'idle', 'w0:p0');
+});
+
+test('a run whose pane IS listed keeps running', async () => {
+  // Same window as the failed-read test above: the pane cannot be registered
+  // until `ticket start` has told us the worktree, so the liveness rule is
+  // disabled while the fixture is built and re-enabled once it can see it.
+  herdrDown();
+  const { wt, uid } = liveTicket('still very much alive', 'wV:p1');
+  session(wt, 'working', 'wV:p1');
+  await sweepsPassed();
+  expect(runRow(uid)?.status).toBe('running');
+  session('/nowhere/unrelated', 'idle', 'w0:p0');
 });

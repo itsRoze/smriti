@@ -5,8 +5,11 @@
 # Subcommands:
 #   smriti ticket add <title> [--repo S] [--project P] [--body T] [--priority N] [--ready]
 #   smriti ticket list [--repo S] [--project P] [--status S] [--all] [--json]
+#                      [--unblocked | --blocked]
 #   smriti ticket show <id> [--json]
-#   smriti ticket start <id>                  cut/attach a worktree; prints its path
+#   smriti ticket start <id> [--force]        cut/attach a worktree; prints its path
+#   smriti ticket dep <id> --blocks <id> | --blocked-by <id> | --rm <id>
+#   smriti ticket deps [--json]               the whole dependency graph
 #   smriti ticket edit <id> [--title T] [--body T] [--priority N] [--repo S]
 #                           [--project P | --no-project]
 #   smriti ticket cancel <id>                 park it out of the way, reversibly
@@ -30,6 +33,7 @@
 #   4  no such ticket, or no such document
 #   5  could not create or attach the worktree
 #   6  a reorder named a target in another app or project
+#   7  refused: the ticket is blocked, or the edge would close a cycle
 #
 # A ticket belongs to a project, or to an app directly (a one-off bug), or to
 # neither — an idea, capturable from anywhere, including outside a git repo.
@@ -77,8 +81,9 @@ usage() {
 usage:
   smriti ticket add <title> [--repo S] [--project P] [--body T] [--priority N] [--ready]
   smriti ticket list [--repo S] [--project P] [--status S] [--all] [--json]
+                     [--unblocked | --blocked]
   smriti ticket show <id> [--json]
-  smriti ticket start <id>
+  smriti ticket start <id> [--force]
   smriti ticket edit <id> [--title T] [--body T] [--priority N] [--repo S]
                           [--project P | --no-project]
   smriti ticket move <id> <--before <id> | --after <id> | --top | --bottom>
@@ -87,6 +92,8 @@ usage:
   smriti ticket pr <id> <url>
   smriti ticket status <id> <idea|ready|in_progress|in_review|shipped|cancelled>
   smriti ticket done <id>
+  smriti ticket dep <id> <--blocks <id> | --blocked-by <id> | --rm <id>>
+  smriti ticket deps [--json]
   smriti ticket doc <id|-> --type <plan|debug|design|audit> --path P [--branch B]
   smriti ticket doc-show <id> [--json]
   smriti ticket doc-capture --branch B [--slug S] [--dir D]
@@ -129,6 +136,78 @@ scope_sql() {
 bottom_of_scope() {
   printf "(SELECT coalesce(max(position), 0) + 1 FROM tickets WHERE %s%s)" \
     "$(scope_sql "$1" "$2")" "${3:+ AND id <> $3}"
+}
+
+# ─── dependencies ───────────────────────────────────────────────────────────
+#
+# One row in ticket_deps says blocker_id must land before blocked_id can start.
+# Nothing about that is stored on the tickets themselves; every question below
+# is answered by joining, so a status change anywhere is immediately reflected
+# everywhere and there is no derived column to fall out of date.
+
+# A blocker stops blocking once it is shipped OR cancelled. Cancelled matters:
+# it is a decision that the work will not happen, and if it still blocked, then
+# cancelling a ticket would strand everything downstream of it with no way out.
+# in_review is deliberately NOT satisfied — a PR that has not merged has not
+# landed, and `ticket pr` sets in_review long before `smriti clean` confirms it.
+#
+# Takes the table alias, because several queries below join `tickets` twice and
+# an unqualified `status` in those is a bug waiting to be written.
+dep_satisfied() { printf "%s.status IN ('shipped','cancelled')" "$1"; }
+
+# The blockers of $1 that have not landed yet, one `#id  status  title` per line.
+# Empty output means nothing is in the way.
+open_blockers() {
+  db "SELECT '#' || t.id || char(9) || t.status || char(9) || t.title
+        FROM ticket_deps d JOIN tickets t ON t.id = d.blocker_id
+       WHERE d.blocked_id = $1 AND NOT ($(dep_satisfied t))
+       ORDER BY t.id;"
+}
+
+# How many blockers of $1 are still open. The scalar form, for the hot paths
+# that only need to know whether to refuse.
+open_blocker_count() {
+  db "SELECT count(*) FROM ticket_deps d JOIN tickets t ON t.id = d.blocker_id
+       WHERE d.blocked_id = $1 AND NOT ($(dep_satisfied t));"
+}
+
+# Cycles are refused rather than tolerated because the frontier query is the
+# whole point of this feature: inside a cycle, "what can I start" has no answer
+# at all, and a dispatcher looping on it would either spin or stall. The check
+# itself lives inside cmd_dep's INSERT, so that it and the write share one lock.
+
+# Tickets that were waiting on $1 and have nothing ELSE left in the way.
+# Started tickets are excluded: they are already being worked, and announcing
+# them as newly available would be noise.
+#
+# $1 is excluded from the remaining-blockers check rather than relied upon to
+# already read satisfied. Both callers are the moment $1 stops blocking — one
+# has just marked it shipped or cancelled, the other is about to delete it — and
+# the delete case has to be asked BEFORE the row goes, while $1 still counts as
+# an open blocker of everything downstream. Without the exclusion that call
+# always came back empty.
+freed_by() {
+  db "SELECT '#' || t.id || char(9) || t.title
+        FROM ticket_deps d JOIN tickets t ON t.id = d.blocked_id
+       WHERE d.blocker_id = $1
+         AND NOT ($(dep_satisfied t))
+         AND t.branch IS NULL
+         AND NOT EXISTS (
+           SELECT 1 FROM ticket_deps d2 JOIN tickets b ON b.id = d2.blocker_id
+            WHERE d2.blocked_id = t.id
+              AND d2.blocker_id <> $1
+              AND NOT ($(dep_satisfied b)))
+       ORDER BY t.id;"
+}
+
+# Say what shipping or cancelling $1 just made startable. Best-effort narration
+# on stdout: this is the moment the graph pays for itself, and finding out a
+# week later that something was unblocked is the failure it exists to prevent.
+announce_freed() {
+  local freed; freed=$(freed_by "$1")
+  [ -n "$freed" ] || return 0
+  local ids; ids=$(printf '%s\n' "$freed" | cut -f1 | paste -sd' ' -)
+  echo "  unblocks $ids"
 }
 
 validate_status() {
@@ -456,7 +535,7 @@ cmd_add() {
 # ─── list ───────────────────────────────────────────────────────────────────
 
 cmd_list() {
-  local repo="" project="" status="" all=0 json=0 repo_given=0
+  local repo="" project="" status="" all=0 json=0 repo_given=0 dep_filter=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --repo)    [ $# -ge 2 ] && [ -n "$2" ] || die "--repo requires a value (use '-' for no app)"; repo="$2"; repo_given=1; shift 2 ;;
@@ -464,6 +543,8 @@ cmd_list() {
       --status)  [ $# -ge 2 ] || die "--status requires a value";  status="$2";  shift 2 ;;
       --all)  all=1; shift ;;
       --json) json=1; shift ;;
+      --unblocked) [ -z "$dep_filter" ] || die "--unblocked and --blocked are opposites; pass one"; dep_filter=unblocked; shift ;;
+      --blocked)   [ -z "$dep_filter" ] || die "--unblocked and --blocked are opposites; pass one"; dep_filter=blocked;   shift ;;
       *) die "unknown flag: $1" ;;
     esac
   done
@@ -495,6 +576,39 @@ cmd_list() {
     # Shipped work is history; it clutters the working view unless asked for.
     where="$where AND status NOT IN ('shipped','cancelled')"
   fi
+
+  # The frontier. `--unblocked` means STARTABLE, not merely un-blocked, and the
+  # difference is what keeps an autonomous dispatcher honest:
+  #
+  #   - every blocker shipped or cancelled, and
+  #   - the ticket itself still open, and
+  #   - it has not already been started.
+  #
+  # That last clause is the load-bearing one. `ticket start` is idempotent: on a
+  # ticket that already has a worktree it attaches and exits 0. So a frontier
+  # defined only as "blockers satisfied" would hand a dispatcher work that is
+  # already running, forever, and start would keep saying yes. Excluding started
+  # tickets is what actually prevents a double-start; idempotence is the net
+  # underneath, not the check itself.
+  local unblocked_sql="NOT EXISTS (
+        SELECT 1 FROM ticket_deps d JOIN tickets b ON b.id = d.blocker_id
+         WHERE d.blocked_id = tickets.id AND NOT ($(dep_satisfied b)))"
+  #
+  # An app-less idea is excluded for the same reason: `start` refuses it with
+  # exit 5 ("give it one first: ticket edit N --repo <slug>"), so listing it as
+  # startable reintroduces exactly the spin the branch clause prevents, through
+  # a different door. Startable means start would actually work.
+  local startable_sql="status NOT IN ('shipped','cancelled')
+             AND branch IS NULL AND worktree_path IS NULL
+             AND repo_slug IS NOT NULL"
+  case "$dep_filter" in
+    unblocked)
+      where="$where AND $unblocked_sql AND $startable_sql" ;;
+    # The complement, over the same population, so that no ticket that could be
+    # picked up is in both lists and none is in neither.
+    blocked)
+      where="$where AND NOT ($unblocked_sql) AND $startable_sql" ;;
+  esac
 
   # The order you dragged. This used to be `priority DESC, id ASC` while the
   # board sorted by status band first — two surfaces answering the same question
@@ -532,7 +646,15 @@ cmd_list() {
   rows=$(db "SELECT id || char(9) || status || char(9) || coalesce(repo_slug,'—') || char(9) || title
              FROM tickets $where $order;")
   if [ -z "$rows" ]; then
-    echo "no tickets yet — add one with: smriti ticket add \"<what you want>\""
+    # An empty frontier is a real answer about a full backlog, not an empty
+    # store — saying "no tickets yet" there would be a lie. It does not claim a
+    # CAUSE either: any other filter in play (--status, --project) can empty the
+    # result, and "everything is blocked" would then be a different lie.
+    case "$dep_filter" in
+      unblocked) echo "nothing startable here" ;;
+      blocked)   echo "nothing blocked here" ;;
+      *)         echo "no tickets yet — add one with: smriti ticket add \"<what you want>\"" ;;
+    esac
     return 0
   fi
   printf '%s\n' "$rows" | awk -F'\t' '{ printf "%-5s %-12s %-22s %s\n", "#" $1, $2, $3, $4 }'
@@ -554,10 +676,19 @@ cmd_show() {
   ticket_exists "$id" || die "no ticket #$id" 4
 
   if [ "$json" -eq 1 ]; then
-    local t d
+    local t d by bl
     t=$(db_json_one "SELECT * FROM tickets WHERE id = $id;")
     d=$(db_json "SELECT id, type, path, branch, created_at, captured_at, (body IS NOT NULL) AS has_body FROM documents WHERE ticket_id = $id ORDER BY id;")
-    printf '{"ticket":%s,"documents":%s}\n' "$t" "$d"
+    # Both directions inline, so asking about ONE ticket never means fetching
+    # the whole graph to find out what it is waiting on.
+    by=$(db_json "SELECT t.id, t.title, t.status, t.repo_slug,
+                         CASE WHEN $(dep_satisfied t) THEN 0 ELSE 1 END AS blocking
+                    FROM ticket_deps d JOIN tickets t ON t.id = d.blocker_id
+                   WHERE d.blocked_id = $id ORDER BY t.id;")
+    bl=$(db_json "SELECT t.id, t.title, t.status, t.repo_slug
+                    FROM ticket_deps d JOIN tickets t ON t.id = d.blocked_id
+                   WHERE d.blocker_id = $id ORDER BY t.id;")
+    printf '{"ticket":%s,"documents":%s,"blocked_by":%s,"blocks":%s}\n' "$t" "$d" "$by" "$bl"
     return 0
   fi
 
@@ -574,6 +705,38 @@ cmd_show() {
              coalesce(char(10) || char(10) || body, '')
       FROM tickets WHERE id = $id;"
 
+  # An open blocker is marked, a satisfied one is not, so the section answers
+  # "can I start this" at a glance rather than making you cross-reference the
+  # statuses yourself. The far end names its app when it lives in another one —
+  # a bare #41 is not something you can place.
+  local by bl
+  by=$(db "SELECT '  ' || CASE WHEN $(dep_satisfied t) THEN '  ' ELSE '• ' END
+                  || '#' || t.id || '  ' || t.status
+                  || CASE WHEN coalesce(t.repo_slug,'') <> coalesce(
+                              (SELECT repo_slug FROM tickets WHERE id = $id), '')
+                          THEN '  (' || coalesce(t.repo_slug, 'no app') || ')' ELSE '' END
+                  || '  ' || t.title
+             FROM ticket_deps d JOIN tickets t ON t.id = d.blocker_id
+            WHERE d.blocked_id = $id ORDER BY t.id;")
+  if [ -n "$by" ]; then
+    echo
+    echo "blocked by:"
+    printf '%s\n' "$by"
+  fi
+
+  bl=$(db "SELECT '  #' || t.id || '  ' || t.status
+                  || CASE WHEN coalesce(t.repo_slug,'') <> coalesce(
+                              (SELECT repo_slug FROM tickets WHERE id = $id), '')
+                          THEN '  (' || coalesce(t.repo_slug, 'no app') || ')' ELSE '' END
+                  || '  ' || t.title
+             FROM ticket_deps d JOIN tickets t ON t.id = d.blocked_id
+            WHERE d.blocker_id = $id ORDER BY t.id;")
+  if [ -n "$bl" ]; then
+    echo
+    echo "blocks:"
+    printf '%s\n' "$bl"
+  fi
+
   local docs
   docs=$(db "SELECT '  ' || type || '  ' || path FROM documents WHERE ticket_id = $id ORDER BY id;")
   if [ -n "$docs" ]; then
@@ -581,6 +744,141 @@ cmd_show() {
     echo "documents:"
     printf '%s\n' "$docs"
   fi
+}
+
+# ─── dep / deps (what has to land before what) ──────────────────────────────
+
+cmd_dep() {
+  [ $# -ge 1 ] || usage
+  local id="$1"; shift
+  require_id "$id"
+  ticket_exists "$id" || die "no ticket #$id" 4
+
+  # Collected as ONE ordered list of operations rather than as separate add and
+  # remove buckets. Buckets meant every --rm ran before every --blocks whatever
+  # order you typed, so `dep 1 --blocks 2 --rm 2` — "draw it, then cut it" —
+  # deleted nothing, then inserted, and left the edge in place while printing
+  # two contradictory lines about it.
+  local -a ops=()
+  local n=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --blocks)
+        [ $# -ge 2 ] || die "--blocks requires a ticket id"
+        require_id "$2"; ops+=("add $id $2"); n=$((n+1)); shift 2 ;;
+      --blocked-by)
+        [ $# -ge 2 ] || die "--blocked-by requires a ticket id"
+        require_id "$2"; ops+=("add $2 $id"); n=$((n+1)); shift 2 ;;
+      --rm)
+        [ $# -ge 2 ] || die "--rm requires a ticket id"
+        require_id "$2"; ops+=("rm $2"); n=$((n+1)); shift 2 ;;
+      *) die "unknown flag: $1" ;;
+    esac
+  done
+  [ "$n" -gt 0 ] || die "say which way it goes: --blocks <id>, --blocked-by <id> or --rm <id>"
+
+  local op kind blocker blocked other
+  for op in "${ops[@]}"; do
+    # shellcheck disable=SC2086
+    set -- $op
+    kind="$1"
+
+    if [ "$kind" = "rm" ]; then
+      other="$2"
+      ticket_exists "$other" || die "no ticket #$other" 4
+      # Either direction, because you should not have to remember which way you
+      # drew it to be able to undo it.
+      local gone
+      gone=$(db_write "DELETE FROM ticket_deps
+                        WHERE (blocker_id = $id AND blocked_id = $other)
+                           OR (blocker_id = $other AND blocked_id = $id);
+                       SELECT changes();")
+      if [ "$gone" = "0" ]; then
+        echo "$SMRITI_TOOL: no dependency between #$id and #$other" >&2
+      else
+        echo "#$id ⇸ #$other  dependency removed"
+      fi
+      continue
+    fi
+
+    blocker="$2"; blocked="$3"
+    [ "$blocker" = "$blocked" ] && die "#$blocker cannot block itself" 7
+    other=$([ "$blocker" = "$id" ] && echo "$blocked" || echo "$blocker")
+    ticket_exists "$other" || die "no ticket #$other" 4
+
+    # The cycle guard rides ON the insert rather than preceding it, so the check
+    # and the write are one statement under one lock: db_write opens BEGIN
+    # IMMEDIATE, so a second worktree cannot slip an edge in between a separate
+    # probe and its insert and leave a cycle neither of us would have allowed.
+    #
+    # Walk forward from `blocked` along the edges that already exist; if
+    # `blocker` is reachable that way, this edge would close the loop.
+    # INSERT OR IGNORE makes re-drawing an existing edge a no-op, per the
+    # primary key.
+    local wrote
+    wrote=$(db_write "INSERT OR IGNORE INTO ticket_deps (blocker_id, blocked_id, created_at)
+                        SELECT $blocker, $blocked, $(sql_quote "$(now_utc)")
+                         WHERE NOT EXISTS (
+                           WITH RECURSIVE reach(id) AS (
+                             SELECT $blocked
+                             UNION
+                             SELECT d.blocked_id FROM ticket_deps d JOIN reach r ON d.blocker_id = r.id
+                           ) SELECT 1 FROM reach WHERE id = $blocker
+                         );
+                      SELECT changes();")
+    if [ "$wrote" = "0" ]; then
+      # Nothing written: either the edge was already there, or the guard fired.
+      # Only this rare path pays for a second query to tell them apart.
+      if [ "$(db "SELECT count(*) FROM ticket_deps
+                   WHERE blocker_id = $blocker AND blocked_id = $blocked;")" = "1" ]; then
+        echo "#$blocker → #$blocked  already recorded"
+        continue
+      fi
+      die "#$blocker → #$blocked would close a dependency cycle (#$blocked already leads back to #$blocker)" 7
+    fi
+    echo "#$blocker → #$blocked  must land first"
+  done
+}
+
+cmd_deps() {
+  local json=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json) json=1; shift ;;
+      *) die "unknown flag: $1" ;;
+    esac
+  done
+
+  # Asking must never CREATE the store, exactly as `list` and `docs` do not.
+  if ! factory_db_exists; then
+    if [ "$json" -eq 1 ]; then echo "[]"; else echo "no dependencies yet"; fi
+    return 0
+  fi
+
+  if [ "$json" -eq 1 ]; then
+    # The whole graph in one call, so the board joins it client-side per ticket
+    # the way it already joins documents — one payload per refresh, never one
+    # request per card.
+    db_json "SELECT blocker_id, blocked_id, created_at,
+                    (SELECT status FROM tickets WHERE id = blocker_id) AS blocker_status
+               FROM ticket_deps ORDER BY blocker_id, blocked_id;"
+    return 0
+  fi
+
+  local rows
+  rows=$(db "SELECT '#' || d.blocker_id || char(9) || b.title || char(9)
+                    || '#' || d.blocked_id || char(9) || t.title || char(9)
+                    || CASE WHEN $(dep_satisfied b) THEN 'landed' ELSE 'waiting' END
+               FROM ticket_deps d
+               JOIN tickets b ON b.id = d.blocker_id
+               JOIN tickets t ON t.id = d.blocked_id
+              ORDER BY d.blocker_id, d.blocked_id;")
+  if [ -z "$rows" ]; then
+    echo "no dependencies yet — draw one with: smriti ticket dep <id> --blocks <id>"
+    return 0
+  fi
+  printf '%s\n' "$rows" \
+    | awk -F'\t' '{ printf "%-5s %-28.28s  blocks  %-5s %-28.28s  %s\n", $1, $2, $3, $4, $5 }'
 }
 
 # ─── start ──────────────────────────────────────────────────────────────────
@@ -616,8 +914,10 @@ cmd_start() {
   require_id "$id"
   ticket_exists "$id" || die "no ticket #$id" 4
 
+  local force=0
   while [ $# -gt 0 ]; do
     case "$1" in
+      --force|-f) force=1; shift ;;
       *) die "unknown flag: $1" ;;
     esac
   done
@@ -637,6 +937,35 @@ cmd_start() {
     echo "$existing_wt"
     echo "smriti-ticket: #$id already in progress on '$existing_branch'" >&2
     return 0
+  fi
+
+  # Refuse to cut a worktree for work that cannot land. The ticket asked for
+  # "refuse, or warn loudly": refusal is the half a machine can act on, which
+  # matters because an autonomous dispatcher must not start blocked work and
+  # cannot be asked to parse a warning off stderr. --force is the way out.
+  #
+  # Deliberately AFTER the attach above. Re-entering a worktree that already
+  # exists is not starting work — the work is already underway — and refusing
+  # there would break both `cd "$(smriti ticket start N)"` for a run in flight
+  # and the board's restart, which re-attaches through this same path.
+  if [ "$force" -ne 1 ]; then
+    # A count that is not a number means the READ failed, not that the ticket is
+    # blocked — `db` exits 3 inside the command substitution on a locked or
+    # unreadable store, which yields the empty string. Treating that as "blocked"
+    # reported a store fault as a dependency refusal, printed an empty blocker
+    # list beneath it, and offered a --force that would fail the same way.
+    local nblock; nblock=$(open_blocker_count "$id" || true)
+    case "$nblock" in
+      ''|*[!0-9]*) die "could not read the dependency graph for #$id" 3 ;;
+    esac
+    if [ "$nblock" != "0" ]; then
+      {
+        echo "$SMRITI_TOOL: #$id is blocked by unshipped work:"
+        open_blockers "$id" | awk -F'\t' '{ printf "  %-5s %-12s %s\n", $1, $2, $3 }'
+        echo "$SMRITI_TOOL: start it anyway with --force"
+      } >&2
+      exit 7
+    fi
   fi
 
   # An idea has no code to cut a branch in. Say what to do rather than failing
@@ -699,15 +1028,73 @@ base_branch_for() {
 
 # ─── status / done ──────────────────────────────────────────────────────────
 
+# A ticket reaching a terminal status is the moment every run against it is
+# over — whoever concluded it, and whether or not the agent survived to say so.
+#
+# This lives here rather than in the skill because closing a run used to depend
+# on an agent reaching a line of markdown, every such line suffixed `|| true`.
+# Shipping from a second terminal, shipping by hand, or shipping after the pane
+# died all left the run `running`/`awaiting` forever, which is what put four
+# finished tickets in the board's "waiting on you" with counters still climbing.
+# None of those routes can avoid moving the ticket, so this is the one place
+# that catches all of them.
+#
+# `in_review` is deliberately NOT terminal: `smriti ticket pr` sets it BEFORE
+# the merge and clean that still have to happen, so ending runs there would kill
+# the normal ship path mid-flight.
+#
+# `failed`, for shipped and cancelled alike, and that is not pessimism — it is
+# what being open at this moment means. `trace end --ticket` only touches runs
+# still `running` or `awaiting`, and a run that finished properly already ended
+# itself and is `done`. So anything this catches is by definition a run that did
+# NOT reach its own ending, whatever became of the ticket. It is the same reading
+# the board applies to a pane it had to close on a run's behalf.
+#
+# The one route that legitimately reaches a terminal status with its run still
+# going is `smriti clean`, which /begin invokes FROM INSIDE the run as the last
+# step of a successful ship. That is why clean ends the run as `done` itself,
+# just before it calls `done` here — otherwise every clean ship would be filed
+# as a failure by this line, and the run's own `trace end` afterwards could not
+# correct it, because implicit_run only resolves runs that are still open.
+#
+# Best-effort, like every other trace call: observability must never be able to
+# fail the write it observes.
+end_open_runs() {
+  local id="$1" tr="$SMRITI_BIN/smriti-trace"
+  [ -x "$tr" ] || return 0
+  "$tr" end --ticket "$id" --status failed >/dev/null 2>&1 || true
+  return 0
+}
+
+is_terminal_status() {
+  case "$1" in shipped|cancelled) return 0 ;; *) return 1 ;; esac
+}
+
 cmd_status() {
   [ $# -ge 2 ] || usage
   local id="$1" status="$2"
   require_id "$id"
   validate_status "$status"
   ticket_exists "$id" || die "no ticket #$id" 4
+  # Read the old status first: "what did this free" is only true of a status
+  # that actually CHANGED. smriti-clean calls `done` for every merged branch it
+  # sees, so a second clean over the same branch re-announced work that had been
+  # unblocked days earlier — an announcement that does not mean anything
+  # happened is worse than none.
+  local was; was=$(db "SELECT status FROM tickets WHERE id = $id;")
   db_write "UPDATE tickets SET status = $(sql_quote "$status"), updated_at = $(sql_quote "$(now_utc)")
             WHERE id = $id;"
+  if is_terminal_status "$status"; then end_open_runs "$id"; fi
   echo "#$id → $status"
+  # Landing something is the moment the graph pays for itself: you finish, and
+  # you are told what that just made startable, instead of finding out a week
+  # later. Only a move INTO shipped/cancelled can free anything — every other
+  # status leaves the blocker blocking, so there is nothing to say.
+  if [ "$was" != "$status" ]; then
+    case "$status" in
+      shipped|cancelled) announce_freed "$id" ;;
+    esac
+  fi
 }
 
 # A description is what you write when the title was not enough. Editable
@@ -960,7 +1347,38 @@ cmd_move() {
                                  updated_at = $(sql_quote "$(now_utc)")
               WHERE id = $id;"
     echo "#$id moved"
+    warn_order_contradiction "$id"
     return 0
+  done
+}
+
+# Say when the order just drawn disagrees with the dependency graph — a ticket
+# sitting ABOVE something it is waiting on.
+#
+# It says so and stops. It does NOT reorder: you may be sequencing deliberately
+# (about to --force, or about to cancel the blocker), and a board that
+# rearranges your work while you are arranging it is the worse tool. Only
+# comparable within one scope, since positions mean nothing across them.
+# Both ENDS of the edge are checked, not just the blocked one. Dragging a
+# blocker DOWN past its dependent produces the identical contradiction as
+# dragging the dependent UP past its blocker, and reporting only the second
+# left half of every such drag silent.
+warn_order_contradiction() {
+  local id="$1" rows
+  rows=$(db "SELECT '#' || t.id || char(9) || '#' || b.id
+               FROM ticket_deps d
+               JOIN tickets t ON t.id = d.blocked_id
+               JOIN tickets b ON b.id = d.blocker_id
+              WHERE (d.blocked_id = $id OR d.blocker_id = $id)
+                AND NOT ($(dep_satisfied b))
+                AND coalesce(b.repo_slug,'') = coalesce(t.repo_slug,'')
+                AND coalesce(b.project_id,-1) = coalesce(t.project_id,-1)
+                AND (t.position < b.position
+                     OR (t.position = b.position AND t.id < b.id))
+              ORDER BY t.id, b.id;" 2>/dev/null || true)
+  [ -n "$rows" ] || return 0
+  printf '%s\n' "$rows" | while IFS=$'\t' read -r blocked blocker; do
+    echo "$SMRITI_TOOL: heads up — $blocked sits above $blocker, which it is blocked by" >&2
   done
 }
 
@@ -984,8 +1402,16 @@ cmd_cancel() {
   [ $# -ge 1 ] || usage
   require_id "$1"
   ticket_exists "$1" || die "no ticket #$1" 4
+  local was; was=$(db "SELECT status FROM tickets WHERE id = $1;")
   db_write "UPDATE tickets SET status = 'cancelled', updated_at = $(sql_quote "$(now_utc)") WHERE id = $1;"
+  end_open_runs "$1"
   echo "#$1 → cancelled  (smriti ticket status $1 ready brings it back)"
+  # Cancelling frees dependents exactly as shipping does — deciding work will
+  # not happen releases whatever was waiting on it. Worth saying here too, since
+  # this verb writes its own message rather than going through cmd_status, and
+  # guarded on an actual change for the same reason.
+  [ "$was" != "cancelled" ] && announce_freed "$1"
+  return 0
 }
 
 cmd_rm() {
@@ -1001,9 +1427,11 @@ cmd_rm() {
   done
   ticket_exists "$id" || die "no ticket #$id" 4
 
-  local title docs
+  local title docs edges
   title=$(db "SELECT title FROM tickets WHERE id = $id;")
   docs=$(db "SELECT count(*) FROM documents WHERE ticket_id = $id;")
+  edges=$(db "SELECT count(*) FROM ticket_deps
+               WHERE blocker_id = $id OR blocked_id = $id;")
 
   if [ "$yes" -ne 1 ]; then
     if [ ! -t 0 ]; then
@@ -1011,10 +1439,28 @@ cmd_rm() {
     fi
     echo "About to delete #$id  $title"
     [ "$docs" != "0" ] && echo "  $docs document(s) destroyed, content and all — any working copy still on disk stays"
+    # Worth saying out loud: unlike the documents, this changes OTHER tickets —
+    # anything waiting on this one stops being blocked by it.
+    [ "$edges" != "0" ] && echo "  $edges dependency edge(s) cut — tickets waiting on this one are freed"
     printf "Delete? [y/N] "
     read -r ans || ans=""
     case "$ans" in y|Y|yes|YES) ;; *) echo "aborted."; exit 1 ;; esac
   fi
+
+  # BEFORE the delete, while there is still a ticket to end the runs of.
+  # `runs.ticket_id` is ON DELETE SET NULL, so a run left open here survives as
+  # an orphan with nothing to reconcile it against: the board's reconcile pass
+  # needs a ticket for two of its three proofs and a stamped pane for the third,
+  # and the waiting band cannot judge a run whose ticket is gone. It would sit
+  # in "waiting on you" forever — the exact failure this whole area exists to
+  # remove, reintroduced by the one verb that destroys the evidence.
+  end_open_runs "$id"
+
+  # What was waiting on this one, read BEFORE the delete cascades the edges
+  # away. Reported on every path rather than only the interactive prompt: the
+  # board always calls `rm --yes`, so the one case where deleting a ticket
+  # silently changed OTHER tickets' state was the case the user could not see.
+  local freed; freed=$(freed_by "$id")
 
   # The documents go with the ticket, and that now means their CONTENT, not just
   # a pointer at a file. Deliberate: `rm` is an explicit verb, it counts what it
@@ -1024,6 +1470,9 @@ cmd_rm() {
   db_write "DELETE FROM documents WHERE ticket_id = $id;
             DELETE FROM tickets WHERE id = $id;"
   echo "deleted: #$id  $title"
+  if [ -n "$freed" ]; then
+    echo "  unblocks $(printf '%s\n' "$freed" | cut -f1 | paste -sd' ' -)"
+  fi
 }
 
 # /begin's ship step calls this once the PR exists. in_review rather than shipped:
@@ -1508,6 +1957,8 @@ case "$CMD" in
   pr)           cmd_pr "$@" ;;
   status)       cmd_status "$@" ;;
   done)         cmd_done "$@" ;;
+  dep)          cmd_dep "$@" ;;
+  deps)         cmd_deps "$@" ;;
   doc)          cmd_doc "$@" ;;
   docs)         cmd_docs "$@" ;;
   doc-show)     cmd_doc_show "$@" ;;

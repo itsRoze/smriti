@@ -51,7 +51,7 @@ _smriti() {
         _describe 'config subcommand' config_cmds
         ;;
       ticket)
-        local -a ticket_cmds=(add list show start edit move cancel rm pr status done doc docs doc-show doc-capture doc-adopt doc-forget current)
+        local -a ticket_cmds=(add list show start edit move cancel rm pr status done dep deps doc docs doc-show doc-capture doc-adopt doc-forget current)
         _describe 'ticket subcommand' ticket_cmds
         ;;
       trace)

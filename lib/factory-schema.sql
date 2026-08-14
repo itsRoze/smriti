@@ -94,6 +94,38 @@ CREATE TABLE IF NOT EXISTS tickets (
   updated_at    TEXT    NOT NULL
 );
 
+-- Which work has to land before which other work. One row says exactly one
+-- thing: blocker_id must land before blocked_id can start.
+--
+-- A TABLE rather than a column on tickets, because the relationship is
+-- many-to-many in both directions: a ticket can block several and be blocked by
+-- several. #4 in this repo's own backlog already names two blockers in prose.
+--
+-- Edges may cross projects AND apps on purpose. "The API ticket blocks the UI
+-- ticket" is the common case and the two often live in different repositories,
+-- so nothing here is scoped the way `position` is. The cost is that a reader
+-- cannot assume both ends are on screen, which is the board's problem to solve
+-- and not a reason to forbid the edge.
+--
+-- ON DELETE CASCADE, where every other table here uses SET NULL. The difference
+-- is that those are optional ATTRIBUTES of a row — a ticket with no project is
+-- still a ticket. An edge with one end missing is not a weaker edge, it is not
+-- an edge, and leaving it would strand its survivor blocked by a ticket that no
+-- longer exists with no way to see why. It does mean deleting a ticket changes
+-- OTHER tickets' state, which is why `ticket rm` counts the edges out loud.
+--
+-- No status column. Blocked / unblocked / freed are derived on every read from
+-- the blockers' own statuses, so un-cancelling a blocker re-blocks its
+-- dependents with nothing to reconcile. `cancel` is advertised as reversible;
+-- a stored flag would quietly have failed to come back with it.
+CREATE TABLE IF NOT EXISTS ticket_deps (
+  blocker_id INTEGER NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+  blocked_id INTEGER NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+  created_at TEXT    NOT NULL,
+  -- Drawing the same edge twice is a no-op rather than a duplicate row.
+  PRIMARY KEY (blocker_id, blocked_id)
+);
+
 -- The documents themselves — plans, debug write-ups, design notes. This table
 -- USED to be an index into files on disk, and the file used to be the source of
 -- truth. It is not any more: `smriti clean` deletes those files when a branch
@@ -219,6 +251,12 @@ CREATE UNIQUE INDEX IF NOT EXISTS tickets_worktree
 
 CREATE INDEX IF NOT EXISTS tickets_by_repo ON tickets (repo_slug, status);
 CREATE INDEX IF NOT EXISTS tickets_by_project ON tickets (project_id);
+-- The PRIMARY KEY already indexes (blocker_id, …), which answers "what does this
+-- ticket block?". The other direction — "what blocks this one?" — is the HOT
+-- query, asked on every `ticket start` and once per card the board draws, and
+-- without its own index it is a table scan.
+CREATE INDEX IF NOT EXISTS ticket_deps_by_blocked ON ticket_deps (blocked_id);
+
 CREATE INDEX IF NOT EXISTS documents_by_ticket ON documents (ticket_id);
 CREATE INDEX IF NOT EXISTS documents_by_project ON documents (project_id);
 CREATE INDEX IF NOT EXISTS events_by_run ON events (run_uid, id);

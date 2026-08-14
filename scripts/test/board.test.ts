@@ -874,3 +874,181 @@ test('/api/state does not resolve a URL for a run that is not at a gate', async 
   stopSession(sessionId);
   tr(['end', '--run', uid]);
 });
+
+// The whole client is authored inside ONE template literal, so a backtick
+// anywhere in it — including in a comment — ends the string early and the board
+// stops booting with a parse error dozens of lines further down. The file
+// already warns about the same trap for regex literals; this catches the comment
+// case, which is far easier to walk into and reads as unrelated when it breaks.
+test('lib/board-ui.ts contains no backtick but its own two delimiters', () => {
+  const src = readFileSync(join(REPO_ROOT, 'lib', 'board-ui.ts'), 'utf8');
+  const offenders = src.split('\n')
+    .map((line, i) => ({ n: i + 1, line }))
+    .filter(({ line }) => line.includes('`'))
+    .filter(({ line }) => !line.startsWith('  return `') && !line.endsWith('`;'));
+  expect(offenders.map((o) => `${o.n}: ${o.line.trim().slice(0, 70)}`)).toEqual([]);
+});
+
+// A machine with no herdr must not lose the running state entirely. /api/state
+// answers `sessions: null` — "we could not ask" — rather than `[]`, which is a
+// claim that nothing is running. The page hangs its whole "is this ticket
+// running" decision on that list, so collapsing the two would mean no run ever
+// read as running again on such a machine, live clock and all.
+test('/api/state reports sessions as null when herdr cannot be asked', async () => {
+  const res = await fetch(`http://127.0.0.1:${port}/api/state`, { headers: { cookie: jar } });
+  expect(res.status).toBe(200);
+  const state = await res.json() as { sessions: unknown };
+  // This suite runs with no herdr stub on PATH. If the developer happens to have
+  // a real herdr installed, an ARRAY is the correct answer and the distinction
+  // still holds — what must never appear is an empty array standing in for
+  // "unknown".
+  if (state.sessions === null) expect(state.sessions).toBeNull();
+  else expect(Array.isArray(state.sessions)).toBe(true);
+});
+
+// ─── dependencies (#12) ─────────────────────────────────────────────────────
+
+test('the dependency graph reaches the page, and a blocked start is a 409', async () => {
+  const tk = (args: string[]) =>
+    spawnSync(TICKET, args, { encoding: 'utf8', env: { ...process.env, SMRITI_HOME: HOME_DIR } });
+  // Fresh ids: this file's store is shared across tests, so read them back
+  // rather than assuming what the counter is up to.
+  tk(['add', 'the blocker', '--repo', 'deps-demo']);
+  tk(['add', 'the blocked', '--repo', 'deps-demo']);
+  const all = JSON.parse(tk(['list', '--all', '--json']).stdout) as
+    { id: number; title: string }[];
+  const blocker = all.find((t) => t.title === 'the blocker')!;
+  const blocked = all.find((t) => t.title === 'the blocked')!;
+
+  const drew = await fetch(`${base()}/api/tickets/${blocked.id}/deps`, {
+    method: 'POST', headers: { cookie: jar, 'content-type': 'application/json' },
+    body: JSON.stringify({ blockedBy: blocker.id }),
+  });
+  expect(drew.status).toBe(200);
+
+  // One payload for the whole graph, joined per ticket on the client the way
+  // documents already are.
+  const state = (await (await fetch(`${base()}/api/state`, withCookie())).json()) as
+    { deps: { blocker_id: number; blocked_id: number; blocker_status: string }[] };
+  const edge = state.deps.find((d) => d.blocked_id === blocked.id)!;
+  expect(edge.blocker_id).toBe(blocker.id);
+  expect(edge.blocker_status).toBe('idea');
+
+  // 409, not 500: the ticket is blocked, which is a conflict the user can act
+  // on — not the factory falling over. This route used to collapse every CLI
+  // failure to a 500.
+  const start = await fetch(`${base()}/api/tickets/${blocked.id}/start`, {
+    method: 'POST', headers: { cookie: jar, 'content-type': 'application/json' }, body: '{}',
+  });
+  expect(start.status).toBe(409);
+  const said = (await start.json()) as { error: string; blocked: boolean };
+  expect(said.blocked).toBe(true);
+  expect(said.error).toContain('blocked by unshipped work');
+});
+
+test('a cycle is refused as a 409, and a malformed edge as a 400', async () => {
+  const tk = (args: string[]) =>
+    spawnSync(TICKET, args, { encoding: 'utf8', env: { ...process.env, SMRITI_HOME: HOME_DIR } });
+  tk(['add', 'cycle a', '--repo', 'cyc-demo']);
+  tk(['add', 'cycle b', '--repo', 'cyc-demo']);
+  const all = JSON.parse(tk(['list', '--all', '--json']).stdout) as
+    { id: number; title: string }[];
+  const a = all.find((t) => t.title === 'cycle a')!;
+  const b = all.find((t) => t.title === 'cycle b')!;
+
+  const post = (id: number, body: unknown) =>
+    fetch(`${base()}/api/tickets/${id}/deps`, {
+      method: 'POST', headers: { cookie: jar, 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+  expect((await post(b.id, { blockedBy: a.id })).status).toBe(200);
+  const loop = await post(a.id, { blockedBy: b.id });
+  expect(loop.status).toBe(409);
+  expect(((await loop.json()) as { error: string }).error).toContain('cycle');
+
+  // Not an id: these reach a command line, so NaN/1.5 must never get there.
+  expect((await post(a.id, { blockedBy: 1.5 })).status).toBe(400);
+  expect((await post(a.id, {})).status).toBe(400);
+
+  // And it comes back off again.
+  const cut = await post(b.id, { rm: a.id });
+  expect(cut.status).toBe(200);
+});
+
+test('a move that contradicts the graph succeeds and says so', async () => {
+  // The CLI reports the contradiction on stderr and deliberately leaves the
+  // card where it was dropped. The route used to read stderr only on the
+  // failure path, so the board — the only surface where dragging exists —
+  // never said anything at all.
+  const tk = (args: string[]) =>
+    spawnSync(TICKET, args, { encoding: 'utf8', env: { ...process.env, SMRITI_HOME: HOME_DIR } });
+  tk(['add', 'order blocker', '--repo', 'ord-demo']);
+  tk(['add', 'order blocked', '--repo', 'ord-demo']);
+  const all = JSON.parse(tk(['list', '--all', '--json']).stdout) as
+    { id: number; title: string }[];
+  const blocker = all.find((t) => t.title === 'order blocker')!;
+  const blocked = all.find((t) => t.title === 'order blocked')!;
+  tk(['dep', String(blocked.id), '--blocked-by', String(blocker.id)]);
+
+  const res = await fetch(`${base()}/api/tickets/${blocked.id}/move`, {
+    method: 'POST', headers: { cookie: jar, 'content-type': 'application/json' },
+    body: JSON.stringify({ before: blocker.id }),
+  });
+  expect(res.status).toBe(200);
+  const said = (await res.json()) as { ok: boolean; note?: string };
+  expect(said.ok).toBe(true);
+  expect(said.note).toContain('#' + blocked.id);
+  expect(said.note).toContain('#' + blocker.id);
+
+  // And it really did move: the contradiction is surfaced, never corrected.
+  const after = JSON.parse(tk(['list', '--all', '--json']).stdout) as
+    { id: number; position: number }[];
+  const p = (id: number) => after.find((t) => t.id === id)!.position;
+  expect(p(blocked.id)).toBeLessThan(p(blocker.id));
+});
+
+test('a move with nothing to say carries no note', async () => {
+  const tk = (args: string[]) =>
+    spawnSync(TICKET, args, { encoding: 'utf8', env: { ...process.env, SMRITI_HOME: HOME_DIR } });
+  tk(['add', 'plain a', '--repo', 'plain-demo']);
+  tk(['add', 'plain b', '--repo', 'plain-demo']);
+  const all = JSON.parse(tk(['list', '--all', '--json']).stdout) as
+    { id: number; title: string }[];
+  const a = all.find((t) => t.title === 'plain a')!;
+  const b = all.find((t) => t.title === 'plain b')!;
+  const res = await fetch(`${base()}/api/tickets/${a.id}/move`, {
+    method: 'POST', headers: { cookie: jar, 'content-type': 'application/json' },
+    body: JSON.stringify({ after: b.id }),
+  });
+  expect(res.status).toBe(200);
+  expect((await res.json()) as { note?: string }).not.toHaveProperty('note');
+});
+
+test('start --force goes through when the page says so', async () => {
+  const tk = (args: string[]) =>
+    spawnSync(TICKET, args, { encoding: 'utf8', env: { ...process.env, SMRITI_HOME: HOME_DIR } });
+  tk(['add', 'force blocker', '--repo', 'force-demo']);
+  tk(['add', 'force blocked', '--repo', 'force-demo']);
+  const all = JSON.parse(tk(['list', '--all', '--json']).stdout) as
+    { id: number; title: string }[];
+  const blocker = all.find((t) => t.title === 'force blocker')!;
+  const blocked = all.find((t) => t.title === 'force blocked')!;
+  tk(['dep', String(blocked.id), '--blocked-by', String(blocker.id)]);
+
+  // Without force: refused as a conflict.
+  const no = await fetch(`${base()}/api/tickets/${blocked.id}/start`, {
+    method: 'POST', headers: { cookie: jar, 'content-type': 'application/json' }, body: '{}',
+  });
+  expect(no.status).toBe(409);
+
+  // With force it gets past the dependency check. There is no repo behind
+  // 'force-demo', so it now fails on the WORKTREE instead (exit 5 → 500) —
+  // which is the point: a different failure means the refusal was lifted.
+  const yes = await fetch(`${base()}/api/tickets/${blocked.id}/start`, {
+    method: 'POST', headers: { cookie: jar, 'content-type': 'application/json' },
+    body: JSON.stringify({ force: true }),
+  });
+  expect(yes.status).not.toBe(409);
+  expect(((await yes.json()) as { error: string }).error).not.toContain('blocked by unshipped');
+});

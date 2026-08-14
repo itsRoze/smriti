@@ -84,6 +84,31 @@ const idOf = (title: string) => {
 const must = (r: ReturnType<typeof run>, what: string) => {
   if (r.status !== 0) throw new Error(what + ' failed: ' + (r.stderr || r.stdout));
 };
+
+// Wait for the STORE to say something, rather than reading it the instant the
+// DOM does.
+//
+// Writes are optimistic now: the value is painted the moment you commit it and
+// the request goes out behind you. So a DOM wait no longer proves the row was
+// written — it proves it was accepted, which is the whole point — and a store
+// read taken on that signal races the request it is meant to be checking.
+//
+// This still asserts persistence, and still fails if the write never lands. It
+// just stops assuming the two happen in the same tick.
+async function untilStore<T>(read: () => T, want: T, what: string, ms = 4000): Promise<T> {
+  const deadline = Date.now() + ms;
+  let last: T;
+  do {
+    last = read();
+    if (last === want) return last;
+    await new Promise((r) => setTimeout(r, 50));
+  } while (Date.now() < deadline);
+  throw new Error(what + ': store never became ' + JSON.stringify(want) +
+    ' (last saw ' + JSON.stringify(last) + ')');
+}
+const ticketRow = (id: number | string) =>
+  (JSON.parse(run(TICKET, ['list', '--all', '--json'], appDir).stdout) as any[])
+    .find((x) => String(x.id) === String(id)) || {};
 // Assigned in beforeAll — the describe body runs at collection time, before
 // any fixture exists.
 let MD_TICKET = 0;
@@ -289,10 +314,9 @@ describe('board UI', () => {
       await page.locator('#pagedescedit').press('Meta+Enter');
       await page.waitForSelector('#pagedesc:has-text("a scratch app for tests")');
       // ...and it is really in the store, not just on screen.
-      const shown = spawnSync(REPO, ['show', 'test-demo', '--json'], {
+      await untilStore(() => JSON.parse(spawnSync(REPO, ['show', 'test-demo', '--json'], {
         encoding: 'utf8', env: { ...process.env, SMRITI_HOME: HOME_DIR },
-      });
-      expect(JSON.parse(shown.stdout).description).toBe('a scratch app for tests');
+      }).stdout).description, 'a scratch app for tests', 'app description');
       expect(errors).toEqual([]);
     } finally { await context.close(); }
   }, T);
@@ -350,17 +374,23 @@ describe('board UI', () => {
       expect(await stamp.innerText()).toBe('READY');
       expect(await stamp.getAttribute('class')).toContain('s-ready');
 
-      // Filed under: app and project, both rows emitted whether or not they are
-      // filled. This fixture ticket has an app and no project.
+      // Filed under: app, project and what it waits on — all emitted whether or
+      // not they are filled, because each row is also the control that fills it
+      // and a ticket with no blockers is exactly when you go to add one.
+      // "blocks" is the exception: it is not editable from this end, so it
+      // appears only when something is actually waiting.
       const labels = await page.locator('.stub .f .k2').allInnerTexts();
-      expect(labels).toEqual(['APP', 'PROJECT']);
-      expect(await page.locator('.stub .f .v.empty').count()).toBe(1);
+      expect(labels).toEqual(['APP', 'PROJECT', 'BLOCKED BY']);
+      // Two blanks: no project, and nothing blocking it.
+      expect(await page.locator('.stub .f .v.empty').count()).toBe(2);
       // The value carries a ↗ that opens the app page — the click that used to
       // be the whole row, moved aside so the row itself can edit.
       expect(await page.locator('.stub .f .v').first().innerText()).toContain('test-demo');
-      // Both rows are writable, and each names the key that opens its picker.
+      // All three rows are writable, and each names the key that opens its picker.
       expect(await page.locator('.stub .f[data-field="app"]').getAttribute('data-k')).toBe('a');
       expect(await page.locator('.stub .f[data-field="project"]').getAttribute('data-k')).toBe('f');
+      // w for "waits on", not b — b is already the margin toggle.
+      expect(await page.locator('.stub .f[data-field="deps"]').getAttribute('data-k')).toBe('w');
       expect(await page.locator('.stub .head[data-field="status"]').getAttribute('data-k')).toBe('x');
       expect(errors).toEqual([]);
     } finally { await context.close(); }
@@ -565,10 +595,8 @@ describe('board UI', () => {
 
       await page.waitForSelector('.stub .f[data-field="project"]:has-text("Search v2")');
       // ...and it is really in the store, not just on screen.
-      const t = (JSON.parse(run(TICKET, ['list', '--all', '--json'], appDir).stdout) as any[])
-        .find((x) => String(x.id) === id);
-      expect(t.project_ref).toBe('search-v2');
-      expect(t.repo_slug).toBe('test-demo');
+      await untilStore(() => ticketRow(id).project_ref, 'search-v2', 'project_ref');
+      expect(ticketRow(id).repo_slug).toBe('test-demo');
       expect(errors).toEqual([]);
     } finally {
       run(TICKET, ['edit', id, '--repo', '-'], appDir);
@@ -592,9 +620,7 @@ describe('board UI', () => {
 
       await page.locator('#palopts .o:has-text("cancelled")').click();
       await page.waitForSelector('.stub .stamp.big:has-text("CANCELLED")');
-      const t = (JSON.parse(run(TICKET, ['list', '--all', '--json'], appDir).stdout) as any[])
-        .find((x) => x.id === MD_TICKET);
-      expect(t.status).toBe('cancelled');
+      await untilStore(() => ticketRow(MD_TICKET).status, 'cancelled', 'status');
       expect(errors).toEqual([]);
     } finally {
       run(TICKET, ['status', String(MD_TICKET), 'ready'], appDir);
@@ -851,10 +877,15 @@ describe('board UI', () => {
       await page.locator('#pagedescedit').press('Meta+Enter');
 
       await page.waitForSelector('#pagedesc:has-text("rewritten after a cancel")');
-      const shown = spawnSync(TICKET, ['show', String(MD_TICKET), '--json'], {
+      // Polled, not read once — and the restore below is why it MATTERS here
+      // rather than merely being tidier. An optimistic save paints before it
+      // sends, so reading the store on the DOM's signal can beat the request;
+      // restoring the fixture on that reading let the in-flight write land
+      // afterwards and overwrite it, and the next two tests then opened a
+      // ticket whose body was this test's string.
+      await untilStore(() => JSON.parse(spawnSync(TICKET, ['show', String(MD_TICKET), '--json'], {
         encoding: 'utf8', env: { ...process.env, SMRITI_HOME: HOME_DIR },
-      });
-      expect(JSON.parse(shown.stdout).ticket.body).toBe('rewritten after a cancel');
+      }).stdout).ticket.body, 'rewritten after a cancel', 'ticket body');
 
       // Put it back, so the tests after this one still see the fixture body.
       run(TICKET, ['edit', String(MD_TICKET), '--body', MD_BODY], appDir);
@@ -1011,6 +1042,474 @@ describe('board UI', () => {
         encoding: 'utf8', env: { ...process.env, SMRITI_HOME: HOME_DIR },
       });
     }
+  }, T);
+
+  // ── the band only claims what it can prove ─────────────────────────────
+  //
+  // "Waiting on you" was one uncorroborated predicate — runs.status === 'awaiting'
+  // — over a column written by a process that can die. Four finished tickets sat
+  // in it for days, counters climbing, every minute booked against your time.
+
+  it('a gate on a shipped ticket is not waiting on anybody', async () => {
+    if (!HAS_CHROMIUM) return;
+    const tickets = JSON.parse(run(TICKET, ['list', '--all', '--json'], appDir).stdout) as
+      { id: number; title: string }[];
+    const tid = tickets.find((t) => t.title === 'the old importer')!.id;   // already shipped
+    // Forced open AFTER shipping, which is exactly the shape the real rows had:
+    // the ticket moved on and the run row never did.
+    const uid = run(TRACE, ['start', 'begin', '--ticket', String(tid)], appDir).stdout.trim().split('=')[1];
+    run(TRACE, ['emit', 'ship', 'awaiting', '--run', uid], appDir);
+
+    const { context, page, errors } = await open();
+    try {
+      await page.waitForSelector('.wait');
+      expect(await page.locator('.wait .item').count()).toBe(0);
+      expect(await page.locator('.wait .empty').count()).toBe(1);
+      expect(errors).toEqual([]);
+    } finally { await context.close(); run(TRACE, ['end', '--run', uid], appDir); }
+  }, T);
+
+  it('a gate on open work still shows, whatever its agent is doing', async () => {
+    if (!HAS_CHROMIUM) return;
+    // The negative of the test above, and the reason the rule is the ticket's
+    // disposition rather than "the agent looks busy": Gate 2 waits by BLOCKING
+    // on a long-running command, so a real plan review reports its agent as
+    // working. Suppressing on that would hide the one thing this band is for.
+    const tickets = JSON.parse(run(TICKET, ['list', '--all', '--json'], appDir).stdout) as
+      { id: number; title: string }[];
+    const tid = tickets.find((t) => t.title === 'index the corpus')!.id;
+    const uid = run(TRACE, ['start', 'begin', '--ticket', String(tid)], appDir).stdout.trim().split('=')[1];
+    run(TRACE, ['emit', 'approve', 'awaiting', '--run', uid], appDir);
+
+    const { context, page, errors } = await open();
+    try {
+      await page.waitForSelector('.wait .item');
+      expect(await page.locator('.wait .item').innerText()).toContain('index the corpus');
+      expect(errors).toEqual([]);
+    } finally { await context.close(); run(TRACE, ['end', '--run', uid], appDir); }
+  }, T);
+
+  it('a card does not read running when no session is live for it', async () => {
+    if (!HAS_CHROMIUM) return;
+    // #4's exact shape: worktree still on disk, run row still says running, and
+    // no herdr agent anywhere near it. It used to render class="live" with a
+    // clock ticking against a session that had been gone for days.
+    const add = run(TICKET, ['add', 'its session went away', '--ready'], appDir);
+    const tid = (add.stdout.match(/#(\d+)/) ?? [])[1]!;
+    must(run(TICKET, ['start', tid], appDir), 'start');
+    const uid = run(TRACE, ['start', 'begin', '--ticket', tid], appDir).stdout.trim().split('=')[1];
+
+    const { context, page, errors } = await open();
+    try {
+      const card = page.locator('.card[data-tid="' + tid + '"]');
+      await card.waitFor();
+      // Not the class: CLS.in_progress is 'live' already, and that is the
+      // ticket's STATUS styling rather than a claim about a session. What must
+      // not appear is the running readout and its clock.
+      expect(await card.innerText()).not.toContain('running');
+      // A clock ticking for a session that does not exist was the visible half
+      // of the bug — it kept counting for days.
+      expect(await card.locator('[data-live="run"]').count()).toBe(0);
+      // It falls back to saying what the ticket actually is.
+      expect(await card.innerText().then((x) => x.toLowerCase())).toContain('building');
+      expect(errors).toEqual([]);
+    } finally {
+      await context.close();
+      run(TRACE, ['end', '--run', uid], appDir);
+      run(TICKET, ['rm', tid, '--yes'], appDir);
+    }
+  }, T);
+
+  // ── optimistic writes ──────────────────────────────────────────────────
+
+  it('a description shows your text before the request resolves', async () => {
+    if (!HAS_CHROMIUM) return;
+    const { context, page, errors } = await open();
+    try {
+      await openBodyTicket(page);
+      // Hold the PATCH open. Whatever is on screen while this is unanswered is,
+      // by construction, the optimistic paint — before this change it was the
+      // OLD text, unhidden by save() one line before it sent anything.
+      let release: () => void = () => {};
+      const held = new Promise<void>((r) => { release = r; });
+      await page.route('**/api/tickets/**', async (route) => {
+        if (route.request().method() !== 'PATCH') return route.continue();
+        await held;
+        return route.continue();
+      });
+
+      await page.keyboard.press('e');
+      await page.waitForSelector('#pagedescedit.on');
+      await page.locator('#pagedescedit').fill('painted before the round trip');
+      await page.locator('#pagedescedit').press('Meta+Enter');
+
+      await page.waitForSelector('#pagedesc:has-text("painted before the round trip")');
+      expect(await page.locator('#pagedesc').innerText()).not.toContain('the first paragraph.');
+
+      release();
+      await untilStore(() => JSON.parse(spawnSync(TICKET, ['show', String(MD_TICKET), '--json'], {
+        encoding: 'utf8', env: { ...process.env, SMRITI_HOME: HOME_DIR },
+      }).stdout).ticket.body, 'painted before the round trip', 'optimistic body');
+      expect(errors).toEqual([]);
+    } finally {
+      await context.close();
+      run(TICKET, ['edit', String(MD_TICKET), '--body', MD_BODY], appDir);
+    }
+  }, T);
+
+  it('a failed save hands your typing back instead of eating it', async () => {
+    if (!HAS_CHROMIUM) return;
+    // No errors assertion: the 500 is the point and the browser logs it.
+    const { context, page } = await open();
+    try {
+      await openBodyTicket(page);
+      await page.route('**/api/tickets/**', (route) =>
+        route.request().method() === 'PATCH'
+          ? route.fulfill({ status: 500, contentType: 'application/json',
+                            body: JSON.stringify({ error: 'nope' }) })
+          : route.continue());
+
+      await page.keyboard.press('e');
+      await page.waitForSelector('#pagedescedit.on');
+      await page.locator('#pagedescedit').fill('words worth keeping');
+      await page.locator('#pagedescedit').press('Meta+Enter');
+
+      // The editor comes back, still holding what you wrote. Before this, the
+      // failure only toasted: the box was already closed over the old text and
+      // the next render rebuilt it from the value that never changed.
+      await page.waitForSelector('#pagedescedit.on');
+      expect(await page.locator('#pagedescedit').inputValue()).toBe('words worth keeping');
+      // ...and the stored value is untouched, so nothing was half-applied.
+      expect(JSON.parse(spawnSync(TICKET, ['show', String(MD_TICKET), '--json'], {
+        encoding: 'utf8', env: { ...process.env, SMRITI_HOME: HOME_DIR },
+      }).stdout).ticket.body).toBe(MD_BODY);
+    } finally { await context.close(); }
+  }, T);
+
+  it('a failed save rolls the value back, so the retry is a real change again', async () => {
+    if (!HAS_CHROMIUM) return;
+    // Dropping the pending entry is not the same as undoing it: applyPending
+    // writes into the live row, so forgetting the entry alone leaves the
+    // rejected value sitting in S. For the description box that is worse than
+    // cosmetic — current() then reports the text that FAILED, so retyping the
+    // same words hits the "nothing changed" guard and the retry silently does
+    // nothing at all.
+    //
+    // /api/state is blocked throughout, so only the rollback can put the value
+    // back; otherwise the resync would paper over a missing one.
+    const { context, page } = await open();
+    try {
+      await openBodyTicket(page);
+      await page.route('**/api/state', (route) => route.abort());
+      let patches = 0;
+      await page.route('**/api/tickets/**', (route) => {
+        if (route.request().method() !== 'PATCH') return route.continue();
+        patches++;
+        return route.fulfill({ status: 500, contentType: 'application/json',
+                               body: JSON.stringify({ error: 'nope' }) });
+      });
+
+      await page.keyboard.press('e');
+      await page.waitForSelector('#pagedescedit.on');
+      await page.locator('#pagedescedit').fill('a retry worth making');
+      await page.locator('#pagedescedit').press('Meta+Enter');
+      await page.waitForSelector('#pagedescedit.on');
+      expect(patches).toBe(1);
+
+      // Exactly the same text again. It must still be seen as a change, which
+      // it only is if the failure put the stored value back.
+      await page.locator('#pagedescedit').press('Meta+Enter');
+      await page.waitForFunction(() => true);
+      await page.waitForTimeout(400);
+      expect(patches).toBe(2);
+    } finally { await context.close(); }
+  }, T);
+
+  it('picking the app a ticket is already in does not strand it', async () => {
+    if (!HAS_CHROMIUM) return;
+    // cmd_edit only clears the project when the repo actually changes, so an
+    // overlay that claimed project_id=null for a no-op move would never match
+    // the echo — and would be re-applied over every read for the life of the
+    // tab, showing the ticket as loose forever.
+    const { context, page, errors } = await open();
+    try {
+      const tickets = JSON.parse(run(TICKET, ['list', '--all', '--json'], appDir).stdout) as any[];
+      const t = tickets.find((x) => x.title === 'index the corpus');
+      expect(t.project_ref).toBe('search-v2');
+
+      await page.locator('.card[data-tid="' + t.id + '"]').click();
+      await page.waitForSelector('.stub');
+      await page.keyboard.press('a');
+      await page.locator('#palopts .o:has-text("test-demo")').first().click();
+
+      // Give the write and its echo a moment, then confirm the project survived
+      // both on screen and in the store.
+      await page.waitForTimeout(600);
+      await page.waitForSelector('.stub .f[data-field="project"]:has-text("Search v2")');
+      expect(ticketRow(t.id).project_ref).toBe('search-v2');
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+
+  // ── projects: rename, create, delete ───────────────────────────────────
+  //
+  // The CLI and the API could do all three since both existed. The board simply
+  // never called any of it, so a project's name was fixed from the moment it was
+  // made and a stray one could not be got rid of at all.
+
+  it('a project is renamed from its own page', async () => {
+    if (!HAS_CHROMIUM) return;
+    must(run(PROJECT, ['add', 'Renamable', '--repo', 'test-demo'], appDir), 'add project');
+    const pid = (JSON.parse(run(PROJECT, ['list', '--all', '--json'], appDir).stdout) as any[])
+      .find((p) => p.name === 'Renamable').id;
+    const { context, page, errors } = await open('#/p/' + pid);
+    try {
+      await page.locator('.slab h1.rename').click();
+      // Seeded with the current name and selected, so a rename is an edit
+      // rather than a retype.
+      expect(await page.locator('#palq').inputValue()).toBe('Renamable');
+      await page.locator('#palq').fill('Renamed For Real');
+      await page.locator('#palopts .o:has-text("Rename to")').click();
+
+      await page.waitForSelector('.slab h1:has-text("Renamed For Real")');
+      await untilStore(() => (JSON.parse(run(PROJECT, ['list', '--all', '--json'], appDir).stdout) as any[])
+        .some((p) => p.name === 'Renamed For Real'), true, 'project rename');
+      expect(errors).toEqual([]);
+    } finally {
+      await context.close();
+      run(PROJECT, ['rm', String(pid), '--yes'], appDir);
+    }
+  }, T);
+
+  it('renaming to the same name offers nothing to commit', async () => {
+    if (!HAS_CHROMIUM) return;
+    must(run(PROJECT, ['add', 'Untouched', '--repo', 'test-demo'], appDir), 'add project');
+    const pid = (JSON.parse(run(PROJECT, ['list', '--all', '--json'], appDir).stdout) as any[])
+      .find((p) => p.name === 'Untouched').id;
+    const { context, page, errors } = await open('#/p/' + pid);
+    try {
+      await page.locator('.slab h1.rename').click();
+      await page.waitForSelector('#palq');
+      // An accidental Enter on the untouched name should close the picker, not
+      // fire a pointless write.
+      expect(await page.locator('#palopts .o').count()).toBe(0);
+      expect(errors).toEqual([]);
+    } finally {
+      await context.close();
+      run(PROJECT, ['rm', String(pid), '--yes'], appDir);
+    }
+  }, T);
+
+  it('a project is created from the palette, into the app you are looking at', async () => {
+    if (!HAS_CHROMIUM) return;
+    const { context, page, errors } = await open('#/r/test-demo');
+    try {
+      await page.waitForSelector('.slab');
+      await page.keyboard.press('c');
+      await page.locator('#palq').fill('Built From The Palette');
+      await page.locator('#palopts .o:has-text("New project")').click();
+
+      await page.waitForSelector('.slab h1:has-text("Built From The Palette")');
+      // The page is optimistic now, so its appearance is no longer proof the
+      // row was written — poll the store rather than reading it on that signal.
+      await untilStore(() => (JSON.parse(run(PROJECT, ['list', '--all', '--json'], appDir).stdout) as any[])
+        .some((p) => p.name === 'Built From The Palette'), true, 'palette project');
+      const made = (JSON.parse(run(PROJECT, ['list', '--all', '--json'], appDir).stdout) as any[])
+        .find((p) => p.name === 'Built From The Palette');
+      expect(made).toBeTruthy();
+      expect(made.repo_slug).toBe('test-demo');   // the app you were standing in
+      expect(errors).toEqual([]);
+      run(PROJECT, ['rm', String(made.id), '--yes'], appDir);
+    } finally { await context.close(); }
+  }, T);
+
+  it('a new project appears and opens before the server answers', async () => {
+    if (!HAS_CHROMIUM) return;
+    // Creating used to be POST → await refresh() → navigate: two full round
+    // trips, the second of which is five CLI spawns, before anything at all was
+    // on screen. The page now exists on the keystroke.
+    const { context, page } = await open('#/r/test-demo');
+    try {
+      await page.waitForSelector('.slab');
+      let release: () => void = () => {};
+      const held = new Promise<void>((r) => { release = r; });
+      await page.route('**/api/projects', async (route) => {
+        if (route.request().method() !== 'POST') return route.continue();
+        await held;
+        return route.continue();
+      });
+
+      await page.keyboard.press('c');
+      await page.locator('#palq').fill('Optimistically Made');
+      await page.locator('#palopts .o:has-text("New project")').click();
+
+      // On its own page, with its name, while the POST is still unanswered.
+      await page.waitForSelector('.slab h1:has-text("Optimistically Made")');
+      expect(page.url()).toContain('#/p/-');       // the placeholder route
+      // ...and nothing destructive can be aimed at an id the server has never
+      // seen.
+      await page.locator('[data-act="delproj"]').click();
+      await page.waitForSelector('#toast:has-text("still being created")');
+
+      // Exactly one row in the margin, not two. The placeholder row is the one
+      // the state already holds; promoting the entry without rewriting it left
+      // a second row beside it until a refresh replaced the state wholesale.
+      const railRows = () => page.locator('#rail .rproj:has-text("Optimistically Made")').count();
+      expect(await railRows()).toBe(1);
+
+      release();
+      // The real id takes over, and the placeholder route is replaced rather
+      // than left behind as a back-button destination.
+      await page.waitForFunction(() => !/#\/p\/-/.test(location.hash));
+      // Still one, now under the real id — and it stays one once the server's
+      // own copy arrives.
+      expect(await railRows()).toBe(1);
+      expect(await page.locator('#rail .rproj[data-proj^="-"]').count()).toBe(0);
+      await untilStore(() => (JSON.parse(run(PROJECT, ['list', '--all', '--json'], appDir).stdout) as any[])
+        .some((p) => p.name === 'Optimistically Made'), true, 'project create');
+      const made = (JSON.parse(run(PROJECT, ['list', '--all', '--json'], appDir).stdout) as any[])
+        .find((p) => p.name === 'Optimistically Made');
+      expect(page.url()).toContain('#/p/' + made.id);
+      run(PROJECT, ['rm', String(made.id), '--yes'], appDir);
+    } finally { await context.close(); }
+  }, T);
+
+  it('a create the server refuses takes its page away again', async () => {
+    if (!HAS_CHROMIUM) return;
+    // No errors assertion: the 500 is the point.
+    const { context, page } = await open('#/r/test-demo');
+    try {
+      await page.waitForSelector('.slab');
+      await page.route('**/api/projects', (route) =>
+        route.request().method() === 'POST'
+          ? route.fulfill({ status: 500, contentType: 'application/json',
+                            body: JSON.stringify({ error: 'nope' }) })
+          : route.continue());
+
+      await page.keyboard.press('c');
+      await page.locator('#palq').fill('Never Was');
+      await page.locator('#palopts .o:has-text("New project")').click();
+
+      await page.waitForSelector('#toast:has-text("could not create")');
+      // Back on the app it was made from, and gone from the margin.
+      // waitForFunction on the hash alone is satisfied by the hash CHANGING,
+       // which can precede the hashchange handler that redraws. Wait for the
+       // margin itself to agree.
+      await page.waitForFunction(() =>
+        location.hash === '#/r/test-demo' && !/Never Was/.test(document.querySelector('#rail')?.textContent || ''));
+      expect((JSON.parse(run(PROJECT, ['list', '--all', '--json'], appDir).stdout) as any[])
+        .some((p) => p.name === 'Never Was')).toBe(false);
+    } finally { await context.close(); }
+  }, T);
+
+  it('a deleted project leaves the margin before the server answers', async () => {
+    if (!HAS_CHROMIUM) return;
+    must(run(PROJECT, ['add', 'Vanishing', '--repo', 'test-demo'], appDir), 'add project');
+    const pid = (JSON.parse(run(PROJECT, ['list', '--all', '--json'], appDir).stdout) as any[])
+      .find((p) => p.name === 'Vanishing').id;
+    must(run(TICKET, ['add', 'goes loose', '--project', String(pid)], appDir), 'add ticket');
+    const tid = (JSON.parse(run(TICKET, ['list', '--all', '--json'], appDir).stdout) as any[])
+      .find((t) => t.title === 'goes loose').id;
+
+    const { context, page } = await open('#/p/' + pid);
+    try {
+      let release: () => void = () => {};
+      const held = new Promise<void>((r) => { release = r; });
+      await page.route('**/api/projects/**', async (route) => {
+        if (route.request().method() !== 'DELETE') return route.continue();
+        await held;
+        return route.continue();
+      });
+
+      await page.locator('[data-act="delproj"]').click();
+      await page.waitForSelector('[data-act="delproj"]:has-text("tickets go loose")');
+      await page.locator('[data-act="delproj"]').click();
+
+      // Off the page and out of the margin while the DELETE is still in flight.
+      await page.waitForFunction(() =>
+        location.hash === '#/r/test-demo' && !/Vanishing/.test(document.querySelector('#rail')?.textContent || ''));
+      // And the promise the label makes holds locally too: the ticket is still
+      // there, just no longer under a heading that has gone.
+      await page.waitForSelector('.card:has-text("goes loose")');
+
+      release();
+      await untilStore(() => (JSON.parse(run(PROJECT, ['list', '--all', '--json'], appDir).stdout) as any[])
+        .some((p) => p.id === pid), false, 'project delete');
+    } finally { await context.close(); run(TICKET, ['rm', String(tid), '--yes'], appDir); }
+  }, T);
+
+  it('a captured ticket shows as saving, and is not openable until it is real', async () => {
+    if (!HAS_CHROMIUM) return;
+    const { context, page } = await open('#/r/test-demo');
+    try {
+      await page.waitForSelector('.slab');
+      let release: () => void = () => {};
+      const held = new Promise<void>((r) => { release = r; });
+      await page.route('**/api/tickets', async (route) => {
+        if (route.request().method() !== 'POST') return route.continue();
+        await held;
+        return route.continue();
+      });
+
+      // /api/state blocked from here on. The duplicate this guards against is
+      // erased by the very next full read — which is why it presented as "one
+      // of them went away" rather than as a bug — so a resync must not be
+      // allowed to answer the question the assertion is asking.
+      await page.route('**/api/state', (route) => route.abort());
+
+      await page.keyboard.press('c');
+      await page.locator('#palq').fill('captured optimistically');
+      await page.locator('#palopts .o:has-text("New ticket")').click();
+
+      const card = page.locator('.card:has-text("captured optimistically")');
+      await card.waitFor();
+      // Present and legible, but carrying no id to open — a page for a ticket
+      // the server has never heard of would offer a start button that cannot work.
+      expect((await card.innerText()).toLowerCase()).toContain('saving');
+      expect(await card.getAttribute('data-tid')).toBeNull();
+
+      expect(await page.locator('.card:has-text("captured optimistically")').count()).toBe(1);
+
+      release();
+      await page.waitForSelector('.card[data-tid]:has-text("captured optimistically")');
+      // One card, not the placeholder plus the real one.
+      expect(await page.locator('.card:has-text("captured optimistically")').count()).toBe(1);
+      const made = (JSON.parse(run(TICKET, ['list', '--all', '--json'], appDir).stdout) as any[])
+        .find((t) => t.title === 'captured optimistically');
+      expect(made).toBeTruthy();
+      run(TICKET, ['rm', String(made.id), '--yes'], appDir);
+    } finally { await context.close(); }
+  }, T);
+
+  it('deleting a project arms first, and says the tickets survive', async () => {
+    if (!HAS_CHROMIUM) return;
+    must(run(PROJECT, ['add', 'Doomed', '--repo', 'test-demo'], appDir), 'add project');
+    const pid = (JSON.parse(run(PROJECT, ['list', '--all', '--json'], appDir).stdout) as any[])
+      .find((p) => p.name === 'Doomed').id;
+    must(run(TICKET, ['add', 'survives its project', '--project', String(pid)], appDir), 'add ticket');
+    const tid = (JSON.parse(run(TICKET, ['list', '--all', '--json'], appDir).stdout) as any[])
+      .find((t) => t.title === 'survives its project').id;
+
+    const { context, page, errors } = await open('#/p/' + pid);
+    try {
+      const btn = page.locator('[data-act="delproj"]');
+      await btn.click();
+      // One press only arms it — the label has to say what is actually at stake,
+      // because "delete project" reads like it takes the work with it.
+      await page.waitForSelector('[data-act="delproj"]:has-text("tickets go loose")');
+      expect((JSON.parse(run(PROJECT, ['list', '--all', '--json'], appDir).stdout) as any[])
+        .some((p) => p.id === pid)).toBe(true);
+
+      await page.locator('[data-act="delproj"]').click();
+      await untilStore(() => (JSON.parse(run(PROJECT, ['list', '--all', '--json'], appDir).stdout) as any[])
+        .some((p) => p.id === pid), false, 'project delete');
+      // The promise the label makes: the ticket is still there, just loose.
+      const t = (JSON.parse(run(TICKET, ['list', '--all', '--json'], appDir).stdout) as any[])
+        .find((x) => x.id === tid);
+      expect(t).toBeTruthy();
+      expect(t.project_ref).toBeFalsy();
+      expect(errors).toEqual([]);
+    } finally { await context.close(); run(TICKET, ['rm', String(tid), '--yes'], appDir); }
   }, T);
 
   it('a waiting row with no live gate shows no link at all', async () => {
@@ -1588,6 +2087,193 @@ describe('reordering', () => {
       expect(await page.locator('.card.drag').count()).toBe(0);
       expect(await page.locator('.slot').count()).toBe(0);
       await page.mouse.up();
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+});
+
+// ─── dependencies (#12) ─────────────────────────────────────────────────────
+//
+// Fixtures live in their OWN app rather than in the shared one. Dependency
+// states change how a card draws, and the reordering tests measure a drag
+// against the loose group of test-demo — five more cards in it moves the
+// geometry those tests aim at. A separate app keeps the two from interfering.
+
+const DEP_APP = 'dep-demo';
+
+describe('dependencies', () => {
+  it('a blocked card reads as not-yet, and names what it waits on', async () => {
+    if (!HAS_CHROMIUM) return;
+    must(run(TICKET, ['add', 'the API piece', '--repo', DEP_APP, '--ready'], appDir), 'add blocker');
+    must(run(TICKET, ['add', 'the UI piece', '--repo', DEP_APP, '--ready'], appDir), 'add blocked');
+    const blocker = idOf('the API piece');
+    const blocked = idOf('the UI piece');
+    must(run(TICKET, ['dep', blocked, '--blocked-by', blocker], appDir), 'dep');
+
+    const { context, page, errors } = await open('#/r/' + DEP_APP);
+    try {
+      const card = page.locator('.card[data-tid="' + blocked + '"]');
+      await card.waitFor();
+      expect(await card.getAttribute('class')).toContain('blocked');
+      // The chip sits BESIDE the status, never in place of it: "blocked" is a
+      // note about a status, not one of its own, and replacing it made a card
+      // stop saying whether it was an idea or ready for as long as it had an edge.
+      expect(await card.locator('.chip').innerText()).toBe('blocked by #' + blocker);
+      expect(await card.locator('.st').count()).toBe(1);
+
+      // The blocker itself is untouched.
+      const other = page.locator('.card[data-tid="' + blocker + '"]');
+      expect(await other.getAttribute('class')).not.toContain('blocked');
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+
+  it('the ticket page names both directions and links through', async () => {
+    if (!HAS_CHROMIUM) return;
+    const blocker = idOf('the API piece');
+    const blocked = idOf('the UI piece');
+    const { context, page, errors } = await open('#/t/' + blocked);
+    try {
+      await page.waitForSelector('.stub');
+      const by = page.locator('.stub .f', { hasText: 'blocked by' }).first();
+      expect(await by.innerText()).toContain('the API piece');
+      // The ↗ inside the row navigates to the other ticket without also
+      // opening the row's own picker.
+      await by.locator('[data-tgo]').first().click();
+      await page.waitForFunction((id) => location.hash === '#/t/' + id, blocker);
+
+      // And from the blocker's side, the same edge reads as "blocks".
+      const bl = page.locator('.stub .f', { hasText: 'blocks' }).first();
+      expect(await bl.innerText()).toContain('the UI piece');
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+
+  it('a cross-app blocker names its app, since it may be off-screen', async () => {
+    if (!HAS_CHROMIUM) return;
+    must(run(TICKET, ['add', 'a far-off blocker', '--repo', 'other-app', '--ready'], appDir), 'add far');
+    const far = idOf('a far-off blocker');
+    const blocked = idOf('the UI piece');
+    must(run(TICKET, ['dep', blocked, '--blocked-by', far], appDir), 'dep far');
+
+    const { context, page, errors } = await open('#/t/' + blocked);
+    try {
+      await page.waitForSelector('.stub');
+      const by = page.locator('.stub .f', { hasText: 'blocked by' }).first();
+      const txt = await by.innerText();
+      expect(txt).toContain('a far-off blocker');
+      // Small caps by text-transform, and innerText is post-CSS.
+      expect(txt).toContain('OTHER-APP');
+      // The same-app blocker on the row above carries no app label.
+      expect(await by.locator('.dep .far').count()).toBe(1);
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+
+  it('starting blocked work says what is in the way instead of cutting a worktree', async () => {
+    if (!HAS_CHROMIUM) return;
+    const blocked = idOf('the UI piece');
+    const { context, page, errors } = await open('#/t/' + blocked);
+    try {
+      await page.waitForSelector('[data-act="start"]');
+      await page.locator('[data-act="start"]').click();
+      // A toast, not a modal: confirm() would block the SSE-driven page it
+      // interrupts, and this board already arms delete the same way.
+      await page.waitForFunction(() =>
+        (document.querySelector('#toast') || {}).textContent?.includes('press again'));
+      // Still not started: no branch was cut, which is the thing the refusal
+      // exists to prevent. Read from the store rather than the page, since the
+      // page is what is under test.
+      const t = JSON.parse(run(TICKET, ['show', blocked, '--json'], appDir).stdout);
+      expect(t.ticket.branch).toBeNull();
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+
+  it('a landed blocker stops blocking, and the card says freed', async () => {
+    if (!HAS_CHROMIUM) return;
+    must(run(TICKET, ['done', idOf('the API piece')], appDir), 'ship the blocker');
+    must(run(TICKET, ['done', idOf('a far-off blocker')], appDir), 'ship the far blocker');
+    const blocked = idOf('the UI piece');
+
+    const { context, page, errors } = await open('#/r/' + DEP_APP);
+    try {
+      const card = page.locator('.card[data-tid="' + blocked + '"]');
+      await card.waitFor();
+      expect(await card.getAttribute('class')).not.toContain('blocked');
+      expect(await card.locator('.chip.freed').innerText()).toBe('freed');
+      // Still says what it IS, as well as that it was freed.
+      expect(await card.locator('.st').innerText()).toBe('READY');
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+
+  it('freed work is announced on the board, below the real gates', async () => {
+    if (!HAS_CHROMIUM) return;
+    const blocked = idOf('the UI piece');
+    const { context, page, errors } = await open('');
+    try {
+      await page.waitForSelector('.wait');
+      const row = page.locator('.wait .freedgrp .freedrow[data-tid="' + blocked + '"]');
+      expect(await row.count()).toBe(1);
+      expect(await row.innerText()).toContain('the UI piece');
+      // Subordinate, not equal: the group is drawn AFTER the gates, so a real
+      // decision is never buried under a list of suggestions.
+      const order = await page.evaluate(() => {
+        const w = document.querySelector('.wait');
+        return Array.from(w.children).map((c) => c.className);
+      });
+      const grp = order.findIndex((c) => c.includes('freedgrp'));
+      expect(grp).toBe(order.length - 1);
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+});
+
+describe('dependency states are about work you could pick up', () => {
+  it('a shipped ticket is never drawn as blocked', async () => {
+    if (!HAS_CHROMIUM) return;
+    // #1 blocks #2, #2 gets shipped anyway (--force is a real path). Finished
+    // work must not be painted as work that cannot start, and must keep its
+    // own status.
+    must(run(TICKET, ['add', 'guard blocker', '--repo', DEP_APP, '--ready'], appDir), 'add');
+    must(run(TICKET, ['add', 'guard shipped', '--repo', DEP_APP, '--ready'], appDir), 'add');
+    const blocker = idOf('guard blocker');
+    const shipped = idOf('guard shipped');
+    must(run(TICKET, ['dep', shipped, '--blocked-by', blocker], appDir), 'dep');
+    must(run(TICKET, ['done', shipped], appDir), 'done');
+
+    const { context, page, errors } = await open('#/r/' + DEP_APP);
+    try {
+      await page.keyboard.press('h');            // unfold completed work
+      const card = page.locator('.card[data-tid="' + shipped + '"]');
+      await card.waitFor();
+      expect(await card.getAttribute('class')).not.toContain('blocked');
+      expect(await card.locator('.chip').count()).toBe(0);
+      // innerText is post-CSS and .st is small caps by text-transform.
+      expect(await card.locator('.st').innerText()).toBe('SHIPPED');
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+
+  it('an in-progress ticket is not drawn as blocked', async () => {
+    if (!HAS_CHROMIUM) return;
+    // Its worktree is already cut, and the CLI checks blockers only on the
+    // path that CUTS one. Drawing it blocked would hide a live session's own
+    // state behind an edge nothing would act on.
+    must(run(TICKET, ['add', 'guard started', '--repo', DEP_APP, '--ready'], appDir), 'add');
+    const started = idOf('guard started');
+    must(run(TICKET, ['dep', started, '--blocked-by', idOf('guard blocker')], appDir), 'dep');
+    // Give it a branch the way `start` would, without cutting a real worktree.
+    spawnSync('sqlite3', [join(HOME_DIR, 'factory.db'),
+      "UPDATE tickets SET status='in_progress', branch='t-guard' WHERE id=" + started]);
+
+    const { context, page, errors } = await open('#/r/' + DEP_APP);
+    try {
+      const card = page.locator('.card[data-tid="' + started + '"]');
+      await card.waitFor();
+      expect(await card.getAttribute('class')).not.toContain('blocked');
+      expect(await card.locator('.chip').count()).toBe(0);
       expect(errors).toEqual([]);
     } finally { await context.close(); }
   }, T);

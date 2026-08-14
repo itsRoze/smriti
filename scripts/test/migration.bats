@@ -332,6 +332,7 @@ seed_v2() {
   db "ALTER TABLE runs DROP COLUMN html_session;"
   db "ALTER TABLE runs DROP COLUMN herdr_pane;"
   db "DROP TABLE IF EXISTS run_artifacts;"
+  db "DROP TABLE IF EXISTS ticket_deps;"
   db "ALTER TABLE tickets DROP COLUMN position;"
   db "PRAGMA user_version = 2;"
 }
@@ -502,6 +503,7 @@ seed_v3() {
   migrate
   db "ALTER TABLE runs DROP COLUMN herdr_pane;"
   db "DROP TABLE IF EXISTS run_artifacts;"
+  db "DROP TABLE IF EXISTS ticket_deps;"
   db "ALTER TABLE tickets DROP COLUMN position;"
   db "PRAGMA user_version = 3;"
 }
@@ -511,6 +513,9 @@ seed_v4() {
   seed_v1
   migrate
   db "ALTER TABLE tickets DROP COLUMN position;"
+  # ticket_deps came later still and is not part of any version, so a store
+  # built by migrating forward has to have it taken back off to be v4-shaped.
+  db "DROP TABLE IF EXISTS ticket_deps;"
   db "PRAGMA user_version = 4;"
 }
 
@@ -664,4 +669,62 @@ seed_v5() {
   # claim for "the chain converges" but would silently follow a typo'd bump.
   # This pins it, so raising the version is a deliberate two-file edit.
   [ "$CURRENT_SCHEMA" = "6" ]
+}
+
+# ─── ticket_deps (#12) ──────────────────────────────────────────────────────
+
+@test "ticket_deps: a new table arrives with no migration step and no version bump" {
+  # Same guarantee run_artifacts relies on, asserted for its own table rather
+  # than assumed from a sibling: factory-schema.sql is re-applied on every
+  # connection and is CREATE ... IF NOT EXISTS throughout, so a store that has
+  # never seen this feature gains the table on first contact — and NOTHING in
+  # the migration chain has a step for it.
+  #
+  # The version is asserted as CURRENT rather than as a literal 5. It was 5 when
+  # this test was written, because ticket_deps genuinely needed no bump; v6
+  # (documents.body) landed in the same merge and does need one, so a literal
+  # here would have been asserting "no OTHER migration exists" — which is not
+  # this test's claim. The claim is that the table appears with no step of its
+  # own, and the seed_v4 → present transition above is what proves it.
+  seed_v4
+  [ "$(db "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='ticket_deps';")" = "0" ]
+  migrate
+  [ "$(db "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='ticket_deps';")" = "1" ]
+  [ "$(db "PRAGMA user_version;")" = "$CURRENT_SCHEMA" ]
+}
+
+@test "ticket_deps: an older store gains it too, without a step of its own" {
+  seed_v2
+  migrate
+  [ "$(db "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='ticket_deps';")" = "1" ]
+  [ "$(db "PRAGMA user_version;")" = "$CURRENT_SCHEMA" ]
+}
+
+@test "ticket_deps: a fresh database is born with the table and its reverse index" {
+  "$TICKET" add "first" >/dev/null
+  [ "$(db "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='ticket_deps';")" = "1" ]
+  # "what blocks this?" is asked on every start and once per card the board
+  # draws; without its own index that is a table scan.
+  [ "$(db "SELECT count(*) FROM sqlite_master WHERE type='index' AND name='ticket_deps_by_blocked';")" = "1" ]
+}
+
+@test "ticket_deps: deleting a ticket cascades its edges away" {
+  # ON DELETE CASCADE, where the rest of the schema uses SET NULL — an edge
+  # with one end missing is not a weaker edge, it is not an edge. The pragma is
+  # per-connection, so this local db() has to set it as factory-db.sh does.
+  "$TICKET" add "blocker" >/dev/null
+  "$TICKET" add "blocked" >/dev/null
+  "$TICKET" dep 1 --blocks 2 >/dev/null
+  [ "$(db "SELECT count(*) FROM ticket_deps;")" = "1" ]
+  db "PRAGMA foreign_keys=ON; DELETE FROM tickets WHERE id = 1;"
+  [ "$(db "SELECT count(*) FROM ticket_deps;")" = "0" ]
+}
+
+@test "ticket_deps: the same edge cannot be stored twice" {
+  "$TICKET" add "blocker" >/dev/null
+  "$TICKET" add "blocked" >/dev/null
+  "$TICKET" dep 1 --blocks 2 >/dev/null
+  run db "INSERT INTO ticket_deps (blocker_id, blocked_id, created_at) VALUES (1, 2, 'now');"
+  [ "$status" -ne 0 ]
+  [ "$(db "SELECT count(*) FROM ticket_deps;")" = "1" ]
 }
