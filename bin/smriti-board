@@ -616,15 +616,20 @@ async function reconcileOpenRuns(agents: Session[] | null): Promise<void> {
     );
     if (alive) continue;
 
-    // `done` only for a ticket that shipped. Everything else here ended without
-    // finishing, and `failed` is the honest word for that — the same reading
-    // captureThenClose applies to a pane it had to close.
-    let status: 'done' | 'failed' | null = null;
-    if (t && t.status === 'shipped') status = 'done';
-    else if (t && t.status === 'cancelled') status = 'failed';
-    else if (t?.worktree_path && !existsSync(t.worktree_path)) status = 'failed';
-    else if (run.herdr_pane && livePanes && !livePanes.has(run.herdr_pane)) status = 'failed';
-    if (!status) continue;
+    // `failed` for all four, including a ticket that shipped, and that is not
+    // pessimism — it is what being OPEN at this moment means. Only runs still
+    // `running`/`awaiting` reach here, and a run that finished properly already
+    // ended itself as `done`. So everything this pass catches is by definition a
+    // run that never reached its own ending, whatever became of the ticket.
+    //
+    // The same reading captureThenClose applies to a pane it had to close, and
+    // the same one smriti-ticket applies on a terminal status. Three places
+    // decide this; they must not disagree about the word.
+    const doomed = !!t && (t.status === 'shipped' || t.status === 'cancelled')
+      || !!t?.worktree_path && !existsSync(t.worktree_path)
+      || !!run.herdr_pane && !!livePanes && !livePanes.has(run.herdr_pane);
+    if (!doomed) continue;
+    const status = 'failed';
 
     // Claimed while ending, so this cannot race the sweep or a restart working
     // the same ticket. A run with no ticket has nothing to contend over.

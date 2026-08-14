@@ -423,8 +423,12 @@ test('a FAILED herdr read ends nothing at all', async () => {
   // and herdr genuinely running nothing all used to decode to the same empty
   // array — so a reconcile acting on it would reap every stamped run on the
   // board the first time herdr hiccuped.
-  const { uid } = liveTicket('herdr is down, not empty', 'wS:p1');
+  // Down BEFORE the fixture exists, not after. Building a stamped run takes
+  // several spawns and the sweep runs every 300ms here, so a fixture created
+  // while herdr is still answering can be reaped in the gap before the test
+  // gets to its own setup — which would pass for the wrong reason.
   herdrDown();
+  const { uid } = liveTicket('herdr is down, not empty', 'wS:p1');
   await sweepsPassed();
   expect(runRow(uid)?.status).toBe('running');
   expect(runRow(uid)?.ended_at).toBeFalsy();
@@ -461,7 +465,55 @@ test('a run whose worktree is gone is ended even with herdr listing nothing', as
   session('/nowhere/unrelated', 'idle', 'w0:p0');
 });
 
+// A ticket at a chosen status, worktree intact, and an open run created AFTER
+// it got there — so the ticket's own status is the only thing that can doom it.
+// Unstamped deliberately: a stamped pane would let the liveness rule fire and
+// the test would stop proving which rule did the work.
+function strandedRun(title: string, status: string): { id: string; uid: string } {
+  const add = cli(TICKET, ['add', title, '--ready']);
+  expect(add.status).toBe(0);
+  const id = (add.stdout.match(/#(\d+)/) ?? [])[1]!;
+  const start = cli(TICKET, ['start', id]);
+  expect(start.status).toBe(0);
+  const wt = start.stdout.trim().split('\n')[0];
+  expect(existsSync(wt)).toBe(true);
+  expect(cli(TICKET, ['status', id, status]).status).toBe(0);
+  const run = spawnSync(TRACE, ['start', 'begin', '--ticket', id], {
+    encoding: 'utf8', cwd: wt, env: env(),
+  });
+  expect(run.status).toBe(0);
+  return { id, uid: run.stdout.trim().split('=')[1]! };
+}
+
+test("a shipped ticket's leftover run is ended, and reads failed not done", async () => {
+  // The shape the real rows had: the ticket moved on and the run row never did.
+  //
+  // `failed` rather than `done` because only OPEN runs reach this pass, and a
+  // run that finished properly had already ended itself — so anything caught
+  // here never reached its own ending, whatever became of the ticket. The
+  // ticket hook and captureThenClose say the same word for the same reason, and
+  // three places deciding this must not disagree about which word.
+  const { uid } = strandedRun('shipped without closing out', 'shipped');
+  noSessions();
+  expect(await until(() => runRow(uid)?.status === 'failed')).toBe(true);
+  session('/nowhere/unrelated', 'idle', 'w0:p0');
+});
+
+test('an in_review ticket is deliberately NOT terminal here', async () => {
+  // `ticket pr` sets in_review BEFORE the merge and clean it still has to do,
+  // so ending its runs would kill the normal ship path mid-flight.
+  const { uid } = strandedRun('waiting on a merge', 'in_review');
+  noSessions();
+  await sweepsPassed();
+  expect(runRow(uid)?.status).toBe('running');
+  session('/nowhere/unrelated', 'idle', 'w0:p0');
+});
+
 test('a run whose pane IS listed keeps running', async () => {
+  // Same window as the failed-read test above: the pane cannot be registered
+  // until `ticket start` has told us the worktree, so the liveness rule is
+  // disabled while the fixture is built and re-enabled once it can see it.
+  herdrDown();
   const { wt, uid } = liveTicket('still very much alive', 'wV:p1');
   session(wt, 'working', 'wV:p1');
   await sweepsPassed();
