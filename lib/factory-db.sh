@@ -460,6 +460,40 @@ db_json_one() {
 
 now_utc() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
+# ─── photos referenced by text ──────────────────────────────────────────────
+#
+# A photo is referenced ONLY by the markdown that mentions it — there is no
+# join table, because the text is the only thing that knows. These two live here
+# rather than in bin/smriti-photo because the surfaces that WRITE that text are
+# three separate commands, and each of them has to sweep what it just dropped.
+
+# Every photo id a blob of text refers to, sorted and deduplicated.
+photo_refs_in() {
+  printf '%s' "$1" | grep -oE 'smriti://photo/[0-9]+' | grep -oE '[0-9]+$' | sort -u
+}
+
+# A description just changed; delete the photos it stopped referring to.
+#
+# Only the ids this particular edit DROPPED are considered, and `photo prune`
+# still checks each of them against every other description, body and document
+# before deleting — so removing one of two copies of the same screenshot leaves
+# the picture alone. That is what makes this safe to run on every write.
+#
+# Best-effort on purpose. The text is already saved and correct by the time this
+# runs; a failure here leaves bytes that `smriti photo prune` will collect
+# later, which is a far better outcome than failing a save the user watched
+# succeed.
+sweep_dropped_photos() {
+  local before="$1" after="$2" dropped ids
+  dropped=$(comm -23 <(photo_refs_in "$before") <(photo_refs_in "$after") 2>/dev/null) || return 0
+  [ -n "$dropped" ] || return 0
+  ids=$(printf '%s' "$dropped" | tr '\n' ',' | sed 's/,$//')
+  [ -n "$ids" ] || return 0
+  [ -x "$SMRITI_BIN/smriti-photo" ] || return 0
+  "$SMRITI_BIN/smriti-photo" prune --ids "$ids" >/dev/null 2>&1 || true
+  return 0
+}
+
 # ─── shared helper shapes ───────────────────────────────────────────────────
 # Both consumers need these identically; keeping one copy is what stops the two
 # from drifting the way their first versions already had.

@@ -1531,6 +1531,171 @@ describe('board UI', () => {
       run(TRACE, ['end', '--run', uid], appDir);
     }
   }, T);
+
+  // ── photos in a description ──────────────────────────────────────────
+  //
+  // The hard part of pasting is not the paste, it is that the upload is slower
+  // than everything around it: the editor is rebuilt about once a second, saves
+  // on blur, and abandons on Escape. These pin the three ways that can go wrong.
+
+  // A genuinely decodable 1×1 PNG, not just its signature: one of these tests
+  // asserts the browser actually paints what came back, and a header alone
+  // decodes to nothing and would fail for the wrong reason.
+  const PNG_B64 =
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+  // Dispatched the way Chromium delivers a screenshot: a ClipboardEvent
+  // carrying a File. page.keyboard cannot paste an image.
+  async function pasteImage(page: import('playwright').Page, sel = '#pagedescedit') {
+    await page.evaluate(([s, b64]) => {
+      const bin = atob(b64);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      const dt = new DataTransfer();
+      dt.items.add(new File([bytes], 'shot.png', { type: 'image/png' }));
+      document.querySelector(s)!.dispatchEvent(
+        new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }),
+      );
+    }, [sel, PNG_B64]);
+  }
+
+  it('pasting a screenshot stores it and renders it in the description', async () => {
+    if (!HAS_CHROMIUM) return;
+    const { context, page, errors } = await open();
+    try {
+      await openBodyTicket(page);
+      await page.keyboard.press('e');
+      await page.waitForSelector('#pagedescedit.on');
+      await page.locator('#pagedescedit').fill('the failing dialog:\n\n');
+      await pasteImage(page);
+
+      // The placeholder goes in at once — the point of it is that there is no
+      // dead beat between the paste and something appearing.
+      await page.waitForFunction(() =>
+        (document.querySelector('#pagedescedit') as HTMLTextAreaElement).value.includes('uploading…'));
+      // …and is replaced by the real reference when the server answers.
+      await page.waitForFunction(() => {
+        const v = (document.querySelector('#pagedescedit') as HTMLTextAreaElement).value;
+        return /smriti:\/\/photo\/\d+\)/.test(v) && !v.includes('uploading…');
+      });
+
+      await page.locator('#pagedescedit').press('Meta+Enter');
+      await page.waitForSelector('#pagedesc img');
+      const src = await page.locator('#pagedesc img').getAttribute('src');
+      expect(src).toMatch(/^\/api\/photo\/\d+$/);
+      // It really is served and painted, not merely referenced. Waited for
+      // rather than asserted once: the <img> is in the DOM before its bytes
+      // have arrived, so a single read races the load every time.
+      await page.waitForFunction(() => {
+        const el = document.querySelector('#pagedesc img') as HTMLImageElement | null;
+        return Boolean(el && el.complete && el.naturalWidth > 0);
+      });
+      // And the stored body carries the reference, not the placeholder.
+      const body = String(ticketRow(MD_TICKET).body || '');
+      expect(body).toMatch(/!\[]\(smriti:\/\/photo\/\d+\)/);
+      expect(body).not.toContain('uploading…');
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+
+  it('a placeholder is never saved into a description', async () => {
+    if (!HAS_CHROMIUM) return;
+    const { context, page, errors } = await open();
+    try {
+      // Hold the upload open, then commit immediately. Without the save
+      // awaiting its own editor's uploads, this writes "uploading…" into the
+      // ticket body and the picture is lost to a description that says so
+      // forever.
+      let release: (() => void) | null = null;
+      const held = new Promise<void>((r) => { release = r; });
+      await page.route('**/api/photos', async (route) => { await held; route.continue(); });
+
+      await openBodyTicket(page);
+      await page.keyboard.press('e');
+      await page.waitForSelector('#pagedescedit.on');
+      await page.locator('#pagedescedit').fill('holding:\n\n');
+      await pasteImage(page);
+      await page.waitForFunction(() =>
+        (document.querySelector('#pagedescedit') as HTMLTextAreaElement).value.includes('uploading…'));
+
+      const committed = page.locator('#pagedescedit').press('Meta+Enter');
+      // The editor stays open and visible while the upload is still in the air —
+      // the honest thing to show, and what proves the save is actually waiting.
+      await page.waitForTimeout(150);
+      expect(await page.locator('#pagedescedit.on').count()).toBe(1);
+
+      release!();
+      await committed;
+      await page.waitForSelector('#pagedesc img');
+      const body = String(ticketRow(MD_TICKET).body || '');
+      expect(body).not.toContain('uploading…');
+      expect(body).toMatch(/smriti:\/\/photo\/\d+/);
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+
+  it('a failed upload takes its placeholder with it and keeps your typing', async () => {
+    if (!HAS_CHROMIUM) return;
+    const { context, page, errors } = await open();
+    try {
+      await page.route('**/api/photos', (route) =>
+        route.fulfill({ status: 415, contentType: 'application/json',
+          body: JSON.stringify({ error: 'that is not a photo smriti stores' }) }));
+
+      await openBodyTicket(page);
+      await page.keyboard.press('e');
+      await page.waitForSelector('#pagedescedit.on');
+      await page.locator('#pagedescedit').fill('words worth keeping');
+      await pasteImage(page);
+
+      await page.waitForSelector('#toast.on');
+      expect(await page.locator('#toast').innerText()).toContain('not a photo');
+      // The box is left exactly as it was, placeholder gone, text intact.
+      const v = await page.locator('#pagedescedit').inputValue();
+      expect(v).toBe('words worth keeping');
+      // A refusal is reported through the toast, not thrown as a page error.
+      // The browser's own "failed to load resource" line for the 415 is the
+      // expected noise here and is not ours to suppress.
+      expect(errors.filter((e) => !/Failed to load resource/.test(e))).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+
+  it('an ordinary text paste is left alone', async () => {
+    if (!HAS_CHROMIUM) return;
+    const { context, page, errors } = await open();
+    try {
+      let uploads = 0;
+      await page.route('**/api/photos', (route) => { uploads++; route.abort(); });
+      await openBodyTicket(page);
+      await page.keyboard.press('e');
+      await page.waitForSelector('#pagedescedit.on');
+      await page.evaluate(() => {
+        const dt = new DataTransfer();
+        dt.setData('text/plain', 'just words');
+        document.querySelector('#pagedescedit')!.dispatchEvent(
+          new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }),
+        );
+      });
+      await page.waitForTimeout(120);
+      expect(uploads).toBe(0);
+      expect(await page.locator('#pagedescedit').inputValue()).not.toContain('uploading…');
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+
+  it('the editor says how to add a photo, and only while it is open', async () => {
+    if (!HAS_CHROMIUM) return;
+    const { context, page, errors } = await open();
+    try {
+      await openBodyTicket(page);
+      // A hint nobody can act on is furniture — hidden until there is an editor.
+      expect(await page.locator('.dhint').isVisible()).toBe(false);
+      await page.keyboard.press('e');
+      await page.waitForSelector('#pagedescedit.on');
+      expect(await page.locator('.dhint').isVisible()).toBe(true);
+      expect(await page.locator('.dhint').innerText()).toContain('paste or drop an image');
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
 });
 
 // The margin (the app/project index down the left) and the fold (the count
@@ -2277,4 +2442,5 @@ describe('dependency states are about work you could pick up', () => {
       expect(errors).toEqual([]);
     } finally { await context.close(); }
   }, T);
+
 });

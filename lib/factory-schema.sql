@@ -156,6 +156,37 @@ CREATE TABLE IF NOT EXISTS documents (
   captured_at  TEXT
 );
 
+-- Pictures pasted into a description — a screenshot of the bug, a mockup, a
+-- photo of something on paper. The bytes live HERE, for the same reason
+-- `documents.body` does: anything kept on disk outside this file is something a
+-- later cleanup deletes without knowing what it was, and copying factory.db
+-- has to keep meaning "I have the whole factory".
+--
+-- Attached to NOTHING on purpose. A photo is referenced only by the text that
+-- mentions it — `![alt](smriti://photo/<id>)` — and that text may be a ticket
+-- body, a project or app description, or a stored document. A foreign key to
+-- any one of them would be a lie about the other three, and cascading from a
+-- ticket would delete a picture another description is still showing.
+--
+-- AUTOINCREMENT, the one place in this schema that needs it. A bare INTEGER
+-- PRIMARY KEY hands a deleted row's id to the next insert, and ids here are
+-- cached permanently by the browser: delete #12, paste a new photo, and every
+-- description referring to #12 would show the new picture from cache. The
+-- sqlite_sequence row this costs is the price of ids that are never reused.
+CREATE TABLE IF NOT EXISTS photos (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  -- Content fingerprint. UNIQUE, so pasting the same screenshot into three
+  -- descriptions stores it once and all three point at one row.
+  sha256     TEXT    NOT NULL UNIQUE,
+  -- image/png | image/jpeg | image/gif | image/webp. Determined by sniffing the
+  -- leading bytes, never from what a caller declared — an SVG is a program, and
+  -- this renders inside the board.
+  mime       TEXT    NOT NULL,
+  bytes      INTEGER NOT NULL,
+  data       BLOB    NOT NULL,
+  created_at TEXT    NOT NULL
+);
+
 -- One row per skill invocation that wants to be observable.
 CREATE TABLE IF NOT EXISTS runs (
   id           INTEGER PRIMARY KEY,

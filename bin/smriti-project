@@ -306,10 +306,19 @@ cmd_edit() {
   local new_repo_sql="repo_slug"
   [ "$repo_given" -eq 1 ] && { [ "$repo" = "-" ] && new_repo_sql="NULL" || new_repo_sql="$(sql_quote "$repo")"; }
 
+  # See the note in bin/smriti-ticket's edit: read the old text first, so the
+  # sweep after the write knows which photos this edit stopped referring to.
+  local desc_before="" desc_touched=0
+  if [ "$clear_desc" -eq 1 ] || [ -n "$desc" ]; then
+    desc_touched=1
+    desc_before=$(db "SELECT coalesce(description,'') FROM projects WHERE id = $id;")
+  fi
+
   db_write "UPDATE projects SET $sets updated_at = $(sql_quote "$(now_utc)") WHERE id = $id;
             UPDATE tickets   SET repo_slug = $new_repo_sql WHERE project_id = $id;
             UPDATE documents SET repo_slug = $new_repo_sql WHERE project_id = $id;
             UPDATE runs      SET repo_slug = $new_repo_sql WHERE project_id = $id;"
+  [ "$desc_touched" -eq 1 ] && sweep_dropped_photos "$desc_before" "$desc"
   echo "#$id updated"
 }
 

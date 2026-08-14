@@ -1,0 +1,370 @@
+#!/usr/bin/env bash
+# smriti photo — pictures pasted into a description.
+# State: the `photos` table in $SMRITI_HOME/factory.db (schema: lib/factory-schema.sql)
+#
+# Subcommands:
+#   smriti photo add [<file>] [--json]    store one; reads stdin when no file
+#   smriti photo list [--json]            what is stored, and what it costs
+#   smriti photo show <id> [--json]       one photo's details (never its bytes)
+#   smriti photo data <id>                mime on line 1, bytes as hex on line 2
+#   smriti photo rm <id>                  delete one, deliberately
+#   smriti photo prune [--ids L] [--dry-run] [--json]
+#                                         delete the ones nothing refers to
+#
+# Exit codes:
+#   0  ok
+#   2  usage error
+#   3  sqlite3 or schema missing
+#   4  no such photo
+#   5  refused: too large, or not an image we store
+#
+# A photo is referenced ONLY by the text that mentions it —
+# `![alt](smriti://photo/<id>)` — which may live in a ticket body, a project or
+# app description, or a stored document. That is why the table hangs off
+# nothing, and why deleting is a question about text rather than about rows:
+# `prune` reads every one of those surfaces and keeps what is still spoken for.
+#
+# The file type is decided by SNIFFING the leading bytes. A caller's word for it
+# is never taken, because the one thing that must never be stored is an SVG: it
+# is a program, and it would run inside the board that renders these.
+set -e
+
+SMRITI_TOOL=smriti-photo
+
+# Resolve our own dir through the FULL symlink chain before dirname: the install
+# puts a symlink on PATH, and a one-hop resolution lands SMRITI_LIB in the wrong
+# directory, making every db call here exit with "schema not found". Same loop
+# as bin/smriti.
+_self="$0"
+while [ -L "$_self" ]; do
+  _target=$(readlink "$_self")
+  case "$_target" in
+    /*) _self="$_target" ;;
+    *)  _self="$(cd "$(dirname "$_self")" && pwd -P)/$_target" ;;
+  esac
+done
+SMRITI_BIN="$(cd "$(dirname "$_self")" && pwd -P)"
+SMRITI_LIB="$(cd "$SMRITI_BIN/../lib" && pwd -P)"
+unset _self
+
+# shellcheck source=../lib/factory-db.sh
+. "$SMRITI_LIB/factory-db.sh"
+
+# The refusal threshold, not the expected size — a retina screenshot is about a
+# tenth of this. Overridable so a test can cross the line without generating ten
+# megabytes to do it.
+MAX_BYTES="${SMRITI_PHOTO_MAX_BYTES:-10485760}"
+
+usage() {
+  cat <<'USAGE' >&2
+usage:
+  smriti photo add [<file>] [--json]        # store one; reads stdin when no file
+  smriti photo list [--json]                # what is stored, and what it costs
+  smriti photo show <id> [--json]           # one photo's details
+  smriti photo data <id>                    # mime, then the bytes as hex
+  smriti photo rm <id>                      # delete one
+  smriti photo prune [--ids 1,2] [--dry-run] [--json]
+USAGE
+  exit 2
+}
+
+# ─── helpers ────────────────────────────────────────────────────────────────
+
+# The reference that goes in the markdown. One place, because the renderer in
+# lib/md.ts and the prune scan below both have to agree with it exactly.
+photo_ref() { printf 'smriti://photo/%s' "$1"; }
+
+photo_exists() {
+  [ "$(db "SELECT count(*) FROM photos WHERE id = $1;")" = "1" ]
+}
+
+# sha256 of a file, on either platform. Both print "<hash>  <path>"; the hash is
+# the first field. No fallback beyond these two: a wrong-but-plausible digest
+# would silently break deduplication, so absent both, say so.
+file_sha256() {
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{print $1}'
+  elif command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  else
+    die "neither shasum nor sha256sum found — cannot fingerprint a photo" 3
+  fi
+}
+
+file_bytes() { wc -c < "$1" | tr -d ' '; }
+
+# What kind of image is this, according to the bytes themselves?
+#
+# `od` rather than `xxd`, because xxd ships with vim and is not guaranteed;
+# `-v` because od collapses repeated lines by default and a run of identical
+# bytes at the head of a file would otherwise come back as "*".
+#
+# Prints the mime and returns 0, or prints nothing and returns 1. Every format
+# here is one the board can render and none of them can execute — which is the
+# whole point, and why the list is a fixed set of signatures rather than a
+# mapping from file extensions.
+sniff_mime() {
+  local head
+  head=$(od -An -v -tx1 -N16 "$1" 2>/dev/null | tr -d ' \n')
+  case "$head" in
+    89504e470d0a1a0a*)  printf 'image/png';  return 0 ;;
+    ffd8ff*)            printf 'image/jpeg'; return 0 ;;
+    474946383761*|474946383961*) printf 'image/gif'; return 0 ;;
+    # RIFF....WEBP — the four bytes at offset 8, past a length we do not care
+    # about. Anchored on both halves so a RIFF wave file is not mistaken for one.
+    52494646????????57454250*) printf 'image/webp'; return 0 ;;
+  esac
+  return 1
+}
+
+# Every photo id spoken for by text anywhere in the factory.
+#
+# The scan is deliberately over the STORED text and not over a reference table,
+# because there is no reference table: the markdown is the only thing that knows.
+# Four surfaces, and all four have to be read or prune deletes something that is
+# still on screen.
+referenced_ids() {
+  db "SELECT coalesce(body,'')        FROM tickets;
+      SELECT coalesce(description,'') FROM projects;
+      SELECT coalesce(description,'') FROM repositories;
+      SELECT coalesce(body,'')        FROM documents;" \
+    | grep -oE 'smriti://photo/[0-9]+' \
+    | grep -oE '[0-9]+$' \
+    | sort -u
+}
+
+# ─── add ────────────────────────────────────────────────────────────────────
+
+cmd_add() {
+  local src="" json=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json) json=1; shift ;;
+      -*) die "unknown flag: $1" ;;
+      *) [ -z "$src" ] || die "add takes at most one file"; src="$1"; shift ;;
+    esac
+  done
+
+  # Whatever we were given has to become a path on disk, because sqlite3 loads a
+  # blob with readfile() and there is no way to hand it bytes on a pipe. When the
+  # caller already has a file we use theirs; a stream gets a private temp file
+  # this command owns start to finish, so the board can send an upload straight
+  # through without inventing a spill directory of its own.
+  local tmp="" f
+  if [ -n "$src" ]; then
+    [ -f "$src" ] || die "no such file: $src"
+    f="$src"
+  else
+    tmp=$(mktemp "${TMPDIR:-/tmp}/smriti-photo.XXXXXX") || die "could not create a temp file" 3
+    # 0600 before a single byte lands: this is on a shared /tmp and the contents
+    # are whatever the user just pasted.
+    chmod 600 "$tmp"
+    # shellcheck disable=SC2064
+    trap "rm -f '$tmp'" EXIT INT TERM
+    cat > "$tmp"
+    f="$tmp"
+  fi
+
+  local size
+  size=$(file_bytes "$f")
+  [ "$size" -gt 0 ] || die "that is an empty file" 5
+  [ "$size" -le "$MAX_BYTES" ] \
+    || die "that photo is ${size} bytes; the limit is ${MAX_BYTES}" 5
+
+  local mime
+  mime=$(sniff_mime "$f") \
+    || die "that is not a photo smriti stores (png, jpeg, gif or webp, decided by its contents)" 5
+
+  local sha
+  sha=$(file_sha256 "$f")
+
+  # Insert-if-absent and re-read in ONE transaction, so two pastes of the same
+  # image racing each other end on the same row rather than one of them failing
+  # the UNIQUE constraint. The SELECT has to share the connection anyway.
+  #
+  # `WHERE NOT EXISTS` rather than `INSERT OR IGNORE`: an ignored conflict still
+  # consumes an id, so re-pasting one screenshot ten times would burn ten
+  # numbers. Nothing breaks when ids skip — they only have to never repeat — but
+  # a counter that climbs on a no-op is a small lie about how much is stored.
+  local id
+  id=$(db_write "INSERT INTO photos (sha256, mime, bytes, data, created_at)
+                 SELECT $(sql_quote "$sha"), $(sql_quote "$mime"), $size,
+                        readfile($(sql_quote "$f")), $(sql_quote "$(now_utc)")
+                 WHERE NOT EXISTS (SELECT 1 FROM photos WHERE sha256 = $(sql_quote "$sha"));
+                 SELECT id FROM photos WHERE sha256 = $(sql_quote "$sha");")
+  [ -n "$id" ] || die "could not store that photo" 3
+
+  if [ "$json" = "1" ]; then
+    printf '{"id":%s,"mime":"%s","bytes":%s,"sha256":"%s","ref":"%s"}\n' \
+      "$id" "$mime" "$size" "$sha" "$(photo_ref "$id")"
+  else
+    printf '%s\n' "$(photo_ref "$id")"
+  fi
+}
+
+# ─── list / show / data ─────────────────────────────────────────────────────
+
+cmd_list() {
+  local json=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json) json=1; shift ;;
+      *) die "unknown flag: $1" ;;
+    esac
+  done
+
+  if [ "$json" = "1" ]; then
+    db_json "SELECT id, sha256, mime, bytes, created_at FROM photos ORDER BY id;"
+    return
+  fi
+
+  local count total
+  db_fields "SELECT count(*) FROM photos;
+             SELECT coalesce(sum(bytes),0) FROM photos;"
+  count="${DB_FIELDS[0]}"; total="${DB_FIELDS[1]}"
+  if [ "$count" = "0" ]; then
+    echo "no photos stored"
+    return
+  fi
+  db "SELECT printf('#%-4d  %-10s  %8.1f KB  %s', id, replace(mime,'image/',''),
+                    bytes / 1024.0, created_at)
+      FROM photos ORDER BY id;"
+  printf '\n%s photo(s), %.1f MB\n' "$count" "$(echo "$total" | awk '{print $1/1048576}')"
+}
+
+cmd_show() {
+  [ $# -ge 1 ] || usage
+  local id="$1"; shift
+  local json=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json) json=1; shift ;;
+      *) die "unknown flag: $1" ;;
+    esac
+  done
+  require_num "$id" "photo id"
+  photo_exists "$id" || die "no photo #$id" 4
+
+  if [ "$json" = "1" ]; then
+    db_json_one "SELECT id, sha256, mime, bytes, created_at FROM photos WHERE id = $id;"
+    return
+  fi
+  db_fields "SELECT mime FROM photos WHERE id = $id;
+             SELECT printf('%.1f', bytes / 1024.0) FROM photos WHERE id = $id;
+             SELECT created_at FROM photos WHERE id = $id;
+             SELECT sha256 FROM photos WHERE id = $id;"
+  printf '#%s\n' "$id"
+  printf 'type:     %s\n' "${DB_FIELDS[0]}"
+  printf 'size:     %s KB\n' "${DB_FIELDS[1]}"
+  printf 'stored:   %s\n' "${DB_FIELDS[2]}"
+  printf 'sha256:   %s\n' "${DB_FIELDS[3]}"
+  printf 'ref:      %s\n' "$(photo_ref "$id")"
+}
+
+# The bytes, for a program rather than a person. Hex on purpose: a shell cannot
+# carry raw binary through command substitution (it eats NUL and trailing
+# newlines), and sqlite3's writefile() to a pipe appends its own return value to
+# the stream — tested, and it corrupts the image. Two lines so one spawn answers
+# both questions the board has to ask.
+cmd_data() {
+  [ $# -ge 1 ] || usage
+  require_num "$1" "photo id"
+  photo_exists "$1" || die "no photo #$1" 4
+  db "SELECT mime FROM photos WHERE id = $1;
+      SELECT hex(data) FROM photos WHERE id = $1;"
+}
+
+# ─── rm / prune ─────────────────────────────────────────────────────────────
+
+cmd_rm() {
+  [ $# -ge 1 ] || usage
+  require_num "$1" "photo id"
+  photo_exists "$1" || die "no photo #$1" 4
+  db_write "DELETE FROM photos WHERE id = $1;"
+  echo "deleted photo #$1"
+}
+
+# Delete the photos no text refers to any more.
+#
+# --ids narrows it to a specific set, which is what a description save uses:
+# that write knows exactly which references it just removed, and asking about
+# those rather than sweeping the whole store keeps a routine edit from paying
+# for a full scan. Narrowing changes WHICH photos are considered, never the
+# question asked about them — an id still referenced somewhere else survives
+# being named here, which is what makes it safe to call on every save.
+cmd_prune() {
+  local dry=0 json=0 ids=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --ids)     [ $# -ge 2 ] || die "--ids requires a value"; ids="$2"; shift 2 ;;
+      --dry-run) dry=1; shift ;;
+      --json)    json=1; shift ;;
+      *) die "unknown flag: $1" ;;
+    esac
+  done
+
+  local candidates
+  if [ -n "$ids" ]; then
+    # Rejecting a malformed list beats filtering it: these become SQL, and a
+    # caller passing junk should hear about it rather than get a silent no-op.
+    case "$ids" in
+      *[!0-9,]*|,*|*,,*|*,) die "--ids takes a comma-separated list of numbers, got '$ids'" ;;
+    esac
+    candidates=$(printf '%s' "$ids" | tr ',' '\n' | grep -v '^$' | sort -u)
+  else
+    candidates=$(db "SELECT id FROM photos ORDER BY id;")
+  fi
+  if [ -z "$candidates" ]; then
+    if [ "$json" = "1" ]; then printf '{"deleted":[],"dry_run":%s}\n' "$dry"
+    else echo "nothing to prune"; fi
+    return 0
+  fi
+
+  local live doomed
+  live=$(referenced_ids)
+  # comm needs both sides sorted the same way; ids are numbers but this is a
+  # lexical compare on both, which is fine because it only ever has to AGREE
+  # with itself. Photos that exist and are not referenced are what is left.
+  doomed=$(comm -23 <(printf '%s\n' "$candidates" | sort -u) <(printf '%s\n' "$live" | sort -u))
+  # Named ids that are not real rows would otherwise be reported as "deleted".
+  if [ -n "$doomed" ] && [ -n "$ids" ]; then
+    doomed=$(printf '%s\n' "$doomed" | while IFS= read -r i; do
+      [ -n "$i" ] && photo_exists "$i" && printf '%s\n' "$i"
+    done)
+  fi
+
+  local n=0 list=""
+  if [ -n "$doomed" ]; then
+    n=$(printf '%s\n' "$doomed" | grep -c '^[0-9]' || true)
+    list=$(printf '%s' "$doomed" | tr '\n' ',' | sed 's/,$//')
+  fi
+
+  if [ "$n" -gt 0 ] && [ "$dry" = "0" ]; then
+    db_write "DELETE FROM photos WHERE id IN ($list);"
+  fi
+
+  if [ "$json" = "1" ]; then
+    printf '{"deleted":[%s],"dry_run":%s}\n' "$list" "$dry"
+  elif [ "$n" = "0" ]; then
+    echo "nothing to prune"
+  elif [ "$dry" = "1" ]; then
+    echo "would delete $n photo(s): $list"
+  else
+    echo "deleted $n photo(s): $list"
+  fi
+}
+
+# ─── dispatch ───────────────────────────────────────────────────────────────
+
+[ $# -ge 1 ] || usage
+cmd="$1"; shift
+case "$cmd" in
+  add)   cmd_add "$@" ;;
+  list)  cmd_list "$@" ;;
+  show)  cmd_show "$@" ;;
+  data)  cmd_data "$@" ;;
+  rm)    cmd_rm "$@" ;;
+  prune) cmd_prune "$@" ;;
+  -h|--help|help) usage ;;
+  *) die "unknown subcommand: $cmd" ;;
+esac

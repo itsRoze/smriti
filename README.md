@@ -377,6 +377,25 @@ And `smriti project` owns the bodies of work inside an app:
 
 `forget` deletes both the project dir and the slug-cache entry; without the second step the next `cd` into the repo resurrects the same slug.
 
+### Photos in a description
+
+Paste a screenshot into any description on the board — an app's, a project's, or a ticket's body — and it is stored in `factory.db` and rendered in place. Dragging an image file onto the editor does the same. The text gains one line, `![caption](smriti://photo/12)`, which is a self-describing reference rather than a URL so it still means something read outside the board.
+
+| Command | What it does |
+|---|---|
+| `smriti photo add [<file>] [--json]` | store one and print its reference; reads stdin when no file is named, which is how the board hands an upload straight through |
+| `smriti photo list [--json]` | what is stored, and how much room it takes |
+| `smriti photo show <id> [--json]` | one photo's details — never its bytes |
+| `smriti photo data <id>` | mime on the first line, the bytes as hex on the second (for programs, not people) |
+| `smriti photo rm <id>` | delete one |
+| `smriti photo prune [--ids L] [--dry-run]` | delete the photos no description, body or document refers to any more |
+
+The format is decided by **sniffing the leading bytes**, never by the caller's word for it: PNG, JPEG, GIF and WebP are stored, everything else is refused (exit 5), and an SVG is refused however it is labelled — an SVG is a program, and this renders inside your board. The ceiling is 10 MB, overridable with `SMRITI_PHOTO_MAX_BYTES` and enforced by the board while an upload is still arriving rather than after it has all been held in memory.
+
+Bytes live in the database rather than in a folder beside it, for the same reason `documents.body` does: anything on disk outside `factory.db` is something a later cleanup deletes without knowing what it was, and copying that one file has to keep meaning *I have the whole factory*. Ids are `AUTOINCREMENT` and so never reused — the board caches a photo permanently by id, and a plain `INTEGER PRIMARY KEY` hands a deleted row's number to the next insert, which would show the new picture everywhere the old one was.
+
+**Removing a photo's line from a description deletes the photo.** That sweep lives in the three write verbs (`ticket edit --body`, `project edit --description`, `repo edit --description`) rather than in the board, so it holds for a write made from the command line or by an agent too. Only the ids that edit dropped are considered, and each is still checked against every other description, body and document first — so removing one of two copies of the same screenshot leaves the picture alone. `prune` is the broom for what a save never saw: paste, then press Escape, and nothing was saved, so nothing swept.
+
 ## Principles
 
 `lib/resolvers/principles.md` is the coding-principles file shared across every project that opts in. It is four behaviors — searchability, locality, explicit over implicit, and one obvious pattern per job — chosen because they are what most directly lowers a model's cost-per-edit. Style guidance (naming, function size, comment discipline) used to live here too and was removed: current models do it natively, and the tier ladder that ranked it was drag.

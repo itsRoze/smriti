@@ -42,6 +42,10 @@ _smriti() {
         local -a repo_cmds=(new list show edit current forget rename)
         _describe 'repo subcommand' repo_cmds
         ;;
+      photo)
+        local -a photo_cmds=(add list show data rm prune)
+        _describe 'photo subcommand' photo_cmds
+        ;;
       board)
         local -a board_cmds=(open stop --url)
         _describe 'board subcommand' board_cmds

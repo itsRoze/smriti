@@ -383,6 +383,13 @@ cmd_edit() {
   [ "$have" -eq 1 ] || die "nothing to change — pass --name or --description"
 
   local ts; ts=$(now_utc)
+  # See the note in bin/smriti-ticket's edit: read the old text first, so the
+  # sweep after the write knows which photos this edit stopped referring to.
+  local desc_before="" desc_touched=0
+  if [ "$clear_desc" -eq 1 ] || [ -n "$desc" ]; then
+    desc_touched=1
+    desc_before=$(db "SELECT coalesce(description,'') FROM repositories WHERE slug = $(sql_quote "$slug");")
+  fi
   # Upsert: an app that has never been described has no row yet, and asking to
   # describe it is exactly the moment to create one.
   db_write "INSERT INTO repositories (slug, name, description, created_at, updated_at)
@@ -392,6 +399,7 @@ cmd_edit() {
               name        = $([ -n "$name" ] && sql_quote "$name" || echo 'name'),
               description = $([ "$clear_desc" -eq 1 ] && echo 'NULL' || { [ -n "$desc" ] && sql_quote "$desc" || echo 'description'; }),
               updated_at  = $(sql_quote "$ts");"
+  [ "$desc_touched" -eq 1 ] && sweep_dropped_photos "$desc_before" "$desc"
   echo "$slug updated"
 }
 

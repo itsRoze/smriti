@@ -1236,7 +1236,20 @@ cmd_edit() {
     sets="$sets position = $(bottom_of_scope "$(sql_quote_or_null "$dest_repo")" "$dest_pid_sql" "$id"),"
   fi
 
+  # Read the body BEFORE the write, so the sweep below can tell which photos
+  # this edit dropped. Only when the body is actually being touched — a
+  # --priority change should not pay for a read it has no use for.
+  local body_before="" body_touched=0
+  if [ "$clear_body" -eq 1 ] || [ -n "$body" ]; then
+    body_touched=1
+    body_before=$(db "SELECT coalesce(body,'') FROM tickets WHERE id = $id;")
+  fi
+
   db_write "UPDATE tickets SET $sets updated_at = $(sql_quote "$(now_utc)") WHERE id = $id;$follow"
+  # Deleting a photo's line from a description deletes the photo. AFTER the
+  # write, because the sweep re-reads every description to decide what is still
+  # spoken for — including this one, in its new form.
+  [ "$body_touched" -eq 1 ] && sweep_dropped_photos "$body_before" "$body"
   echo "#$id updated"
 }
 

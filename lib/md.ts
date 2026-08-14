@@ -5,8 +5,15 @@
 // fenced code included. Escape-first: every source line is HTML-escaped before
 // any markup is applied, so document content can never inject markup.
 //
-// Deliberately not CommonMark. No raw HTML passthrough, no images, no nested
-// lists deeper than one level. Links allow http/https/# only.
+// Deliberately not CommonMark. No raw HTML passthrough, no nested lists deeper
+// than one level. Links allow http/https/# only.
+//
+// Images are allowed for STORED PHOTOS ONLY — `![alt](smriti://photo/<id>)`,
+// which the board serves from the factory. Remote image URLs render as nothing:
+// an <img> pointing at someone else's server fetches itself every time a
+// description is opened, which turns reading your own ticket into a beacon.
+// Links are a different case and stay allowed, because a link waits to be
+// clicked.
 
 // Placeholder for lifted code spans. U+0000 cannot appear in the output of
 // escapeHtml (it is stripped there), so it can never be forged by a document.
@@ -39,6 +46,28 @@ function inline(s: string): string {
 
   h = h.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
   h = h.replace(/\*([^*\n]+)\*/g, '<em>$1</em>');
+
+  // Images, BEFORE links — `![alt](…)` ends in the same shape as a link, so a
+  // link pass running first would consume the `[alt](…)` and leave a stray `!`.
+  //
+  // Nothing from the source reaches the output as markup. The id is matched as
+  // digits and the src is BUILT from it, so there is no path by which a
+  // hand-written `smriti://photo/…` becomes an arbitrary attribute — a
+  // malformed one falls through and is simply not an image. The caption was
+  // escaped at the top of this function like every other span.
+  //
+  // Wrapped in a link to the full-size photo: descriptions are a narrow column
+  // and a screenshot is legible in it only as a thumbnail. It also lands on the
+  // board's existing rule that a click on a link inside a description opens the
+  // link rather than the editor.
+  h = h.replace(/!\[([^\]]*)\]\(smriti:\/\/photo\/(\d+)\)/g, (_m, alt, id) =>
+    `<a href="/api/photo/${id}" target="_blank" rel="noopener" class="photo">` +
+    `<img src="/api/photo/${id}" alt="${alt}" loading="lazy"></a>`,
+  );
+  // Any image that is not a stored photo renders as its caption alone — the
+  // same fallback a disallowed link scheme already gets.
+  h = h.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (_m, alt) => alt);
+
   // Links: the href was escaped above, so quotes can't break out of the
   // attribute; scheme is allowlisted so javascript: never survives.
   h = h.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_m, text, href) =>

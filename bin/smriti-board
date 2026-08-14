@@ -48,6 +48,7 @@ const TRACE = join(SMRITI_BIN, 'smriti-trace');
 const REPO = join(SMRITI_BIN, 'smriti-repo');
 const PROJECT = join(SMRITI_BIN, 'smriti-project');
 const HTML = join(SMRITI_BIN, 'smriti-html');
+const PHOTO = join(SMRITI_BIN, 'smriti-photo');
 const SMRITI_HOME = process.env.SMRITI_HOME || join(homedir(), '.smriti');
 const STATE_DIR = join(SMRITI_HOME, '.server', 'factory');
 const IDLE_MS = Number(process.env.SMRITI_BOARD_IDLE_MS || 45 * 60 * 1000);
@@ -66,6 +67,14 @@ const SWEEP_MS = (() => {
 // orders of magnitude of headroom over the longest ticket in this backlog is
 // plenty, and well under the 2 MB the document routes allow for whole files.
 const MAX_RENDER_BYTES = 200_000;
+// The photo ceiling, mirroring bin/smriti-photo's own. Checked here as well as
+// there so an oversized upload is refused while it is still arriving, rather
+// than after the whole of it has been held in memory and handed to a subprocess.
+// Same env override, so raising it for a test raises it on both sides at once.
+const MAX_PHOTO_BYTES = (() => {
+  const n = Number(process.env.SMRITI_PHOTO_MAX_BYTES);
+  return Number.isFinite(n) && n > 0 ? n : 10_485_760;
+})();
 
 function err(msg: string): never {
   process.stderr.write(`smriti-board: ${msg}\n`);
@@ -99,6 +108,53 @@ async function readCapped(req: Request, max: number): Promise<string | null> {
   let at = 0;
   for (const c of chunks) { buf.set(c, at); at += c.byteLength; }
   return new TextDecoder().decode(buf);
+}
+// The same running budget, without the decode at the end — a photo is bytes and
+// putting it through a TextDecoder would mangle it. null means the cap was
+// crossed, and crossing it cancels the stream rather than reading the rest of
+// what was sent.
+async function readCappedBytes(req: Request, max: number): Promise<Uint8Array | null> {
+  if (!req.body) return new Uint8Array(0);
+  const reader = req.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let n = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    n += value.byteLength;
+    if (n > max) { await reader.cancel(); return null; }
+    chunks.push(value);
+  }
+  const buf = new Uint8Array(n);
+  let at = 0;
+  for (const c of chunks) { buf.set(c, at); at += c.byteLength; }
+  return buf;
+}
+// shOut, but feeding the child bytes on stdin. `smriti photo add` reads a photo
+// that way precisely so this route never has to invent a spill directory of its
+// own — the CLI owns the temp file, start to finish.
+//
+// Not `shIn` — that name is already taken further down by the herdr prompt
+// feeder, which returns a bare boolean. Two function declarations with one name
+// do not collide loudly; the later simply wins, and this route spent its first
+// run reading `.errOut` off `false`.
+async function shBytes(
+  bin: string, args: string[], input: Uint8Array, timeoutMs = 15000,
+): Promise<{ ok: boolean; out: string; errOut: string; code: number | null }> {
+  const p = Bun.spawn([bin, ...args], { stdin: input, stdout: 'pipe', stderr: 'pipe' });
+  const killer = setTimeout(() => p.kill(), timeoutMs);
+  try {
+    const [out, errOut] = await Promise.all([
+      new Response(p.stdout).text(),
+      new Response(p.stderr).text(),
+    ]);
+    const code = await p.exited;
+    return { ok: code === 0, out: out.trim(), errOut: errOut.trim(), code };
+  } catch {
+    return { ok: false, out: '', errOut: '', code: null };
+  } finally {
+    clearTimeout(killer);
+  }
 }
 function readState(): { port: number; pid: number; secret: string } | null {
   try {
@@ -1050,6 +1106,67 @@ async function cmdServer(): Promise<never> {
         let b: { md?: string } = {};
         try { b = JSON.parse(raw); } catch {}
         return json({ html: renderMarkdown(typeof b.md === 'string' ? b.md : '') });
+      }
+
+      // ── photos ─────────────────────────────────────────────────────────
+      //
+      // Raw bytes on the way in, not multipart: the client is a paste handler
+      // holding one Blob, and a form encoding would mean building and parsing a
+      // wrapper around the only file there will ever be.
+      //
+      // The declared content-type is READ BUT NOT TRUSTED — it is not passed to
+      // the CLI at all. `smriti photo add` decides what the file is by sniffing
+      // its leading bytes, which is the only check that cannot be lied to, and
+      // the one that keeps an SVG (a program, rendered inside this page) out.
+      if (url.pathname === '/api/photos' && req.method === 'POST') {
+        touch();
+        const declared = Number(req.headers.get('content-length') || 0);
+        if (declared > MAX_PHOTO_BYTES) return json({ error: 'that photo is too large' }, 413);
+        const bytes = await readCappedBytes(req, MAX_PHOTO_BYTES);
+        if (bytes === null) return json({ error: 'that photo is too large' }, 413);
+        if (!bytes.byteLength) return json({ error: 'nothing was uploaded' }, 400);
+        const r = await shBytes(PHOTO, ['add', '--json'], bytes);
+        if (!r.ok) {
+          // Exit 5 is the CLI's considered refusal — too large, or not an image
+          // it stores. It carries a message written for a person, so it is
+          // passed through rather than replaced with a generic failure.
+          const status = r.code === 5 ? 415 : 500;
+          return json({ error: r.errOut.replace(/^smriti-photo:\s*/, '') || 'could not store that photo' }, status);
+        }
+        try { return json(JSON.parse(r.out)); }
+        catch { return json({ error: 'could not store that photo' }, 500); }
+      }
+
+      // The bytes back out. Cached hard and forever, which is only safe because
+      // photo ids are never reused (see the AUTOINCREMENT note in the schema):
+      // a given id is one immutable picture for the life of the store.
+      const photo = url.pathname.match(/^\/api\/photo\/(\d+)$/);
+      if (photo && req.method === 'GET') {
+        touch();
+        const r = await shOut(PHOTO, ['data', photo[1]]);
+        if (!r.ok) return new Response('no such photo', { status: 404 });
+        // mime on the first line, the bytes as hex on the second. Hex because a
+        // shell cannot carry raw binary out of a subprocess intact — see the
+        // note on `photo data`.
+        const nl = r.out.indexOf('\n');
+        if (nl < 0) return new Response('no such photo', { status: 404 });
+        const mime = r.out.slice(0, nl).trim();
+        const data = Buffer.from(r.out.slice(nl + 1).trim(), 'hex');
+        if (!/^image\/(png|jpeg|gif|webp)$/.test(mime) || !data.byteLength) {
+          return new Response('no such photo', { status: 404 });
+        }
+        return new Response(data, {
+          headers: {
+            'content-type': mime,
+            'content-length': String(data.byteLength),
+            // Belt and braces around a stored file: never re-interpret the type
+            // by sniffing, and even if something non-image ever got in, give it
+            // nothing it could reach.
+            'x-content-type-options': 'nosniff',
+            'content-security-policy': "default-src 'none'; sandbox",
+            'cache-control': 'public, max-age=31536000, immutable',
+          },
+        });
       }
 
       // ── repo-level markdown ────────────────────────────────────────────

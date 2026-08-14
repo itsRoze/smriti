@@ -650,6 +650,29 @@ export function boardPage(): string {
   }
   .descedit.on{display:block}
   .descedit:focus{border-color:var(--hi)}
+  /* A file is being dragged over the editor and would land if let go. The
+     colour is the one the attach panel uses for "this is a live thing", not the
+     highlighter, so it does not read as focus. */
+  .descedit.dropping{border-color:var(--pine-b);border-style:solid;background:var(--attach-bg)}
+  /* Only while an editor is open — a hint nobody can act on is furniture. The
+     sibling selector is why the hint has to be emitted directly after the
+     textarea; descEditor() is the one place that builds both. */
+  .dhint{display:none;font-size:13px;color:var(--ink-3);margin:-12px 0 18px}
+  .descedit.on ~ .dhint{display:block}
+  .dhint b{
+    font-family:ui-monospace,Menlo,monospace;font-size:11px;font-weight:400;
+    border:1.5px solid var(--ink-4);border-bottom-width:2.5px;border-radius:5px;
+    padding:1px 5px;color:var(--ink-2);
+  }
+  /* Photos, wherever markdown is rendered: a description, and a stored document
+     in the trail. max-width and not width, so a small screenshot is not blown up
+     to the column and made soft. */
+  .desc img,#pagedoc img{
+    max-width:100%;height:auto;display:block;border-radius:10px;
+    border:1.5px solid var(--ink-4);box-shadow:0 2px 0 rgba(var(--sh),.08);
+  }
+  .desc a.photo,#pagedoc a.photo{display:block;margin:16px 0}
+  .desc a.photo:hover img,#pagedoc a.photo:hover img{border-color:var(--pine-b)}
   .btn.danger{border-color:var(--orange);color:var(--orange)}
   .btn{
     font:inherit;font-size:16px;cursor:pointer;color:var(--ink);
@@ -1725,7 +1748,7 @@ export function boardPage(): string {
 
     h += '<div class="lab">what this app is</div>' +
       descBox('id="pagedesc" data-edit="repo"', repo.description, 'what this app is, and why…') +
-      '<textarea class="descedit" id="pagedescedit" placeholder="what this app is, and why">' + esc(repo.description || '') + '</textarea>';
+      descEditor('what this app is, and why', repo.description);
 
     // The two repo-level documents. Rendered from disk, so all three states are
     // real: present, absent, and no repo to look in at all.
@@ -1796,7 +1819,7 @@ export function boardPage(): string {
 
     h += '<div class="lab">what this project is</div>' +
       descBox('id="pagedesc" data-edit="project" data-pid="' + p.id + '"', p.description, 'what this project is, and why…') +
-      '<textarea class="descedit" id="pagedescedit" placeholder="what this project is, and why">' + esc(p.description || '') + '</textarea>';
+      descEditor('what this project is, and why', p.description);
 
     const open = items.filter(isOpen).sort(byPos);
     cardIdx = 0; flat = [];
@@ -2102,7 +2125,15 @@ export function boardPage(): string {
       : kind === 'ticket' ? Number(d.dataset.ticket) : Number(d.dataset.pid);
 
     const save = async () => {
-      const next = ta.value.trim();
+      // A photo still on the wire holds the save. Without this, blurring a
+      // second after a paste writes the PLACEHOLDER into the description — the
+      // reference does not exist yet — and the picture is lost to a body that
+      // says "uploading…" forever. The editor stays open and visible while we
+      // wait, which is the honest thing to show.
+      if (ta._uploads && ta._uploads.size) await Promise.allSettled([...ta._uploads]);
+      // Belt and braces: an upload that failed, or landed after this editor was
+      // replaced, can leave a placeholder behind. It must never be saved.
+      const next = ta.value.replace(PENDING_RE, '').trim();
       const was = current().trim();
       ta.classList.remove('on'); d.style.display = '';
       if (next === was) return;
@@ -2256,8 +2287,19 @@ export function boardPage(): string {
   // yet. The optimistic overlay makes that harmless for the VALUE, but a render
   // mid-save still throws away the node that a failed save needs to reopen.
   let savesInFlight = 0;
+  // Declared HERE rather than beside the photo code that owns it, because
+  // isBusy() reads it and runs long before that block is reached — a "let"
+  // further down the same scope would leave this in the temporal dead zone and
+  // throw on the first redraw.
+  let uploadsInFlight = 0;
   function isBusy(){
     if (savesInFlight > 0) return true;
+    // A photo on the wire is the fourth arm, and the same argument as
+    // savesInFlight: the upload finishes by writing its reference into a
+    // specific textarea node, and a redraw between the paste and the answer
+    // replaces that node — so the guard has to cover the gap the save guard
+    // does not, because no save has started yet.
+    if (uploadsInFlight > 0) return true;
     // A reorder in flight is the same kind of thing as a half-typed
     // description: the board redraws #plots wholesale about once a second while
     // an agent runs, and doing that mid-gesture pulls the card out from under
@@ -2717,6 +2759,137 @@ export function boardPage(): string {
     ta.focus();
     return true;
   }
+  // ── photos ───────────────────────────────────────────────────────────
+  //
+  // Paste a screenshot, or drop an image file, and it is stored in the factory
+  // and referenced from the text. Three things make this harder than it looks,
+  // and all three are about an upload being SLOWER than the editor it belongs
+  // to:
+  //
+  //   - the editor is rebuilt about once a second by the SSE redraw,
+  //   - it saves on blur and abandons on Escape, either of which can happen
+  //     mid-upload,
+  //   - and the reference cannot be written until the server has answered.
+  //
+  // So a placeholder goes in immediately and is swapped for the real reference
+  // by exact string match — surviving whatever else was typed meanwhile — the
+  // redraw is held off while anything is in flight, and a save waits for the
+  // uploads it would otherwise write a placeholder into.
+  // uploadsInFlight lives up beside savesInFlight — see the note there.
+  let uploadSeq = 0;
+  // Deliberately not renderable: the id is not digits, so lib/md.ts declines it
+  // and the pre-render shows the caption alone. The user sees the word
+  // "uploading…" rather than a broken picture.
+  const pendingRef = (n) => '![uploading…](smriti://photo/pending-' + n + ')';
+  const PENDING_RE = /!\\[uploading…\\]\\(smriti:\\/\\/photo\\/pending-\\d+\\)/g;
+
+  function insertAtCursor(ta, text){
+    const s = ta.selectionStart == null ? ta.value.length : ta.selectionStart;
+    const e = ta.selectionEnd == null ? s : ta.selectionEnd;
+    ta.value = ta.value.slice(0, s) + text + ta.value.slice(e);
+    const at = s + text.length;
+    try { ta.setSelectionRange(at, at); } catch (_) {}
+    growEdit(ta);
+  }
+  // Not api(): the body is a file, not JSON, so the content-type that helper
+  // sets would be a lie. The server does not believe the declared type anyway —
+  // it reads the format out of the bytes — but sending the file's own is still
+  // the honest thing to put on the wire.
+  async function postPhoto(file){
+    const r = await fetch('/api/photos', {
+      method: 'POST',
+      headers: { 'content-type': file.type || 'application/octet-stream' },
+      body: file,
+    });
+    if (!r.ok){
+      const raw = await r.text().catch(() => '');
+      let msg = raw;
+      try { const pj = JSON.parse(raw); if (pj && typeof pj.error === 'string') msg = pj.error; } catch (_) {}
+      throw new Error(String(msg || '').replace(/^smriti-[a-z]+:\\s*/, '') || ('HTTP ' + r.status));
+    }
+    return r.json();
+  }
+  // The editor this upload started in must still be the editor it lands in.
+  // isConnected catches a redraw having replaced the node; the .on class
+  // catches it having been closed or abandoned underneath us. A photo with
+  // nowhere to go is left stored and unreferenced — smriti photo prune is
+  // what collects it, which is exactly the case that command exists for.
+  function stillOpen(ta){ return ta.isConnected && ta.classList.contains('on'); }
+
+  function addPhoto(ta, file){
+    const mark = pendingRef(++uploadSeq);
+    insertAtCursor(ta, mark);
+    uploadsInFlight++;
+    const done = postPhoto(file).then(
+      (res) => {
+        if (!stillOpen(ta)){ toast('photo stored, but the editor had closed'); return; }
+        ta.value = ta.value.replace(mark, '![](smriti://photo/' + res.id + ')');
+        growEdit(ta); preRender(ta.value.trim());
+      },
+      (e) => {
+        if (stillOpen(ta)){ ta.value = ta.value.replace(mark, ''); growEdit(ta); }
+        toast('could not add that photo — ' + e.message);
+      },
+    ).then(() => { uploadsInFlight--; });
+    // Held on the node rather than in a module-level list, so a save waits for
+    // ITS OWN editor's uploads and not for one belonging to a page you have
+    // since navigated away from.
+    (ta._uploads || (ta._uploads = new Set())).add(done);
+    done.then(() => ta._uploads && ta._uploads.delete(done));
+    return done;
+  }
+  // Every image among what was pasted or dropped. clipboardData.files is empty
+  // for a screenshot on some platforms, where the image arrives as an image/*
+  // item instead — so both are read, and dropped files come through the same
+  // door.
+  function imagesFrom(dt){
+    const out = [];
+    if (!dt) return out;
+    if (dt.files && dt.files.length){
+      for (const f of dt.files) if (f && /^image\\//.test(f.type)) out.push(f);
+    }
+    if (!out.length && dt.items){
+      for (const it of dt.items){
+        if (it.kind !== 'file' || !/^image\\//.test(it.type)) continue;
+        const f = it.getAsFile();
+        if (f) out.push(f);
+      }
+    }
+    return out;
+  }
+  function wirePhotoDrops(ta){
+    ta.addEventListener('paste', (ev) => {
+      const files = imagesFrom(ev.clipboardData);
+      if (!files.length) return;             // ordinary text paste, untouched
+      ev.preventDefault();
+      for (const f of files) addPhoto(ta, f);
+    });
+    // dragover must be prevented for a drop to fire at all — without it the
+    // browser navigates to the file instead, which loses whatever was typed.
+    ta.addEventListener('dragover', (ev) => {
+      if (!ev.dataTransfer) return;
+      ev.preventDefault();
+      ta.classList.add('dropping');
+    });
+    ta.addEventListener('dragleave', () => ta.classList.remove('dropping'));
+    ta.addEventListener('drop', (ev) => {
+      ta.classList.remove('dropping');
+      const files = imagesFrom(ev.dataTransfer);
+      if (!files.length) return;
+      ev.preventDefault();
+      for (const f of files) addPhoto(ta, f);
+    });
+  }
+  // The textarea and its hint, together, because the hint is styled off being
+  // the textarea's next sibling. Three surfaces build this; they differ only in
+  // their placeholder.
+  function descEditor(ph, value){
+    return '<textarea class="descedit" id="pagedescedit" placeholder="' + esc(ph) + '">' +
+      esc(value || '') + '</textarea>' +
+      '<div class="dhint">paste or drop an image to add a photo · ' +
+      '<b>⌘⏎</b> save · <b>esc</b> abandon</div>';
+  }
+
   // Save on blur, Escape to abandon, Cmd/Ctrl+Enter to commit. Wired when the
   // surface is built rather than on first click, so the e key and the keyboard
   // can open an editor that has never been clicked.
@@ -2726,6 +2899,7 @@ export function boardPage(): string {
   // edit typed into it vanished with no error.
   function wireDescEdit(el, ta, save){
     let abandoned = false;
+    wirePhotoDrops(ta);
     ta.oninput = () => { growEdit(ta); preRender(ta.value.trim()); };
     ta.onblur = () => {
       if (abandoned){ abandoned = false; return; }
@@ -3267,8 +3441,7 @@ export function boardPage(): string {
     // description that fired on the same click as the editor, re-rendered the
     // page out from under it, and left the textarea open on a detached node.
     h += descBox('id="pagedesc" data-edit="ticket" data-ticket="' + t.id + '"', t.body, 'add a description…');
-    h += '<textarea class="descedit" id="pagedescedit" placeholder="what this actually is, and why">' +
-      esc(t.body || '') + '</textarea>';
+    h += descEditor('what this actually is, and why', t.body);
     h += trailHtml(docs);
     h += '<div class="lab">where the time went</div><div class="runs" id="runs"></div>';
     h += '</div>';
