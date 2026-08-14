@@ -1151,3 +1151,39 @@ seed_commit() { echo seed > f && git add f && git commit -q -m init; }
   run "$CLI" list --json
   echo "$output" | jq -e '.[0] | has("repo_slug") and has("project_ref") and (has("project_slug") | not)'
 }
+
+@test "doc-capture: a file whose row records a different branch is still stored" {
+  # smriti-clean globs FILENAMES, so every file the glob matches has to be
+  # considered for storage — including one whose row disagrees about the branch
+  # (registered from the git branch rather than the name). Scoping the query on
+  # branch alone left such a file reported on by nobody: never stored, and by
+  # the delete rule never reclaimed either.
+  local dir="$SMRITI_HOME/projects/testapp"; mkdir -p "$dir"
+  local f="$dir/feat-a-plan-2026-01-01T00-00-00Z.md"
+  printf 'mismatched\n' > "$f"
+  "$CLI" doc - --type plan --path "$f" --branch some-other-branch >/dev/null
+  [ "$(sqlite3 "$SMRITI_HOME/factory.db" "SELECT branch FROM documents WHERE id=1;")" = "some-other-branch" ]
+
+  run "$CLI" doc-capture --branch feat-a --slug testapp --dir "$dir"
+  [[ "$output" == *"stored"* ]]
+  [[ "$output" == *"feat-a-plan"* ]]
+}
+
+@test "doc: a quote in the path survives registration, capture and adoption" {
+  # Every value reaches SQL as a doubled-quote literal, and the content itself
+  # is read by sqlite3's readfile() rather than shelled in — so a path like
+  # this must round-trip rather than truncate the statement.
+  local dir="$SMRITI_HOME/projects/testapp"; mkdir -p "$dir"
+  local f="$dir/it's-a-branch-plan-2026-01-01T00-00-00Z.md"
+  printf "quoted path's content\n" > "$f"
+  run "$CLI" doc - --type plan --path "$f"
+  [ "$status" -eq 0 ]
+  run "$CLI" doc-show 1
+  [[ "$output" == *"quoted path's content"* ]]
+}
+
+@test "doc: registering with '-' does not claim a ticket called '-'" {
+  run "$CLI" doc - --type plan --path /tmp/no-ticket-plan.md
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"#-"* ]]
+}
