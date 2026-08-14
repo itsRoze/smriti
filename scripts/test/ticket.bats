@@ -16,8 +16,10 @@ setup() {
   ln -s "$ROOT/bin/smriti-ticket"  "$FAKE_BIN/smriti-ticket"
   ln -s "$ROOT/bin/smriti-project" "$FAKE_BIN/smriti-project"
   ln -s "$ROOT/bin/smriti-slug"    "$FAKE_BIN/smriti-slug"
+  ln -s "$ROOT/bin/smriti-trace"   "$FAKE_BIN/smriti-trace"
   CLI="$FAKE_BIN/smriti-ticket"
   PROJECT="$FAKE_BIN/smriti-project"
+  TRACE="$FAKE_BIN/smriti-trace"
 
   export SMRITI_HOME="$WORK/state"
   mkdir -p "$SMRITI_HOME"
@@ -762,4 +764,79 @@ seed_commit() { echo seed > f && git add f && git commit -q -m init; }
   "$CLI" add "a ticket" >/dev/null
   run "$CLI" list --json
   echo "$output" | jq -e '.[0] | has("repo_slug") and has("project_ref") and (has("project_slug") | not)'
+}
+
+# ─── terminal status ends the ticket's open runs ────────────────────────────
+#
+# The durable half of the "waiting on you is lying" fix. Closing a run used to
+# depend on an agent reaching a line of skill markdown, every such call suffixed
+# `|| true` — so shipping from a second terminal, shipping by hand, or shipping
+# after the pane died all left the run open forever. No route to shipping can
+# avoid moving the ticket, which is why the hook lives here.
+
+open_run_for() {
+  "$TRACE" start begin --ticket "$1" | cut -d= -f2-
+}
+run_status_of() {
+  "$TRACE" list --ticket "$1" --json | grep -o '"status":"[^"]*"' | head -1 | cut -d'"' -f4
+}
+
+@test "status shipped: ends the ticket's open runs" {
+  "$CLI" add "a thing" >/dev/null
+  open_run_for 1 >/dev/null
+  "$CLI" status 1 shipped
+  [ "$(run_status_of 1)" = "failed" ]
+}
+
+@test "done: ends the ticket's open runs too" {
+  # `done` is shorthand for `status shipped`, so it must not be a second path
+  # with its own behaviour — this is what smriti-clean calls when a branch lands.
+  "$CLI" add "a thing" >/dev/null
+  open_run_for 1 >/dev/null
+  "$CLI" done 1
+  [ "$(run_status_of 1)" = "failed" ]
+}
+
+@test "cancel: ends the ticket's open runs" {
+  "$CLI" add "a thing" >/dev/null
+  open_run_for 1 >/dev/null
+  "$CLI" cancel 1
+  [ "$(run_status_of 1)" = "failed" ]
+}
+
+@test "status in_review: deliberately does NOT end the runs" {
+  # `ticket pr` sets in_review BEFORE the merge and clean it still has to do.
+  # Ending runs there would kill the normal ship path mid-flight.
+  "$CLI" add "a thing" >/dev/null
+  open_run_for 1 >/dev/null
+  "$CLI" status 1 in_review
+  [ "$(run_status_of 1)" = "running" ]
+}
+
+@test "status ready/in_progress: leave the runs open" {
+  "$CLI" add "a thing" >/dev/null
+  open_run_for 1 >/dev/null
+  "$CLI" status 1 in_progress
+  [ "$(run_status_of 1)" = "running" ]
+  "$CLI" status 1 ready
+  [ "$(run_status_of 1)" = "running" ]
+}
+
+@test "shipping: a run still open did not finish, so it reads failed not done" {
+  # `end --ticket` only touches runs still running or awaiting, and a run that
+  # finished properly already ended ITSELF as done. So anything this catches is
+  # by definition a run that never reached its own ending — which is what the
+  # board says of a pane it had to close on a run's behalf.
+  "$CLI" add "a thing" >/dev/null
+  local uid; uid=$(open_run_for 1)
+  "$TRACE" end --run "$uid" --status done
+  "$CLI" status 1 shipped
+  run "$TRACE" show "$uid"
+  [[ "$output" == *"done"* ]]
+}
+
+@test "shipping a ticket with no runs at all is not an error" {
+  "$CLI" add "a thing" >/dev/null
+  run "$CLI" done 1
+  [ "$status" -eq 0 ]
 }

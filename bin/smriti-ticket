@@ -432,6 +432,41 @@ base_branch_for() {
 
 # ─── status / done ──────────────────────────────────────────────────────────
 
+# A ticket reaching a terminal status is the moment every run against it is
+# over — whoever concluded it, and whether or not the agent survived to say so.
+#
+# This lives here rather than in the skill because closing a run used to depend
+# on an agent reaching a line of markdown, every such line suffixed `|| true`.
+# Shipping from a second terminal, shipping by hand, or shipping after the pane
+# died all left the run `running`/`awaiting` forever, which is what put four
+# finished tickets in the board's "waiting on you" with counters still climbing.
+# None of those routes can avoid moving the ticket, so this is the one place
+# that catches all of them.
+#
+# `in_review` is deliberately NOT terminal: `smriti ticket pr` sets it BEFORE
+# the merge and clean that still have to happen, so ending runs there would kill
+# the normal ship path mid-flight.
+#
+# `failed`, for shipped and cancelled alike, and that is not pessimism — it is
+# what being open at this moment means. `trace end --ticket` only touches runs
+# still `running` or `awaiting`, and a run that finished properly already ended
+# itself and is `done`. So anything this catches is by definition a run that did
+# NOT reach its own ending, whatever became of the ticket. It is the same reading
+# the board applies to a pane it had to close on a run's behalf.
+#
+# Best-effort, like every other trace call: observability must never be able to
+# fail the write it observes.
+end_open_runs() {
+  local id="$1" tr="$SMRITI_BIN/smriti-trace"
+  [ -x "$tr" ] || return 0
+  "$tr" end --ticket "$id" --status failed >/dev/null 2>&1 || true
+  return 0
+}
+
+is_terminal_status() {
+  case "$1" in shipped|cancelled) return 0 ;; *) return 1 ;; esac
+}
+
 cmd_status() {
   [ $# -ge 2 ] || usage
   local id="$1" status="$2"
@@ -440,6 +475,7 @@ cmd_status() {
   ticket_exists "$id" || die "no ticket #$id" 4
   db_write "UPDATE tickets SET status = $(sql_quote "$status"), updated_at = $(sql_quote "$(now_utc)")
             WHERE id = $id;"
+  if is_terminal_status "$status"; then end_open_runs "$id"; fi
   echo "#$id → $status"
 }
 
@@ -578,6 +614,7 @@ cmd_cancel() {
   require_id "$1"
   ticket_exists "$1" || die "no ticket #$1" 4
   db_write "UPDATE tickets SET status = 'cancelled', updated_at = $(sql_quote "$(now_utc)") WHERE id = $1;"
+  end_open_runs "$1"
   echo "#$1 → cancelled  (smriti ticket status $1 ready brings it back)"
 }
 

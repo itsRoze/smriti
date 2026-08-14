@@ -63,7 +63,8 @@ name: `ground`, `understand`, `clarify`, `plan`, `codex`, `implement`, `review`,
   opened by hand here with nothing specified for leaving it, so runs sat in *waiting on
   you* for the rest of their lives and their agent time was booked against you. Emitting
   `approve` by hand now only doubles the events.
-- **Gate 3 — emit `ship awaiting`,** and be the thing that closes it. Nothing else opens
+- **Gate 3 — emit `ship awaiting`,** and close it the moment they answer, *before* doing
+  the ship work — see step 9. Nothing else opens
   this gate, so unlike Gate 2 it does have to be done by hand; the same rule applies
   though — never open it without specifying how it ends. Step 9 below closes it on both
   paths, whether the run ships or stops.
@@ -306,6 +307,18 @@ later in the same session may safely end it again.
 
 ### Shipping, once they say so
 
+**Close the gate first, before doing any of the work below:**
+
+```bash
+smriti trace emit ship ok || true    # the waiting ended when they answered
+```
+
+The gate closes when the human *decides*, not when the ship finishes. Everything after
+this line — tests, merge, push, PR, clean — is agent time, and booking it as *your*
+time was wrong in both directions: it billed you for minutes you were not spending, and
+it left the run sitting in *waiting on you* for the whole ship, which is how a ticket
+that was already shipping came to be listed as needing a decision.
+
 Destination comes from config, defaulted at the read — an unset key prints an empty
 string, so never use the bare value:
 
@@ -362,7 +375,13 @@ deliberate, not an oversight.
    the reason is one you accept), `8` state changed since it planned. A non-zero exit
    means the branch is still there — say that instead of claiming a clean finish.
 
-Close the run: `smriti trace emit ship ok || true` then `smriti trace end || true`.
+Close the run: `smriti trace end || true`. The gate was already closed above, when they
+said the word.
+
+You are no longer the only thing that can do this, and that is deliberate: `smriti clean`
+moves the ticket to `shipped`, and a ticket reaching a terminal status now ends its own
+open runs. So a run whose agent dies mid-ship no longer leaks — this line is the tidy
+ending, not the only one.
 
 ---
 

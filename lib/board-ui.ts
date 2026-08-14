@@ -316,6 +316,24 @@ export function boardPage(): string {
   }
   .slab .who{flex:1;min-width:0}
   .slab h1{font-size:32px;font-weight:400;margin:0 0 4px;line-height:1.15;text-wrap:balance}
+  /* The project name IS the rename control, so it has to look touchable without
+     turning a heading into a button. Same highlighter wash the stub's editable
+     fields use, and the same pencil the description box shows on hover — this
+     is one more editable value, not a new kind of thing. */
+  .slab h1.rename{position:relative;cursor:pointer;outline:none;display:inline-block;
+    border-radius:10px;padding:0 34px 2px 8px;margin-left:-8px;
+    transition:background .12s ease}
+  .slab h1.rename:hover,.slab h1.rename:focus-visible{background:rgba(var(--hi-rgb),.34)}
+  .slab h1.rename:focus-visible{box-shadow:0 0 0 2.5px var(--hi)}
+  .slab h1.rename::after{
+    content:'✎';position:absolute;top:50%;right:9px;transform:translateY(-50%);
+    font-size:15px;color:var(--ink-3);opacity:0;transition:opacity .12s ease}
+  .slab h1.rename:hover::after,.slab h1.rename:focus-visible::after{opacity:1}
+  /* The stub's tear-off strip, for the pages that have no stub. A project page
+     is one column, so its danger zone is a full-width rule rather than the
+     bottom of a sidebar. */
+  .tear{margin:34px 0 0;padding-top:14px;border-top:2px dashed var(--ink-4)}
+  .tear .btn{font-size:14px;padding:5px 12px 6px}
   .slab .path{font-family:ui-monospace,Menlo,monospace;font-size:11px;color:var(--ink-3);word-break:break-all}
   .slab .path b{color:var(--pine-b);font-weight:400;cursor:pointer}
   /* A ticket's mono line is its branch, and a PR is something that branch HAS
@@ -958,17 +976,73 @@ export function boardPage(): string {
     return r.ended_at ? (r.duration_s || 0) : sinceSecs(r.started_at);
   }
 
-  function runFor(t){ return S.runs.find((r) => r.ticket_id === t.id); }
+  // The run whose state this ticket should be showing. NOT a bare find(): a
+  // ticket can have several runs — the board's own restart makes a second one on
+  // the same worktree — and the first row that happened to come back is no
+  // promise about which is current. An open run wins outright; failing that the
+  // newest, since /api/state hands them back newest-first.
+  //
+  // The bare version was already flagged as unsafe by gateFor's comment below;
+  // it just had not been fixed where the card reads it.
+  function runFor(t){
+    const mine = S.runs.filter((r) => r.ticket_id === t.id);
+    return mine.find((r) => r.status === 'running' || r.status === 'awaiting') || mine[0];
+  }
   // The live agent for a ticket, if herdr has one. 'blocked' means the session
   // is sitting at a prompt waiting for you — a permission request, a question,
   // a gate. Nothing else in smriti can see that.
-  // Matched on the worktree path, not the name: herdr forgets the name it was
-  // given, and a name-only match made live sessions disappear from the board.
+  //
+  // Matched on the worktree path and ONLY on it, the same rule the server's own
+  // lookup settled on: herdr's agent names are machine-global, so a 't7' in some
+  // other checkout answered for this ticket's — and it is not even a fallback,
+  // since a name match by definition names a session in a different directory.
+  // The name arm survived here after being deleted there, which mattered more
+  // once liveness started deciding whether a ticket reads as running.
   function sessionFor(t){
-    return (S.sessions || []).find((x) =>
-      (t.worktree_path && x.cwd === t.worktree_path) || (x.name && x.name === 't' + t.id));
+    if (!t.worktree_path) return undefined;
+    return (S.sessions || []).find((x) => x.cwd === t.worktree_path);
   }
   function docsFor(t){ return S.documents.filter((d) => d.ticket_id === t.id); }
+
+  // Is this run actually running, or does its row merely still say so?
+  //
+  // 'runs.status' is a claim written by a process that can die, and until the
+  // board started checking it, a session killed by any route other than a clean
+  // finish left the ticket reading "· running" with a clock ticking against it
+  // forever. #4 sat like that for days.
+  //
+  // The server reconciles the rows themselves every sweep, but that is a timer
+  // and this is a paint: a card must not claim a session between the pane dying
+  // and the next tick noticing.
+  //
+  // A ticket with no worktree has no session to look for, so the row stands
+  // alone — that is a run started before the work was ever cut a directory, and
+  // there is nothing to contradict it with.
+  function isLiveRun(t, run){
+    if (!run || run.status !== 'running') return false;
+    if (!t.worktree_path) return true;
+    return Boolean(sessionFor(t));
+  }
+
+  // Is this gate genuinely waiting on you?
+  //
+  // Deliberately NOT "the agent looks idle". Gate 2 waits by BLOCKING on
+  // 'smriti html await', so herdr reports its agent as 'working' throughout a
+  // perfectly real plan review — suppressing on that would hide the one thing
+  // this band exists to show. The plan-page URL is no safer a signal: it is set
+  // by a best-effort probe the server may simply fail.
+  //
+  // So the test is the ticket's own disposition, which cannot be faked by a
+  // process that stopped running: work that shipped or was cancelled is not
+  // waiting on anybody, whatever its run row still says. That alone clears the
+  // stale rows; a gate whose ticket is still open goes on showing, which is
+  // right — the run is either at a real gate or about to be reconciled.
+  function gateIsReal(r){
+    if (r.ticket_id == null) return true;
+    const t = S.tickets.find((x) => x.id === r.ticket_id);
+    if (!t) return true;
+    return t.status !== 'shipped' && t.status !== 'cancelled';
+  }
 
   // The gate this ticket is actually parked at. NOT runFor(): that is a bare
   // find() over a bounded union of active and recent runs, which is no promise
@@ -1067,16 +1141,18 @@ export function boardPage(): string {
   let cardIdx = 0;
   function cardHtml(t){
     const run = runFor(t);
-    const stateCls = run && run.status === 'running' ? 'live' : (CLS[t.status] || '');
     const sess = sessionFor(t);
+    const live = isLiveRun(t, run);
+    const stateCls = live ? 'live' : (CLS[t.status] || '');
     const st = sess && sess.status === 'blocked' ? 'asking you'
       : sess && sess.status === 'working' ? 'working'
-      : run && run.status === 'running' ? esc((run.last_phase || 'working') + ' · running')
+      : live ? esc((run.last_phase || 'working') + ' · running')
       : esc(STATUS[t.status] || t.status);
     // Running work shows elapsed, ticking; everything else shows when it last
     // moved. A card that says nothing about time is the thing this whole
-    // ticket is about.
-    const ago = run && !run.ended_at
+    // ticket is about — but a clock that ticks for a session which no longer
+    // exists is worse than none, so 'live' gates it rather than '!ended_at'.
+    const ago = live
       ? '<span class="ago" data-live="run" data-since="' + esc(run.started_at) + '">⏱ ' +
         fmtDur(runSecs(run)) + '</span>'
       : (() => {
@@ -1194,11 +1270,11 @@ export function boardPage(): string {
   // ── the board ────────────────────────────────────────────────────────
   function renderBoard(){
     const open = S.tickets.filter(isOpen);
-    const waiting = S.runs.filter((r) => r.status === 'awaiting');
+    const waiting = S.runs.filter((r) => r.status === 'awaiting' && gateIsReal(r));
     // A session stalled at a prompt belongs in "waiting on you" just as much as
     // a /begin gate does — it is the same fact, reported by herdr instead.
     const blocked = S.tickets.filter((t) => (sessionFor(t) || {}).status === 'blocked');
-    const running = S.runs.filter((r) => r.status === 'running');
+    const running = S.tickets.filter((t) => isLiveRun(t, runFor(t)));
     const day = new Date().toLocaleDateString(undefined,{weekday:'long'});
     $('#eye').innerHTML = esc(day) + ' · <b>' + open.length + '</b> open' +
       (running.length ? ' · <b>' + running.length + '</b> running' : '') +
@@ -1401,7 +1477,11 @@ export function boardPage(): string {
     h += '<div class="box slab">' +
       '<div class="bigsig" style="color:' + hueFor(app) + ';border-color:' + hueFor(app) + '">' +
         esc(p.name.slice(0,2).toUpperCase()) + '</div>' +
-      '<div class="who"><h1>' + esc(p.name) + '</h1>' +
+      // The name is the control, the same way the ticket's stamp is its status
+      // control — a project had no rename at all, and a separate button beside
+      // the heading would compete with the one thing the page is about.
+      '<div class="who"><h1 class="rename" data-act="rename" role="button" tabindex="0" ' +
+        'title="click to rename">' + esc(p.name) + '</h1>' +
       '<div class="path">' + (p.repo_slug
         ? 'in <b data-app="' + esc(p.repo_slug) + '">' + esc(appLabel(app)) + '</b>'
         : '<i>no app yet — an idea</i>') + '</div>' +
@@ -1426,6 +1506,13 @@ export function boardPage(): string {
     }
     h += historyHtml(items, 'project:' + p.id);
     h += trailHtml(docs);
+    // Deleting a project does NOT delete its tickets — they go loose in the
+    // app, which is what smriti-project rm does and the only reason this is
+    // safe to offer at all. The label says so, because "delete project" reads
+    // like it takes the work with it.
+    h += '<div class="tear"><button class="btn danger" data-act="delproj">' +
+      (armedDelete === 'p' + p.id ? 'really delete? tickets go loose' : 'delete project') +
+      '</button></div>';
 
     $('#plots').innerHTML = h;
     wire();
@@ -1494,7 +1581,13 @@ export function boardPage(): string {
     // Both belong to the view you are on, not to the session: an armed delete
     // must not survive a navigation, and the document you had open on one
     // ticket must not spring open on the next.
-    if (!(view.kind === 'ticket' && view.id === armedDelete)) armedDelete = null;
+    // Keyed by view, not by id alone, now that a project can be armed too: a
+    // ticket arms as its number and a project as 'p<id>', so #7 and project 7
+    // cannot inherit each other's confirm.
+    const armKey = view.kind === 'ticket' ? view.id
+      : view.kind === 'project' ? 'p' + view.id : null;
+    if (armKey === null || armKey !== armedDelete) armedDelete = null;
+    if (!(view.kind === 'ticket' && view.id === armedStop)) armedStop = null;
     // Selection is owned by the view: cleared when you move between views, kept
     // when the view you are on simply re-renders (which SSE does about once a
     // second while an agent is running).
@@ -1559,7 +1652,19 @@ export function boardPage(): string {
     // beside the render, because wire() reaches the whole sheet — the by-hand
     // binding the overlay ended with existed only because a veil was outside
     // this function's reach.
-    $$('[data-act]').forEach((b) => b.addEventListener('click', () => ticketAct(b)));
+    $$('[data-act]').forEach((b) => {
+      b.addEventListener('click', () => ticketAct(b));
+      // The project name is a heading wearing role="button", and a div does not
+      // synthesise a click from Enter the way a real <button> does. Every other
+      // act here IS a <button>, so this only has to cover the one that is not.
+      if (b.tagName !== 'BUTTON'){
+        b.addEventListener('keydown', (e) => {
+          if (e.target !== b) return;
+          if (e.key !== 'Enter' && e.key !== ' ') return;
+          e.preventDefault(); e.stopPropagation(); ticketAct(b);
+        });
+      }
+    });
     // The stub's writable fields. The re-file <select> that used to be wired
     // here is gone: the project row does that job, and does it for a ticket
     // with no app too.
@@ -1667,20 +1772,46 @@ export function boardPage(): string {
       : kind === 'ticket'
         ? ((S.tickets.find((x) => x.id === Number(d.dataset.ticket)) || {}).body || '')
         : ((projectById(Number(d.dataset.pid)) || {}).description || ''));
+    // A ticket's prose is its body; an app's and a project's is a column called
+    // description. Same box, two field names underneath.
+    const field = kind === 'ticket' ? 'body' : 'description';
+    const subject = kind === 'repo' ? view.slug
+      : kind === 'ticket' ? Number(d.dataset.ticket) : Number(d.dataset.pid);
+
     const save = async () => {
       const next = ta.value.trim();
+      const was = current().trim();
       ta.classList.remove('on'); d.style.display = '';
-      if (next === current().trim()) return;
+      if (next === was) return;
+
+      // Paint the new text over the display node BEFORE anything is sent. This
+      // one line is the whole reported bug: closing the editor used to unhide a
+      // node still holding the OLD text, so every save visibly reverted first.
+      // The markdown is usually already rendered by the time we get here — the
+      // editor pre-renders as you type — so this is normally the finished form
+      // rather than a plain-text stop on the way to it.
+      showDesc(d, next);
+
       const url = kind === 'repo' ? '/api/repos/' + encodeURIComponent(view.slug)
         : kind === 'ticket' ? '/api/tickets/' + d.dataset.ticket
         : '/api/projects/' + d.dataset.pid;
-      // A ticket's prose is its body; an app's and a project's is a column
-      // called description. Same box, two field names underneath.
       const payload = kind === 'ticket' ? { body: next } : { description: next };
-      try {
-        await api(url, { method: 'PATCH', body: JSON.stringify(payload) });
-        toast('description saved'); await refresh();
-      } catch (e) { toast('could not save: ' + esc(e.message)); }
+
+      await writeOptimistic(kind, subject, { [field]: next },
+        () => api(url, { method: 'PATCH', body: JSON.stringify(payload) }),
+        {
+          raw: ta.value, before: ta.value, failMsg: 'could not save',
+          // Hand the typing back rather than dropping it. Before this, a failed
+          // save only toasted: the editor was already closed, the old text was
+          // already showing, and the next render rebuilt the box from the value
+          // that never changed — so what you wrote was silently gone.
+          onFail: (text) => {
+            const box = $('#pagedesc'), edit = $('#pagedescedit');
+            if (!box || !edit) return;
+            edit.value = text;
+            startEdit(box, edit);
+          },
+        });
     };
     wireDescEdit(d, ta, save);
     d.addEventListener('click', (ev) => {
@@ -1688,6 +1819,23 @@ export function boardPage(): string {
       startEdit(d, ta);
     });
     paintDesc(d, current());
+  }
+
+  // Put a value into the display node now, rendered if we already have it.
+  // Deliberately NOT paintDesc: that one takes a generation and refuses to land
+  // while an editor is open over the node, which is exactly the state we are
+  // leaving — and it would await a round-trip before showing anything at all.
+  function showDesc(el, src){
+    if (!el) return;
+    el.dataset.seq = String(++descSeq);   // outrank any paint still in flight
+    const hit = src ? mdCache.get(src) : undefined;
+    if (hit !== undefined && mdApply(el, hit)) return;
+    el.classList.remove('md');
+    el.classList.add('raw');
+    el.textContent = src;
+    // Not cached yet — fetch it and swap in place. Nothing flickers: the text
+    // is already the right text, only its formatting is late.
+    if (src) paintDesc(el, src);
   }
 
   // The margin's open/collapsed state. The CSS breakpoint owns the default, so
@@ -1776,7 +1924,15 @@ export function boardPage(): string {
   // event for "the popup is open", so focus is the only signal there is; the
   // ticket page redraws about once a second while an agent runs, and each redraw
   // closed the re-file dropdown with no choice made.
+  // savesInFlight is the third arm, and it closes a hole the other two never
+  // covered: this guard used to stop protecting the instant an editor closed,
+  // and a save closes it as its first act. From then until the write landed, a
+  // re-render was free to rebuild the box from the value that had not changed
+  // yet. The optimistic overlay makes that harmless for the VALUE, but a render
+  // mid-save still throws away the node that a failed save needs to reopen.
+  let savesInFlight = 0;
   function isBusy(){
+    if (savesInFlight > 0) return true;
     const ta = document.querySelector('.descedit.on');
     if (ta && document.activeElement === ta) return true;
     const a = document.activeElement;
@@ -1846,6 +2002,25 @@ export function boardPage(): string {
     if (descLands(el, seq)) mdApply(el, html);
   }
 
+  // Render what you are typing into the cache, so the value is already formatted
+  // by the time you blur. Without it the save shows correct-but-unformatted text
+  // for one round-trip and then reflows — the plain-text beat in the middle of
+  // the four this whole change exists to remove.
+  //
+  // Debounced because it is a request per pause, not per keystroke, and skipped
+  // entirely for text we have already rendered or already failed on.
+  let preTimer = 0;
+  function preRender(src){
+    clearTimeout(preTimer);
+    if (!src || mdCache.has(src) || mdFailed.has(src)) return;
+    preTimer = setTimeout(async () => {
+      try {
+        const { html } = await api('/api/render', { method: 'POST', body: JSON.stringify({ md: src }) });
+        mdPut(src, html);
+      } catch { mdFailed.add(src); }
+    }, 350);
+  }
+
   // One description box, however it is reached. ghost is escaped even though
   // every caller passes a literal today: this is the shared entry point for
   // all three surfaces, and the next caller to pass a stored string should not
@@ -1891,7 +2066,7 @@ export function boardPage(): string {
   // edit typed into it vanished with no error.
   function wireDescEdit(el, ta, save){
     let abandoned = false;
-    ta.oninput = () => growEdit(ta);
+    ta.oninput = () => { growEdit(ta); preRender(ta.value.trim()); };
     ta.onblur = () => {
       if (abandoned){ abandoned = false; return; }
       save();
@@ -1917,20 +2092,143 @@ export function boardPage(): string {
     });
   }
 
-  async function refresh(){
-    try { S = await api('/api/state'); if (!isBusy()) route(); }
-    catch (e) {
-      // 503 is the store failing to read; anything else is the server gone.
-      const msg = /could not read/.test(String(e.message))
-        ? 'could not read the ticket store — is sqlite3 there?'
-        : 'lost the server — rerun <b>smriti</b> in a terminal';
-      toast(msg, 6000);
+  // ── optimistic writes ────────────────────────────────────────────────
+  //
+  // Every mutation on this board used to be write-then-refetch-everything, and
+  // the description editor showed what that costs: save() closed the editor
+  // BEFORE sending, unhiding a node still holding the old text, so the value
+  // visibly reverted, then the PATCH landed, then the text reappeared — first
+  // as plain source, then rendered. Four beats to change a sentence.
+  //
+  // So writes are held here the moment you make them and re-applied over every
+  // server read until the server says the same thing back. Same idea as
+  // armedDelete and runCache: state kept OUT of the DOM precisely because
+  // route() rebuilds the DOM wholesale on every SSE tick, about once a second
+  // while an agent runs.
+  //
+  // Keyed 'kind:id:field'. The stored value is the canonical one that actually
+  // went to the server — echo is compared against THAT, never against raw
+  // keystrokes, because save trims and the server stores the trimmed form.
+  //
+  // One entry per field rather than per write, because a single write can settle
+  // more than one column: filing a ticket into a project settles its app too,
+  // and showing the new project beside the old app for a round-trip would be a
+  // worse lie than the one this replaces.
+  const pending = new Map();
+
+  const pendKey = (kind, id, field) => kind + ':' + id + ':' + field;
+  const rowFor = (st, kind, id) =>
+    kind === 'ticket' ? (st.tickets || []).find((x) => Number(x.id) === Number(id))
+      : kind === 'project' ? (st.projects || []).find((x) => Number(x.id) === Number(id))
+      : (st.repositories || []).find((x) => x.slug === id);
+
+  function pendSet(kind, id, fields){
+    for (const field of Object.keys(fields)){
+      pending.set(pendKey(kind, id, field), { kind, id, field, sent: fields[field] });
     }
+  }
+  function pendDrop(kind, id, fields){
+    for (const field of Object.keys(fields)) pending.delete(pendKey(kind, id, field));
+  }
+
+  // Two values are "the same" when the server would have stored them the same
+  // way. null, undefined and '' all mean absent here — a ticket with no project
+  // comes back as null, and the write that detached it sent null — and ids
+  // arrive as numbers from sqlite but are written as strings by the pickers.
+  function sameStored(a, b){
+    if (a == null || a === '') return b == null || b === '';
+    return String(a) === String(b);
+  }
+
+  // Lay every outstanding write back over a freshly-read state, and forget the
+  // ones the server has caught up with. An entry is dropped only once the
+  // server's value MATCHES, so a read taken before the write landed keeps
+  // showing your value rather than flickering back to the old one.
+  function applyPending(next){
+    if (!pending.size) return next;
+    for (const e of [...pending.values()]){
+      const row = rowFor(next, e.kind, e.id);
+      // The row is gone — deleted while a write was in flight. Nothing left to
+      // hold the value for.
+      if (!row || sameStored(row[e.field], e.sent)){
+        pending.delete(pendKey(e.kind, e.id, e.field));
+        continue;
+      }
+      row[e.field] = e.sent;
+    }
+    return next;
+  }
+
+  // Serialized, because a single save used to trigger three of these: the one
+  // it awaited, the SSE 'changed' the PATCH route broadcasts before it replies,
+  // and the 900ms sqlite-mtime watcher behind that. None were de-duplicated, so
+  // concurrent reads could land out of order and the older one won.
+  let refreshing = null, refreshAgain = false;
+  async function refresh(){
+    if (refreshing){ refreshAgain = true; return refreshing; }
+    refreshing = (async () => {
+      try {
+        do {
+          refreshAgain = false;
+          S = applyPending(await api('/api/state'));
+        } while (refreshAgain);
+        if (!isBusy()) route();
+      } catch (e) {
+        // 503 is the store failing to read; anything else is the server gone.
+        const msg = /could not read/.test(String(e.message))
+          ? 'could not read the ticket store — is sqlite3 there?'
+          : 'lost the server — rerun <b>smriti</b> in a terminal';
+        toast(msg, 6000);
+      } finally { refreshing = null; }
+    })();
+    return refreshing;
+  }
+
+  // Write a field and show it immediately. The optimistic entry goes in BEFORE
+  // the request, is mirrored straight into S so this render already has it, and
+  // is dropped on failure so the next read puts the old value back.
+  //
+  // 'onFail' is how the description editor gets your typing back: the overlay
+  // can restore the VALUE, but not the editor you were in, because route() has
+  // rebuilt the DOM by then.
+  async function writeOptimistic(kind, id, fields, req, opts){
+    const o = opts || {};
+    const before = o.before;
+    pendSet(kind, id, fields);
+    S = applyPending(S);
+    route();
+    let err = null;
+    savesInFlight++;
+    try { await req(); }
+    catch (e) { err = e; }
+    // Dropped before the refresh below, so isBusy() stops reporting this save
+    // and that read is allowed to render. Leaving it raised until after would
+    // suppress the very re-render it exists to trigger.
+    finally { savesInFlight--; }
+
+    if (!err){
+      // Not awaited: the PATCH already broadcast, so a read is on its way. This
+      // one only makes it prompt when SSE is not connected.
+      refresh();
+      return true;
+    }
+    pendDrop(kind, id, fields);
+    S = applyPending(S);
+    toast((o.failMsg || 'could not save') + ': ' + esc(err.message), 6000);
+    // route() before onFail, so the handler is looking at the rebuilt page — and
+    // after the overlay is dropped, so what it rebuilds is the value the server
+    // still holds rather than the one that failed to land.
+    route();
+    if (o.onFail) o.onFail(before);
+    return false;
   }
 
   // The two-press delete confirm, and its timer. See ticketAct for why this is
   // not a data attribute on the button.
   let armedDelete = null, armTimer = 0;
+  // Stop gets its own arm rather than sharing delete's. They sit on the same
+  // page, and one variable would let a press on either finish the other.
+  let armedStop = null, stopTimer = 0;
   // The paper-trail document you have open, and what it said. A page is
   // rebuilt by the SSE path and the overlay never was, so a document opened on
   // a ticket used to vanish a second later; app and project pages had the same
@@ -2129,6 +2427,14 @@ export function boardPage(): string {
     if (gate) h += '<a class="btn go" href="' + esc(gate.html_url) + '" target="_blank" rel="noopener">open the plan ↗</a>';
     h += '<div class="minor">';
     if (live) h += '<button class="btn" data-act="restart">restart</button>';
+    // The board could start a session and replace one and had no way to END one,
+    // so a run you were done with had to be killed in herdr — after which the
+    // board went on claiming the ticket was running, because nothing reconciled
+    // that. Beside restart because it is the same kind of act on the same thing;
+    // armed like delete because it destroys a live pane and whatever command is
+    // mid-flight in it.
+    if (live) h += '<button class="btn danger" data-act="stop">' +
+      (armedStop === t.id ? 'really stop?' : 'stop') + '</button>';
     // mark done / cancel / bring it back used to live here. All three were one
     // thing — a status write — and the stamp above is that control now, so
     // they were three buttons competing with the one action that is not just a
@@ -2163,6 +2469,10 @@ export function boardPage(): string {
   // them comes along — including the two-press delete confirm, which is the
   // only thing standing between a misclick and a ticket that is gone.
   async function ticketAct(b){
+    // The project page's own two acts come first: everything below reads a
+    // ticket and returns early without one, so a project control wired to this
+    // same [data-act] sweep would silently do nothing.
+    if (b.dataset.act === 'rename' || b.dataset.act === 'delproj') return projectAct(b);
     const t = view.kind === 'ticket' ? S.tickets.find((x) => x.id === view.id) : null;
     if (!t) return;
     const act = b.dataset.act;
@@ -2179,6 +2489,31 @@ export function boardPage(): string {
         go('#/t/' + t.id);
         refresh();
       } catch (e) { toast('could not restart: ' + esc(e.message)); }
+    }
+    if (act === 'stop'){
+      if (armedStop !== t.id){
+        armedStop = t.id; b.textContent = 'really stop?';
+        clearTimeout(stopTimer);
+        stopTimer = setTimeout(() => {
+          armedStop = null;
+          const again = document.querySelector('.sheet [data-act="stop"]');
+          if (again) again.textContent = 'stop';
+        }, 4000);
+        return;
+      }
+      clearTimeout(stopTimer); armedStop = null;
+      toast('stopping the session for <b>#' + t.id + '</b>…', 8000);
+      try {
+        runCache.delete(t.id);          // stopping is exactly when the trace moves
+        const res = await api('/api/tickets/' + t.id + '/stop', { method: 'POST', body: '{}' });
+        // Saying which of the two happened, because they fail independently:
+        // a pane that could not be read is still closed, and losing the only
+        // copy of what the run concluded is worth naming rather than implying.
+        toast(res && res.captured === false
+          ? 'session stopped — its pane could not be read, so nothing was kept'
+          : 'session stopped, and what it said is on the ticket');
+        refresh();
+      } catch (e) { toast('could not stop: ' + esc(e.message)); }
     }
     if (act === 'delete'){
       // Armed in a module variable, not on the button. The button is a node
@@ -2203,6 +2538,83 @@ export function boardPage(): string {
       catch (e) { toast('could not delete: ' + esc(e.message)); }
     }
   }
+  // ── projects: rename, delete, create ─────────────────────────────────
+  // A project could be created and renamed and deleted from the CLI and over
+  // the API since both existed — the board simply never called any of it, so a
+  // project's name was fixed from the moment it was made and a stray one could
+  // not be got rid of at all.
+  const pageProject = () => (view.kind === 'project' ? projectById(view.id) : null) || null;
+
+  async function projectAct(b){
+    const p = pageProject();
+    if (!p) return;
+    if (b.dataset.act === 'rename'){ renameProject(p); return; }
+
+    // Same two-press confirm as a ticket, held in a module variable so the
+    // SSE re-render underneath cannot quietly disarm it mid-window.
+    const key = 'p' + p.id;
+    if (armedDelete !== key){
+      armedDelete = key; b.textContent = 'really delete? tickets go loose';
+      clearTimeout(armTimer);
+      armTimer = setTimeout(() => {
+        armedDelete = null;
+        const again = document.querySelector('[data-act="delproj"]');
+        if (again) again.textContent = 'delete project';
+      }, 4000);
+      return;
+    }
+    clearTimeout(armTimer); armedDelete = null;
+    // Out to the app it lived in, or the board — this page is about to stop
+    // having a subject.
+    try {
+      await api('/api/projects/' + p.id, { method: 'DELETE' });
+      toast('project deleted — its tickets are loose in the app');
+      go(p.repo_slug ? '#/r/' + encodeURIComponent(p.repo_slug) : '');
+      refresh();
+    } catch (e) { toast('could not delete: ' + esc(e.message)); }
+  }
+
+  function renameProject(p){
+    tapKey('r');
+    pickOpen({
+      cue: 'rename project', placeholder: 'what this project is called',
+      value: p.name,
+      build: (q) => {
+        const name = q.trim();
+        // Nothing to commit until it differs — an accidental Enter on the
+        // untouched name should close the picker, not fire a pointless PATCH.
+        if (!name || name === p.name) return [];
+        return [{ label: 'Rename to “' + name + '”', r: '⏎', act: () =>
+          writeField('renamed to ' + name,
+            () => api('/api/projects/' + p.id, { method: 'PATCH', body: JSON.stringify({ name }) }),
+            { kind: 'project', id: p.id, fields: { name } }) }];
+      },
+    });
+  }
+
+  // Where a new project lands: the app you are looking at, or the one that owns
+  // the page you are on. '-' is smriti-project's explicit "no app yet", which
+  // the server needs stated — its own cwd means nothing.
+  function newProjectRepo(){
+    if (view.kind === 'app') return view.slug;
+    if (view.kind === 'project') return (pageProject() || {}).repo_slug || '';
+    if (view.kind === 'ticket'){
+      const t = S.tickets.find((x) => x.id === view.id);
+      return (t && t.repo_slug) || '';
+    }
+    return '';
+  }
+
+  async function newProject(name){
+    try {
+      const res = await api('/api/projects',
+        { method: 'POST', body: JSON.stringify({ name, repo: newProjectRepo() || '-' }) });
+      toast('project “' + esc(name) + '” created');
+      await refresh();
+      if (res && res.id) go('#/p/' + res.id);
+    } catch (e) { toast('could not create: ' + esc(e.message)); }
+  }
+
   // ── the stub's three pickers ─────────────────────────────────────────
   // The ticket the page is showing. Everything below reads it fresh at the
   // moment of the click: an agent may have rewritten it since the page was
@@ -2224,7 +2636,16 @@ export function boardPage(): string {
   // All three end the same way: write through the CLI, then redraw. refresh()
   // re-runs route(), which re-renders the ticket page in place — so unlike the
   // overlay this replaced, there is nothing extra to re-open.
-  async function writeField(msg, run){
+  // 'opt' is what the write settles locally: {kind, id, fields}. Given it, the
+  // value lands the moment you pick it and the request goes out behind you —
+  // the picker used to close onto the OLD value and sit there for a round-trip
+  // that spawns five CLI processes. Without it this is the original
+  // write-then-refetch, which the callers with no single field to name still use.
+  async function writeField(msg, run, opt){
+    if (opt){
+      if (await writeOptimistic(opt.kind, opt.id, opt.fields, run)) toast(msg);
+      return;
+    }
     try {
       await run();
       toast(msg);
@@ -2248,13 +2669,18 @@ export function boardPage(): string {
           .map((r) => ({
             label: r.name || r.slug,
             r: r.slug === t.repo_slug ? 'current' : ((r.counts && r.counts.open) || 0) + ' open',
+            // Moving apps drops the project with it — a project lives in one
+            // app, so the old one cannot survive the move and showing it for a
+            // round-trip would be a worse lie than the revert this replaces.
             act: () => writeField('moved to ' + esc(appLabel(r.slug)),
-              () => patchTicket(t.id, { repo: r.slug })),
+              () => patchTicket(t.id, { repo: r.slug }),
+              { kind: 'ticket', id: t.id, fields: { repo_slug: r.slug, project_id: null } }),
           }));
         if (t.repo_slug && 'no app'.includes(ql))
           rows.push({ label: 'no app', r: 'back to an idea',
             act: () => writeField('back to an idea, in no app',
-              () => patchTicket(t.id, { repo: '' })) });
+              () => patchTicket(t.id, { repo: '' }),
+              { kind: 'ticket', id: t.id, fields: { repo_slug: '', project_id: null } }) });
         return rows;
       },
     });
@@ -2281,13 +2707,19 @@ export function boardPage(): string {
             label: p.name,
             group: t.repo_slug ? '' : appLabel(p.repo_slug || NO_APP),
             r: Number(t.project_id) === Number(p.id) ? 'current' : (p.open || 0) + ' open',
+            // The app comes with it: bin/smriti-ticket takes the project's own
+            // repo_slug, so mirroring only project_id here would leave the
+            // "filed under" rows disagreeing until the read landed.
             act: () => writeField('filed into ' + esc(p.name),
-              () => patchTicket(t.id, { project: String(p.id) })),
+              () => patchTicket(t.id, { project: String(p.id) }),
+              { kind: 'ticket', id: t.id,
+                fields: { project_id: p.id, repo_slug: p.repo_slug || '' } }),
           }));
         if (t.project_id != null && 'leave it loose'.includes(ql))
           rows.push({ label: 'leave it loose', group: t.repo_slug ? '' : '— or —', r: 'no project',
             act: () => writeField('now loose in ' + esc(appLabel(t.repo_slug || NO_APP)),
-              () => patchTicket(t.id, { project: null })) });
+              () => patchTicket(t.id, { project: null }),
+              { kind: 'ticket', id: t.id, fields: { project_id: null } }) });
         // An app with no projects yet would otherwise draw a blank panel,
         // which reads as a failure to load rather than as an empty shelf.
         if (!rows.length && !pool.length)
@@ -2317,7 +2749,8 @@ export function boardPage(): string {
             r: v === t.status ? 'current' : v,
             act: () => writeField('#' + t.id + ' → ' + STATUS[v],
               () => api('/api/tickets/' + t.id + '/status',
-                { method: 'POST', body: JSON.stringify({ status: v }) })),
+                { method: 'POST', body: JSON.stringify({ status: v }) }),
+              { kind: 'ticket', id: t.id, fields: { status: v } }),
           }));
       },
     });
@@ -2604,10 +3037,16 @@ export function boardPage(): string {
     cue.textContent = opts.cue || '';
     cue.style.display = opts.cue ? '' : 'none';
     const q = $('#palq');
-    q.value = '';
+    // Seeded for the pickers that EDIT a value rather than choose one — rename
+    // starts from the current name, so a one-word fix is a one-word edit and
+    // not a retype. Selected rather than merely placed: the common case is
+    // replacing the name outright, and a caret at the end would make that the
+    // slowest of the two.
+    q.value = opts.value || '';
     q.placeholder = opts.placeholder || 'type a ticket title, or search…';
-    palRender('');
+    palRender(q.value);
     q.focus();
+    if (opts.value) q.select();
   }
   function pickCommit(i){
     const it = palItems[i];
@@ -2642,6 +3081,15 @@ export function boardPage(): string {
         : view.kind === 'app' ? ' into ' + appLabel(view.slug)
         : view.kind === 'ticket' ? ' beside this one' : '';
       palItems.push({ label: 'New ticket — “' + q.trim() + '”' + into, r: '⏎', act: () => capture(q.trim()) });
+      // Creating a project had no route into it from the board at all. It sits
+      // under the ticket rather than above it because capturing a ticket is the
+      // thing you do constantly and starting a project is the thing you do
+      // occasionally — the palette's first row should stay the common one.
+      const inApp = newProjectRepo();
+      palItems.push({
+        label: 'New project — “' + q.trim() + '”' + (inApp ? ' in ' + appLabel(inApp) : ''),
+        r: 'project', act: () => newProject(q.trim()),
+      });
     }
     // Apps and projects are searchable too — on a board with several apps,
     // typing the name is faster than finding its heading.

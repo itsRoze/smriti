@@ -75,6 +75,8 @@ const starts = () => log().split('\n').filter((l) => l.startsWith('agent start')
 const base = () => `http://127.0.0.1:${port}`;
 const restart = (id: string) =>
   fetch(`${base()}/api/tickets/${id}/restart`, { method: 'POST', body: '{}', headers: { cookie: jar } });
+const stop = (id: string) =>
+  fetch(`${base()}/api/tickets/${id}/stop`, { method: 'POST', body: '{}', headers: { cookie: jar } });
 
 async function until(fn: () => boolean, ms = 6000): Promise<boolean> {
   for (let i = 0; i < ms / 100; i++) {
@@ -355,4 +357,94 @@ test('two restarts at once start one replacement, not two', async () => {
   await Bun.sleep(800);
   expect(starts()).toBe(before + 1);
   expect(closes('wY:p1')).toBe(1);
+});
+
+
+// ─── stop: ending a session on purpose ──────────────────────────────────────
+//
+// The board could start a session and replace one and had no verb for ending
+// one, so a run you were finished with had to be killed in herdr — after which
+// the board went on claiming the ticket was running, because nothing reconciled
+// that. Stop is restart without the relaunch, and it carries the same invariant:
+// nothing is closed that has not first been read.
+
+test('stop reads the pane, closes it, and ends the run', async () => {
+  const { id, wt, uid } = liveTicket('done with this one', 'wS1:p1');
+  writeFileSync(READ_FILE, 'what the run concluded\n');
+  session(wt, 'working', 'wS1:p1');
+
+  const res = await stop(id);
+  expect(res.status).toBe(200);
+
+  expect(await until(() => reads('wS1:p1') > 0)).toBe(true);
+  expect(await until(() => closes('wS1:p1') === 1)).toBe(true);
+  // Read BEFORE closed — the whole point, since closing destroys the only copy.
+  const lines = log().split('\n').filter((l) => l.includes('wS1:p1'));
+  expect(lines.findIndex((l) => l.startsWith('pane read'))).toBeLessThan(
+    lines.findIndex((l) => l.startsWith('pane close')));
+
+  // What it said is kept...
+  const arts = artifacts(uid);
+  expect(arts.some((a) => a.kind === 'report' && (a.body || '').includes('what the run concluded'))).toBe(true);
+  // ...and the run stops claiming to be running, which is the reported bug.
+  expect(await until(() => runRow(uid)?.status === 'failed')).toBe(true);
+  expect(runRow(uid)!.ended_at).toBeTruthy();
+});
+
+test('stop closes even when the pane cannot be read', async () => {
+  // Unlike the sweep, and for the same reason restart does: you ASKED for this
+  // session to end, and refusing would leave you holding the one you wanted
+  // rid of. The capture is still attempted first.
+  const { id, wt } = liveTicket('unreadable but unwanted', 'wS2:p1');
+  writeFileSync(READ_FILE, '');           // an empty read is an uncapturable pane
+  session(wt, 'idle', 'wS2:p1');
+
+  const res = await stop(id);
+  expect(res.status).toBe(200);
+  expect(await res.json()).toMatchObject({ captured: false, closed: true });
+  expect(await until(() => closes('wS2:p1') === 1)).toBe(true);
+});
+
+test('stop on a ticket with no live session says so rather than pretending', async () => {
+  const { id, wt } = liveTicket('nothing to stop', 'wS3:p1');
+  session('/somewhere/else', 'idle', 'wZ:p9');   // herdr has an agent, just not this one
+
+  const res = await stop(id);
+  expect(res.status).toBe(404);
+  await Bun.sleep(600);
+  expect(closes('wS3:p1')).toBe(0);
+  expect(wt).toBeTruthy();
+});
+
+test('stop on a ticket that was never started refuses before touching herdr', async () => {
+  // No worktree means no session by definition, and `ticket start` must not be
+  // used to find one — it would CUT the worktree and flip the ticket to
+  // in_progress, which is the opposite of stopping.
+  const add = cli(TICKET, ['add', 'never begun', '--ready']);
+  const id = (add.stdout.match(/#(\d+)/) ?? [])[1]!;
+  const before = starts();
+
+  const res = await stop(id);
+  expect(res.status).toBe(400);
+  const row = (JSON.parse(cli(TICKET, ['list', '--all', '--json']).stdout) as any[])
+    .find((t) => String(t.id) === id);
+  expect(row.status).toBe('ready');          // not flipped to in_progress
+  expect(row.worktree_path).toBeFalsy();     // and no worktree was cut
+  expect(starts()).toBe(before);
+});
+
+test('a stop and a restart at once do not both work the same pane', async () => {
+  // Four paths can now close a pane — sweep, restart, stop, and the reconcile
+  // pass ends runs beside them. They shared no serialization: the sweep guarded
+  // only against itself and restart used a different flag.
+  const { id, wt } = liveTicket('contended', 'wS4:p1');
+  writeFileSync(READ_FILE, 'contended output\n');
+  session(wt, 'working', 'wS4:p1');
+
+  const [a, b] = await Promise.all([stop(id), restart(id)]);
+  const codes = [a.status, b.status].sort();
+  expect(codes).toEqual([200, 409]);
+
+  await Bun.sleep(900);
+  expect(closes('wS4:p1')).toBe(1);
 });

@@ -138,6 +138,70 @@ stamp_event() { sq "UPDATE events SET at='$3' WHERE run_uid='$1' AND id=(
   [ "$status" -eq 0 ]
 }
 
+# ─── end --ticket ───────────────────────────────────────────────────────────
+#
+# The form the ticket store calls when work reaches a terminal status. Closing a
+# run used to depend on an agent reaching a line of skill markdown, so any run
+# that ended by another route leaked and sat in the board's "waiting on you"
+# forever with its counter climbing.
+
+@test "end --ticket: closes every open run for that ticket" {
+  "$FAKE_BIN/smriti-ticket" add "a thing" >/dev/null
+  local a b
+  a=$("$CLI" start begin --ticket 1 | cut -d= -f2-)
+  b=$("$CLI" start begin --ticket 1 | cut -d= -f2-)
+
+  "$CLI" end --ticket 1 --status failed
+
+  run "$CLI" show "$a"; [[ "$output" == *"failed"* ]]
+  run "$CLI" show "$b"; [[ "$output" == *"failed"* ]]
+}
+
+@test "end --ticket: leaves another ticket's runs alone" {
+  "$FAKE_BIN/smriti-ticket" add "mine"  >/dev/null
+  "$FAKE_BIN/smriti-ticket" add "yours" >/dev/null
+  local mine yours
+  mine=$("$CLI" start begin --ticket 1 | cut -d= -f2-)
+  yours=$("$CLI" start begin --ticket 2 | cut -d= -f2-)
+
+  "$CLI" end --ticket 1 --status failed
+
+  run "$CLI" show "$mine";  [[ "$output" == *"failed"* ]]
+  run "$CLI" show "$yours"; [[ "$output" == *"running"* ]]
+}
+
+@test "end --ticket: does not restate the duration of a finished run" {
+  # `end --run` rewrites ended_at unconditionally, which is right for the run
+  # that is ending. Sweeping a whole ticket must not reach back into runs that
+  # already closed and silently change how long they took.
+  "$FAKE_BIN/smriti-ticket" add "a thing" >/dev/null
+  local uid; uid=$("$CLI" start begin --ticket 1 | cut -d= -f2-)
+  "$CLI" end --run "$uid" --status done
+
+  local before; before=$("$CLI" list --ticket 1 --json | grep -o '"ended_at":"[^"]*"' | head -1)
+  sleep 1
+  "$CLI" end --ticket 1 --status failed
+  local after; after=$("$CLI" list --ticket 1 --json | grep -o '"ended_at":"[^"]*"' | head -1)
+
+  [ "$before" = "$after" ]
+  run "$CLI" show "$uid"; [[ "$output" == *"done"* ]]
+}
+
+@test "end --ticket: a ticket with nothing open is a successful no-op" {
+  "$FAKE_BIN/smriti-ticket" add "a thing" >/dev/null
+  run "$CLI" end --ticket 1
+  [ "$status" -eq 0 ]
+  run "$CLI" end --ticket 999
+  [ "$status" -eq 0 ]
+}
+
+@test "end: --run and --ticket together are refused" {
+  # They name different scopes and silently honouring one would be a coin toss.
+  run "$CLI" end --run deadbeef --ticket 1
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"exclusive"* ]]
+}
+
 # ─── the cursor ─────────────────────────────────────────────────────────────
 
 @test "tail: --after acts as a cursor, returning only newer events" {

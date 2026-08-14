@@ -5,7 +5,7 @@
 # Subcommands:
 #   smriti trace start <skill> [--ticket N]   begin a run; prints RUN_UID=…
 #   smriti trace emit <phase> <status> [--run UID] [--note TEXT]
-#   smriti trace end [--run UID] [--status done|failed]
+#   smriti trace end [--run UID | --ticket N] [--status done|failed]
 #   smriti trace report [--source run|pane] …    what the run concluded; stdin
 #   smriti trace artifacts [--run UID] [--ticket N] [--json]
 #   smriti trace list [--active] [--ticket N] [--limit N] [--json]
@@ -73,7 +73,7 @@ usage:
   smriti trace emit <phase> <start|ok|fail|awaiting> [--run UID] [--note TEXT]
                                                      [--html-session ID]
                                                      [--if-html-session ID]
-  smriti trace end [--run UID] [--status done|failed]
+  smriti trace end [--run UID | --ticket N] [--status done|failed]
   smriti trace report [--run UID] [--kind K] [--source run|pane]
                       [--status ok|fail] [--path P]      body on stdin
   smriti trace artifacts [--run UID] [--ticket N] [--kind K] [--json]
@@ -355,10 +355,11 @@ cmd_emit() {
 # ─── end ────────────────────────────────────────────────────────────────────
 
 cmd_end() {
-  local uid="" status="done"
+  local uid="" status="done" ticket=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --run)    [ $# -ge 2 ] || die "--run requires a value";    uid="$2";    shift 2 ;;
+      --ticket) [ $# -ge 2 ] || die "--ticket requires a value"; ticket="$2"; shift 2 ;;
       --status) [ $# -ge 2 ] || die "--status requires a value"; status="$2"; shift 2 ;;
       *) die "unknown flag: $1" ;;
     esac
@@ -367,8 +368,28 @@ cmd_end() {
     *" $status "*) ;;
     *) die "invalid --status '$status' (expected: $VALID_RUN_STATUSES)" ;;
   esac
+  [ -n "$uid" ] && [ -n "$ticket" ] && die "--run and --ticket are exclusive"
 
   factory_db_exists || return 0
+
+  # --ticket: close out a whole ticket at once, for the callers that learn the
+  # work is over without knowing which runs were open — `ticket status shipped`,
+  # `ticket cancel`. Closing a run used to depend on an agent reaching a line of
+  # skill markdown, every one of them suffixed `|| true`, so any run that ended
+  # by another route leaked and sat in "waiting on you" forever.
+  #
+  # Blunt on purpose: once a ticket is shipped or cancelled EVERY run against it
+  # is over, whoever concluded it. But scoped to runs still open, unlike the
+  # single-run path below — `ended_at` is written unconditionally there, so
+  # re-ending a finished run would silently restate how long it took.
+  if [ -n "$ticket" ]; then
+    require_num "$ticket" "--ticket"
+    db_write "UPDATE runs SET status = $(sql_quote "$status"), ended_at = $(sql_quote "$(now_utc)"),
+                              html_session = NULL
+              WHERE ticket_id = $ticket AND status IN ('running','awaiting');"
+    return 0
+  fi
+
   [ -n "$uid" ] || uid=$(implicit_run)
   [ -n "$uid" ] || return 0    # nothing open; ending twice is not an error
   run_exists "$uid" || die "no run '$uid'" 4
