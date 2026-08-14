@@ -1304,12 +1304,154 @@ describe('board UI', () => {
       await page.locator('#palopts .o:has-text("New project")').click();
 
       await page.waitForSelector('.slab h1:has-text("Built From The Palette")');
+      // The page is optimistic now, so its appearance is no longer proof the
+      // row was written — poll the store rather than reading it on that signal.
+      await untilStore(() => (JSON.parse(run(PROJECT, ['list', '--all', '--json'], appDir).stdout) as any[])
+        .some((p) => p.name === 'Built From The Palette'), true, 'palette project');
       const made = (JSON.parse(run(PROJECT, ['list', '--all', '--json'], appDir).stdout) as any[])
         .find((p) => p.name === 'Built From The Palette');
       expect(made).toBeTruthy();
       expect(made.repo_slug).toBe('test-demo');   // the app you were standing in
       expect(errors).toEqual([]);
       run(PROJECT, ['rm', String(made.id), '--yes'], appDir);
+    } finally { await context.close(); }
+  }, T);
+
+  it('a new project appears and opens before the server answers', async () => {
+    if (!HAS_CHROMIUM) return;
+    // Creating used to be POST → await refresh() → navigate: two full round
+    // trips, the second of which is five CLI spawns, before anything at all was
+    // on screen. The page now exists on the keystroke.
+    const { context, page } = await open('#/r/test-demo');
+    try {
+      await page.waitForSelector('.slab');
+      let release: () => void = () => {};
+      const held = new Promise<void>((r) => { release = r; });
+      await page.route('**/api/projects', async (route) => {
+        if (route.request().method() !== 'POST') return route.continue();
+        await held;
+        return route.continue();
+      });
+
+      await page.keyboard.press('c');
+      await page.locator('#palq').fill('Optimistically Made');
+      await page.locator('#palopts .o:has-text("New project")').click();
+
+      // On its own page, with its name, while the POST is still unanswered.
+      await page.waitForSelector('.slab h1:has-text("Optimistically Made")');
+      expect(page.url()).toContain('#/p/-');       // the placeholder route
+      // ...and nothing destructive can be aimed at an id the server has never
+      // seen.
+      await page.locator('[data-act="delproj"]').click();
+      await page.waitForSelector('#toast:has-text("still being created")');
+
+      release();
+      // The real id takes over, and the placeholder route is replaced rather
+      // than left behind as a back-button destination.
+      await page.waitForFunction(() => !/#\/p\/-/.test(location.hash));
+      await untilStore(() => (JSON.parse(run(PROJECT, ['list', '--all', '--json'], appDir).stdout) as any[])
+        .some((p) => p.name === 'Optimistically Made'), true, 'project create');
+      const made = (JSON.parse(run(PROJECT, ['list', '--all', '--json'], appDir).stdout) as any[])
+        .find((p) => p.name === 'Optimistically Made');
+      expect(page.url()).toContain('#/p/' + made.id);
+      run(PROJECT, ['rm', String(made.id), '--yes'], appDir);
+    } finally { await context.close(); }
+  }, T);
+
+  it('a create the server refuses takes its page away again', async () => {
+    if (!HAS_CHROMIUM) return;
+    // No errors assertion: the 500 is the point.
+    const { context, page } = await open('#/r/test-demo');
+    try {
+      await page.waitForSelector('.slab');
+      await page.route('**/api/projects', (route) =>
+        route.request().method() === 'POST'
+          ? route.fulfill({ status: 500, contentType: 'application/json',
+                            body: JSON.stringify({ error: 'nope' }) })
+          : route.continue());
+
+      await page.keyboard.press('c');
+      await page.locator('#palq').fill('Never Was');
+      await page.locator('#palopts .o:has-text("New project")').click();
+
+      await page.waitForSelector('#toast:has-text("could not create")');
+      // Back on the app it was made from, and gone from the margin.
+      // waitForFunction on the hash alone is satisfied by the hash CHANGING,
+       // which can precede the hashchange handler that redraws. Wait for the
+       // margin itself to agree.
+      await page.waitForFunction(() =>
+        location.hash === '#/r/test-demo' && !/Never Was/.test(document.querySelector('#rail')?.textContent || ''));
+      expect((JSON.parse(run(PROJECT, ['list', '--all', '--json'], appDir).stdout) as any[])
+        .some((p) => p.name === 'Never Was')).toBe(false);
+    } finally { await context.close(); }
+  }, T);
+
+  it('a deleted project leaves the margin before the server answers', async () => {
+    if (!HAS_CHROMIUM) return;
+    must(run(PROJECT, ['add', 'Vanishing', '--repo', 'test-demo'], appDir), 'add project');
+    const pid = (JSON.parse(run(PROJECT, ['list', '--all', '--json'], appDir).stdout) as any[])
+      .find((p) => p.name === 'Vanishing').id;
+    must(run(TICKET, ['add', 'goes loose', '--project', String(pid)], appDir), 'add ticket');
+    const tid = (JSON.parse(run(TICKET, ['list', '--all', '--json'], appDir).stdout) as any[])
+      .find((t) => t.title === 'goes loose').id;
+
+    const { context, page } = await open('#/p/' + pid);
+    try {
+      let release: () => void = () => {};
+      const held = new Promise<void>((r) => { release = r; });
+      await page.route('**/api/projects/**', async (route) => {
+        if (route.request().method() !== 'DELETE') return route.continue();
+        await held;
+        return route.continue();
+      });
+
+      await page.locator('[data-act="delproj"]').click();
+      await page.waitForSelector('[data-act="delproj"]:has-text("tickets go loose")');
+      await page.locator('[data-act="delproj"]').click();
+
+      // Off the page and out of the margin while the DELETE is still in flight.
+      await page.waitForFunction(() =>
+        location.hash === '#/r/test-demo' && !/Vanishing/.test(document.querySelector('#rail')?.textContent || ''));
+      // And the promise the label makes holds locally too: the ticket is still
+      // there, just no longer under a heading that has gone.
+      await page.waitForSelector('.card:has-text("goes loose")');
+
+      release();
+      await untilStore(() => (JSON.parse(run(PROJECT, ['list', '--all', '--json'], appDir).stdout) as any[])
+        .some((p) => p.id === pid), false, 'project delete');
+    } finally { await context.close(); run(TICKET, ['rm', String(tid), '--yes'], appDir); }
+  }, T);
+
+  it('a captured ticket shows as saving, and is not openable until it is real', async () => {
+    if (!HAS_CHROMIUM) return;
+    const { context, page } = await open('#/r/test-demo');
+    try {
+      await page.waitForSelector('.slab');
+      let release: () => void = () => {};
+      const held = new Promise<void>((r) => { release = r; });
+      await page.route('**/api/tickets', async (route) => {
+        if (route.request().method() !== 'POST') return route.continue();
+        await held;
+        return route.continue();
+      });
+
+      await page.keyboard.press('c');
+      await page.locator('#palq').fill('captured optimistically');
+      await page.locator('#palopts .o:has-text("New ticket")').click();
+
+      const card = page.locator('.card:has-text("captured optimistically")');
+      await card.waitFor();
+      // Present and legible, but carrying no id to open — a page for a ticket
+      // the server has never heard of would offer a start button that cannot work.
+      expect((await card.innerText()).toLowerCase()).toContain('saving');
+      expect(await card.getAttribute('data-tid')).toBeNull();
+
+      release();
+      await page.waitForSelector('.card[data-tid]:has-text("captured optimistically")');
+      const made = (JSON.parse(run(TICKET, ['list', '--all', '--json'], appDir).stdout) as any[])
+        .find((t) => t.title === 'captured optimistically');
+      expect(made).toBeTruthy();
+      run(TICKET, ['rm', String(made.id), '--yes'], appDir);
     } finally { await context.close(); }
   }, T);
 

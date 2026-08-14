@@ -315,6 +315,11 @@ export function boardPage(): string {
     border-radius:18px 22px 15px 20px/20px 15px 22px 18px;transform:rotate(-2.5deg);
   }
   .slab .who{flex:1;min-width:0}
+  /* A row that exists on screen before the server has been told. Dimmed rather
+     than skeletonised: the title is real and worth reading, only its identity
+     is pending. */
+  .card.pend{opacity:.62}
+  .card.pend .st{font-style:italic}
   .slab h1{font-size:32px;font-weight:400;margin:0 0 4px;line-height:1.15;text-wrap:balance}
   /* The project name IS the rename control, so it has to look touchable without
      turning a heading into a button. Same highlighter wash the stub's editable
@@ -1173,10 +1178,18 @@ export function boardPage(): string {
           const rel = at ? fmtAgo(at) : '';
           return rel ? '<span class="ago" data-live="ago" data-since="' + esc(at) + '">' + rel + '</span>' : '';
         })();
-    return '<div class="box card ' + stateCls + '" data-tid="' + t.id + '" style="animation-delay:' + (cardIdx++ * 45) + 'ms">' +
+    // A card the server has not acknowledged yet gets no data-tid, so it cannot
+    // be opened: its page would offer start and delete against a placeholder id
+    // the server knows nothing about. It shows its title and says what it is
+    // doing, which is the whole reason it is on screen this early.
+    const waiting = Boolean(t._pending);
+    return '<div class="box card ' + stateCls + (waiting ? ' pend' : '') + '"' +
+      (waiting ? '' : ' data-tid="' + t.id + '"') +
+      ' style="animation-delay:' + (cardIdx++ * 45) + 'ms">' +
       (t.status === 'shipped' ? '<span class="tick">✓</span>' : '') +
       '<div class="t">' + esc(t.title) + '</div>' +
-      '<div class="foot"><span class="id">#' + t.id + '</span><span class="st">' + st + '</span>' + ago + '</div></div>';
+      '<div class="foot"><span class="id">' + (waiting ? '' : '#' + t.id) + '</span>' +
+      '<span class="st">' + (waiting ? 'saving…' : st) + '</span>' + (waiting ? '' : ago) + '</div></div>';
   }
 
   function tallyHtml(list){
@@ -2139,10 +2152,77 @@ export function boardPage(): string {
   const WRITE_TIMEOUT_MS = 15000;
 
   const pendKey = (kind, id, field) => kind + ':' + id + ':' + field;
+  const collFor = (st, kind) =>
+    kind === 'ticket' ? (st.tickets || []) : kind === 'project' ? (st.projects || []) : (st.repositories || []);
   const rowFor = (st, kind, id) =>
-    kind === 'ticket' ? (st.tickets || []).find((x) => Number(x.id) === Number(id))
-      : kind === 'project' ? (st.projects || []).find((x) => Number(x.id) === Number(id))
-      : (st.repositories || []).find((x) => x.slug === id);
+    kind === 'repo' ? (st.repositories || []).find((x) => x.slug === id)
+      : collFor(st, kind).find((x) => Number(x.id) === Number(id));
+
+  // Rows that exist, or stop existing, before the server has been told.
+  //
+  // The field overlay above cannot express either: patching a column assumes a
+  // row to patch. Creating and deleting were the two mutations left doing the
+  // full server-round-trip-then-refetch-everything, and both are the ones where
+  // the wait is most obvious, because nothing at all is on screen until it ends.
+  //
+  // Keyed 'kind#id'. A create has no id yet — sqlite assigns it — so it gets a
+  // NEGATIVE placeholder, which is a shape real ids never take, and the entry is
+  // re-keyed to the real one the moment the server answers.
+  const pendingRows = new Map();
+  const rowKey = (kind, id) => kind + '#' + id;
+  let tempSeq = 0;
+  const tempId = () => -(++tempSeq);
+  // The one thing every caller has to ask before acting on a row: a placeholder
+  // id must never reach the server, which knows nothing about it.
+  const isTemp = (id) => Number(id) < 0;
+
+  function pendRowSet(kind, id, op, row){
+    const e = { kind, id, op, row, until: Date.now() + PENDING_TTL_MS };
+    if (op === 'remove'){
+      // Keep what is about to be taken away, because a refusal has to put it
+      // back — including the tickets a project was holding, which the removal
+      // turns loose on the way past.
+      e.row = rowFor(S, kind, id);
+      if (kind === 'project'){
+        e.held = (S.tickets || [])
+          .filter((t) => Number(t.project_id) === Number(id))
+          .map((t) => ({ id: t.id, project_id: t.project_id,
+                         project_ref: t.project_ref, project_name: t.project_name }));
+      }
+    }
+    pendingRows.set(rowKey(kind, id), e);
+  }
+  // Undo, not forget — the same distinction the field overlay needs and for the
+  // same reason. applyPendingRows has already pushed the row in, or spliced it
+  // out, of the live state; deleting the entry alone only stops that being
+  // redone, leaving a project on screen that was refused, or a deleted one
+  // still missing.
+  function pendRowRollback(kind, id){
+    const e = pendingRows.get(rowKey(kind, id));
+    pendingRows.delete(rowKey(kind, id));
+    if (!e) return;
+    const coll = collFor(S, kind);
+    const at = coll.findIndex((x) => Number(x.id) === Number(e.id));
+    if (e.op === 'add'){
+      if (at >= 0) coll.splice(at, 1);
+      return;
+    }
+    if (e.row && at < 0) coll.push(e.row);
+    for (const h of (e.held || [])){
+      const t = (S.tickets || []).find((x) => Number(x.id) === Number(h.id));
+      if (t) Object.assign(t, h);
+    }
+  }
+  // A create that landed: the placeholder becomes the real row, under the real
+  // id, so the next read recognises it and the entry retires itself.
+  function pendRowPromote(kind, tmp, realId){
+    const e = pendingRows.get(rowKey(kind, tmp));
+    if (!e) return;
+    pendingRows.delete(rowKey(kind, tmp));
+    e.id = realId;
+    e.row = Object.assign({}, e.row, { id: realId });
+    pendingRows.set(rowKey(kind, realId), e);
+  }
 
   // 'prev' is captured here, from the state as it stands, because rolling back
   // is not the same as forgetting. applyPending mutates the row in place, so
@@ -2189,7 +2269,45 @@ export function boardPage(): string {
   // ones the server has caught up with. An entry is dropped only once the
   // server's value MATCHES, so a read taken before the write landed keeps
   // showing your value rather than flickering back to the old one.
+  // Rows first, because a field patch on a row that is optimistically present
+  // has nothing to apply to until that row is in the state.
+  //
+  // Each entry retires itself the moment the server agrees: a pending create
+  // when the row appears, a pending delete when it is gone. Until then it is
+  // re-applied over every read, so an SSE tick that arrives before the write
+  // lands cannot flicker the row back into or out of existence.
+  function applyPendingRows(next){
+    if (!pendingRows.size) return;
+    const now = Date.now();
+    for (const e of [...pendingRows.values()]){
+      if (now > e.until){ pendingRows.delete(rowKey(e.kind, e.id)); continue; }
+      const coll = collFor(next, e.kind);
+      const at = coll.findIndex((x) => Number(x.id) === Number(e.id));
+
+      if (e.op === 'remove'){
+        if (at < 0){ pendingRows.delete(rowKey(e.kind, e.id)); continue; }
+        coll.splice(at, 1);
+        // What the server does on the way past, mirrored: deleting a project
+        // does not delete its tickets, it turns them loose. Without this the
+        // tickets keep pointing at a project that is no longer in the state and
+        // render under a heading that has gone.
+        if (e.kind === 'project'){
+          for (const t of (next.tickets || [])){
+            if (Number(t.project_id) === Number(e.id)){
+              t.project_id = null; t.project_ref = null; t.project_name = null;
+            }
+          }
+        }
+        continue;
+      }
+      // 'add'
+      if (at >= 0){ pendingRows.delete(rowKey(e.kind, e.id)); continue; }
+      coll.push(e.row);
+    }
+  }
+
   function applyPending(next){
+    applyPendingRows(next);
     if (!pending.size) return next;
     const now = Date.now();
     for (const e of [...pending.values()]){
@@ -2341,10 +2459,40 @@ export function boardPage(): string {
     catch (e) { toast('could not update: ' + esc(e.message)); }
   }
   async function addTicket(title, where){
-    const body = JSON.stringify(Object.assign({ title }, where || {}));
-    const res = await api('/api/tickets', { method: 'POST', body });
-    toast('added <b>#' + res.id + '</b> — press s to start it');
-    refresh();
+    const w = where || {};
+    const body = JSON.stringify(Object.assign({ title }, w));
+    // The card is on the board before the request leaves. It carries a
+    // placeholder id and '_pending', which keeps it un-clickable until the real
+    // one arrives — a page for a ticket the server has never heard of would
+    // offer a start button that cannot work.
+    const tmp = tempId();
+    const proj = w.project ? projectById(w.project) : null;
+    const now = new Date().toISOString();
+    pendRowSet('ticket', tmp, 'add', {
+      id: tmp, title, body: '', status: 'idea', priority: 0,
+      repo_slug: w.repo || (proj && proj.repo_slug) || null,
+      project_id: proj ? proj.id : null,
+      project_ref: proj ? proj.slug : null,
+      project_name: proj ? proj.name : null,
+      branch: null, worktree_path: null, pr_url: null,
+      created_at: now, updated_at: now, _pending: true,
+    });
+    S = applyPending(S);
+    route();
+
+    try {
+      const res = await api('/api/tickets', { method: 'POST', body });
+      pendRowPromote('ticket', tmp, res.id);
+      S = applyPending(S);
+      route();
+      toast('added <b>#' + res.id + '</b> — press s to start it');
+      refresh();
+    } catch (e) {
+      pendRowRollback('ticket', tmp);
+      S = applyPending(S);
+      route();
+      throw e;      // capture() reports it; this only undoes the optimism
+    }
   }
   // Every other action reports its own failure; capture used to be the one
   // exception, so a rejected title closed the palette and showed nothing.
@@ -2367,6 +2515,8 @@ export function boardPage(): string {
     }
     if (view.kind === 'project'){
       const p = projectById(view.id);
+      // Filing into a placeholder would send the server an id it cannot resolve.
+      if (p && isTemp(p.id)){ toast('that project is still being created — one moment'); return; }
       try { await addTicket(title, { project: String(p ? p.id : ''), repo: p && p.repo_slug ? p.repo_slug : '' }); }
       catch (e) { toast('could not add: ' + esc(e.message)); }
       return;
@@ -2601,8 +2751,17 @@ export function boardPage(): string {
       clearTimeout(armTimer); armedDelete = null;
       // Out to the board first: the page you are standing on is about to stop
       // having a subject, and route() would bounce you anyway.
-      try { await api('/api/tickets/' + t.id, { method: 'DELETE' }); toast('#' + t.id + ' deleted'); go(''); refresh(); }
-      catch (e) { toast('could not delete: ' + esc(e.message)); }
+      pendRowSet('ticket', t.id, 'remove');
+      S = applyPending(S);
+      go('');
+      try { await api('/api/tickets/' + t.id, { method: 'DELETE' }); toast('#' + t.id + ' deleted'); refresh(); }
+      catch (e) {
+        pendRowRollback('ticket', t.id);
+        S = applyPending(S);
+        route();
+        toast('could not delete: ' + esc(e.message), 6000);
+        refresh();
+      }
     }
   }
   // ── projects: rename, delete, create ─────────────────────────────────
@@ -2615,6 +2774,9 @@ export function boardPage(): string {
   async function projectAct(b){
     const p = pageProject();
     if (!p) return;
+    // A placeholder id would 404, and worse, would read as the project being
+    // broken rather than simply not saved yet. The window is one request wide.
+    if (isTemp(p.id)){ toast('still being created — one moment'); return; }
     if (b.dataset.act === 'rename'){ renameProject(p); return; }
 
     // Same two-press confirm as a ticket, held in a module variable so the
@@ -2631,14 +2793,25 @@ export function boardPage(): string {
       return;
     }
     clearTimeout(armTimer); armedDelete = null;
+    // Gone from the state first, then navigated away, then told to the server.
     // Out to the app it lived in, or the board — this page is about to stop
     // having a subject.
+    pendRowSet('project', p.id, 'remove');
+    S = applyPending(S);
+    go(p.repo_slug ? '#/r/' + encodeURIComponent(p.repo_slug) : '');
     try {
       await api('/api/projects/' + p.id, { method: 'DELETE' });
       toast('project deleted — its tickets are loose in the app');
-      go(p.repo_slug ? '#/r/' + encodeURIComponent(p.repo_slug) : '');
       refresh();
-    } catch (e) { toast('could not delete: ' + esc(e.message)); }
+    } catch (e) {
+      // Put it back. The overlay is the only thing that removed it, so dropping
+      // the entry restores the project AND the tickets it was holding.
+      pendRowRollback('project', p.id);
+      S = applyPending(S);
+      route();
+      toast('could not delete: ' + esc(e.message), 6000);
+      refresh();
+    }
   }
 
   function renameProject(p){
@@ -2675,13 +2848,41 @@ export function boardPage(): string {
   }
 
   async function newProject(name){
+    const repo = newProjectRepo();
+    // The page exists before the server has heard of it. sqlite assigns the id,
+    // so the row carries a placeholder until the answer comes back — and the
+    // route uses that placeholder too, which is what makes the project page open
+    // on the keystroke rather than two round trips later.
+    const tmp = tempId();
+    pendRowSet('project', tmp, 'add', {
+      id: tmp, name, slug: '', description: '',
+      repo_slug: repo || null, status: 'active', open: 0, _pending: true,
+    });
+    S = applyPending(S);
+    go('#/p/' + tmp);
+
     try {
       const res = await api('/api/projects',
-        { method: 'POST', body: JSON.stringify({ name, repo: newProjectRepo() || '-' }) });
+        { method: 'POST', body: JSON.stringify({ name, repo: repo || '-' }) });
+      const id = res && res.id;
+      if (!id) throw new Error('the board did not say which project it made');
+      pendRowPromote('project', tmp, id);
+      S = applyPending(S);
+      // replace, not push: the placeholder route must not become a back-button
+      // destination, because the id in it stops resolving the moment the real
+      // row lands.
+      if (location.hash === '#/p/' + tmp) location.replace('#/p/' + id);
+      else route();
       toast('project “' + esc(name) + '” created');
-      await refresh();
-      if (res && res.id) go('#/p/' + res.id);
-    } catch (e) { toast('could not create: ' + esc(e.message)); }
+      refresh();
+    } catch (e) {
+      pendRowRollback('project', tmp);
+      S = applyPending(S);
+      // Off the page that just stopped existing, back where it was opened from.
+      if (location.hash === '#/p/' + tmp) go(repo ? '#/r/' + encodeURIComponent(repo) : '');
+      else route();
+      toast('could not create: ' + esc(e.message), 6000);
+    }
   }
 
   // ── the stub's three pickers ─────────────────────────────────────────
