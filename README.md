@@ -220,8 +220,21 @@ you scroll — where it is filed, and everything you can do to it. The
 description is click-to-edit, `⌘⏎` to save, and markdown is the source of
 truth, so `smriti ticket add --body` round-trips byte for byte. Work you have
 decided against gets **cancelled** (reversible, keeps its paper trail); work
-that should never have existed gets **deleted** (the ticket and its index rows
-go, the markdown on disk never does).
+that should never have existed gets **deleted** — and that now takes the
+documents with it, content and all, since the factory holds them rather than
+pointing at them. Any working copy still on disk is left where it is.
+
+**The paper trail is stored, not linked.** A plan, a debug write-up or a design
+note lives in `factory.db`, so it outlives the branch, the worktree, and the
+repo being moved or re-cloned. The markdown under `~/.smriti/projects/<slug>/`
+is a working copy — the file wins while it exists, the store wins once it is
+gone — and `smriti clean` reclaims a merged branch's copies only after storing
+them, per file. Nothing is ever committed into your repo.
+
+`smriti ticket doc-adopt` is the one-shot that takes in markdown written before
+the store existed, parsed out of the `<branch>-<type>-<timestamp>.md` filename
+contract; `--dry-run` shows you the list first, and anything in an older
+filename shape is reported rather than guessed at.
 
 `esc` walks back up one rung at a time — ticket, project, app, board — and on a
 ticket page the page itself is the selection, so `s`, `d`, `e` and `p` act on
