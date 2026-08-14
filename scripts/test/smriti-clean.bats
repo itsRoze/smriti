@@ -26,7 +26,14 @@ setup() {
   # deleted branch's out-of-repo artifacts. Symlink it in, and isolate
   # SMRITI_HOME so tests never read or write the real ~/.smriti.
   ln -s "$ROOT/bin/smriti-slug" "$FAKE_BIN/smriti-slug"
+  # Cleaning closes out the ticket whose branch just landed, and closing it out
+  # now also ends that ticket's run — so both siblings have to be reachable the
+  # way they are in a real install.
+  ln -s "$ROOT/bin/smriti-ticket" "$FAKE_BIN/smriti-ticket"
+  ln -s "$ROOT/bin/smriti-trace" "$FAKE_BIN/smriti-trace"
   export SMRITI_HOME="$WORK/smriti-home"
+  TICKET="$FAKE_BIN/smriti-ticket"
+  TRACE="$FAKE_BIN/smriti-trace"
   CLI="$FAKE_BIN/smriti-clean"
 
   # Default: run with NO gh on PATH so tests use the git-fallback path. We
@@ -701,4 +708,67 @@ make_merged_branch_in_worktree() {
   [ "$status" -eq 0 ]
   [ "$(echo "$output" | jq -r .action)" = "refuse" ]
   echo "$output" | jq -r .refusal_reason | grep -q "dirty"
+}
+
+# ─── the run a successful ship leaves behind ────────────────────────────────
+#
+# /begin invokes `smriti clean` FROM INSIDE the run it is finishing, as the last
+# step of shipping. That makes clean the one route that legitimately reaches a
+# terminal ticket status with its own run still going — and the reason it ends
+# the run itself rather than leaving it to `ticket done`, which reads a still-open
+# run as one that never reached its ending.
+
+run_status_of() {
+  "$TRACE" list --ticket "$1" --json | grep -o '"status":"[^"]*"' | head -1 | cut -d'"' -f4
+}
+
+@test "clean: a successful ship ends the run as done, not failed" {
+  # The regression this guards: `ticket done` marks any still-open run failed,
+  # and the skill's own `trace end` afterwards cannot correct it — implicit_run
+  # only resolves runs that are still open. Every clean ship would have been
+  # filed as a failure.
+  init_repo
+  "$TICKET" add "shipping this" >/dev/null
+  # The real shape: `start` is what records the branch on the ticket, and
+  # mark_ticket_shipped finds the ticket BY that branch. A ticket with no branch
+  # is never matched, so the whole path would be skipped and the test would pass
+  # for the wrong reason.
+  local wt; wt=$("$TICKET" start 1 | head -1)
+  local branch; branch=$(git -C "$wt" branch --show-current)
+  "$TRACE" start begin --ticket 1 >/dev/null
+
+  echo work > "$wt/f-work"
+  git -C "$wt" add f-work
+  git -C "$wt" commit -q -m "the work"
+  git merge --no-ff --no-edit -q "$branch"
+
+  run "$CLI" --branch "$branch" --force
+  [ "$status" -eq 0 ]
+
+  [ "$(run_status_of 1)" = "done" ]
+  "$TRACE" list --ticket 1 --json | grep -q '"ended_at":"'
+}
+
+@test "clean: a ticket it declines to ship keeps its run untouched" {
+  # Cancel means "I decided against this", and clean refuses to overwrite that.
+  # The run must not be closed out as a success on the way past either.
+  init_repo
+  "$TICKET" add "abandoned" >/dev/null
+  local wt; wt=$("$TICKET" start 1 | head -1)
+  local branch; branch=$(git -C "$wt" branch --show-current)
+  "$TRACE" start begin --ticket 1 >/dev/null
+  # cancel ends the run itself, as failed — so re-open one to prove clean does
+  # not then relabel it done.
+  "$TICKET" cancel 1 >/dev/null
+  "$TRACE" start begin --ticket 1 >/dev/null
+
+  echo work > "$wt/f-work"
+  git -C "$wt" add f-work
+  git -C "$wt" commit -q -m "the work"
+  git merge --no-ff --no-edit -q "$branch"
+
+  run "$CLI" --branch "$branch" --force
+  [ "$status" -eq 0 ]
+
+  [ "$(run_status_of 1)" = "running" ]
 }

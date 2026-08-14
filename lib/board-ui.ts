@@ -329,9 +329,9 @@ export function boardPage(): string {
     content:'✎';position:absolute;top:50%;right:9px;transform:translateY(-50%);
     font-size:15px;color:var(--ink-3);opacity:0;transition:opacity .12s ease}
   .slab h1.rename:hover::after,.slab h1.rename:focus-visible::after{opacity:1}
-  /* The stub's tear-off strip, for the pages that have no stub. A project page
-     is one column, so its danger zone is a full-width rule rather than the
-     bottom of a sidebar. */
+  /* The tear-off strip a danger zone sits below. Defined once here and
+     narrowed for the stub further down, rather than written twice: the pair had
+     already drifted while the two copies were only kept apart by specificity. */
   .tear{margin:34px 0 0;padding-top:14px;border-top:2px dashed var(--ink-4)}
   .tear .btn{font-size:14px;padding:5px 12px 6px}
   .slab .path{font-family:ui-monospace,Menlo,monospace;font-size:11px;color:var(--ink-3);word-break:break-all}
@@ -739,8 +739,10 @@ export function boardPage(): string {
   .stub .acts .go{font-size:18px;padding:10px 16px 11px}
   .stub .minor{display:flex;gap:8px;flex-wrap:wrap}
   .stub .minor .btn{width:auto;flex:1 1 auto;font-size:14px;padding:5px 12px 6px}
-  .stub .tear{margin:16px 18px 0;padding-top:12px;border-top:2px dashed var(--ink-4)}
-  .stub .tear .btn{width:100%;font-size:14px;padding:5px 12px 6px}
+  /* Only what a sidebar needs differently from the base above: it is inset in a
+     narrow column, and its buttons fill it. */
+  .stub .tear{margin:16px 18px 0;padding-top:12px}
+  .stub .tear .btn{width:100%}
 
   /* The page's stamp is a real impression rather than the badge the overlay
      wore in a table cell: same geometry, three sizes up, struck across the
@@ -895,7 +897,10 @@ export function boardPage(): string {
   const $ = (s) => document.querySelector(s);
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
-  let S = { tickets: [], runs: [], documents: [], repositories: [], projects: [], sessions: [] };
+  // sessions starts null — "not asked yet" — for the same reason the server
+  // sends null when it could not ask: an empty array is a claim that nothing is
+  // running, and nothing has been claimed before the first read lands.
+  let S = { tickets: [], runs: [], documents: [], repositories: [], projects: [], sessions: null };
   let sel = -1;            // index into flat selectable list
   let flat = [];           // [{id, kind}] in DOM order
   // The current view, derived from location.hash by route(). Selection is
@@ -1018,9 +1023,17 @@ export function boardPage(): string {
   // A ticket with no worktree has no session to look for, so the row stands
   // alone — that is a run started before the work was ever cut a directory, and
   // there is nothing to contradict it with.
+  //
+  // And the row also stands alone when herdr could not be asked at all, which
+  // the server sends as a null sessions list rather than an empty one. On a
+  // machine with no herdr that is the permanent answer, and reading it as
+  // "nothing is running" would mean no run ever showed as running again —
+  // taking the live clock away from every /begin on the way. Absence of proof
+  // is not proof; the same rule the reconcile pass follows on the server.
   function isLiveRun(t, run){
     if (!run || run.status !== 'running') return false;
     if (!t.worktree_path) return true;
+    if (!S.sessions) return true;
     return Boolean(sessionFor(t));
   }
 
@@ -2115,6 +2128,15 @@ export function boardPage(): string {
   // and showing the new project beside the old app for a round-trip would be a
   // worse lie than the one this replaces.
   const pending = new Map();
+  // A write the server accepts but never echoes back would otherwise be
+  // re-applied over every read for the life of the tab, quietly overriding the
+  // truth. That is not hypothetical — it is what a field whose canonical form
+  // differs from what we sent does. So an entry has a life, after which the
+  // server's answer simply wins.
+  const PENDING_TTL_MS = 30000;
+  // Long enough that a slow sqlite write is never mistaken for a dead one, short
+  // enough that a wedged request cannot hold the render guard indefinitely.
+  const WRITE_TIMEOUT_MS = 15000;
 
   const pendKey = (kind, id, field) => kind + ':' + id + ':' + field;
   const rowFor = (st, kind, id) =>
@@ -2122,13 +2144,36 @@ export function boardPage(): string {
       : kind === 'project' ? (st.projects || []).find((x) => Number(x.id) === Number(id))
       : (st.repositories || []).find((x) => x.slug === id);
 
+  // 'prev' is captured here, from the state as it stands, because rolling back
+  // is not the same as forgetting. applyPending mutates the row in place, so
+  // dropping the entry on failure only stops it being RE-applied — the value it
+  // already wrote is still sitting in S and still on screen.
   function pendSet(kind, id, fields){
+    const row = rowFor(S, kind, id) || {};
     for (const field of Object.keys(fields)){
-      pending.set(pendKey(kind, id, field), { kind, id, field, sent: fields[field] });
+      const key = pendKey(kind, id, field);
+      // Keep the ORIGINAL prev when a second write lands on a field that is
+      // already pending: rolling back to the value of the failed write in
+      // between would restore something the server never held.
+      const had = pending.get(key);
+      pending.set(key, {
+        kind, id, field, sent: fields[field],
+        prev: had ? had.prev : row[field],
+        until: Date.now() + PENDING_TTL_MS,
+      });
     }
   }
-  function pendDrop(kind, id, fields){
-    for (const field of Object.keys(fields)) pending.delete(pendKey(kind, id, field));
+  // Undo, not just forget. Puts the value the field had before this write back
+  // into the live state, so a rejected write leaves no trace of itself — and,
+  // crucially for the description box, so current() reports what the server
+  // actually holds and retyping the same text is a real change again.
+  function pendRollback(kind, id, fields){
+    const row = rowFor(S, kind, id);
+    for (const field of Object.keys(fields)){
+      const e = pending.get(pendKey(kind, id, field));
+      if (e && row) row[field] = e.prev;
+      pending.delete(pendKey(kind, id, field));
+    }
   }
 
   // Two values are "the same" when the server would have stored them the same
@@ -2146,11 +2191,13 @@ export function boardPage(): string {
   // showing your value rather than flickering back to the old one.
   function applyPending(next){
     if (!pending.size) return next;
+    const now = Date.now();
     for (const e of [...pending.values()]){
       const row = rowFor(next, e.kind, e.id);
-      // The row is gone — deleted while a write was in flight. Nothing left to
-      // hold the value for.
-      if (!row || sameStored(row[e.field], e.sent)){
+      // Dropped when the row is gone (deleted while the write was in flight),
+      // when the server has caught up, or when the entry has simply outlived
+      // its usefulness — see PENDING_TTL_MS for why the last one exists.
+      if (!row || sameStored(row[e.field], e.sent) || now > e.until){
         pending.delete(pendKey(e.kind, e.id, e.field));
         continue;
       }
@@ -2199,7 +2246,19 @@ export function boardPage(): string {
     route();
     let err = null;
     savesInFlight++;
-    try { await req(); }
+    try {
+      // Raced against a deadline, because savesInFlight suppresses re-rendering
+      // while it is raised and fetch() here has no timeout of its own. A request
+      // that never settles — a wedged server, a laptop suspended mid-write —
+      // would leave the guard up for the life of the tab, and unlike the other
+      // two arms of isBusy() this one cannot clear itself when focus moves. The
+      // board would simply stop redrawing.
+      await Promise.race([
+        req(),
+        new Promise((_, rej) => setTimeout(
+          () => rej(new Error('timed out — the board did not answer')), WRITE_TIMEOUT_MS)),
+      ]);
+    }
     catch (e) { err = e; }
     // Dropped before the refresh below, so isBusy() stops reporting this save
     // and that read is allowed to render. Leaving it raised until after would
@@ -2212,14 +2271,20 @@ export function boardPage(): string {
       refresh();
       return true;
     }
-    pendDrop(kind, id, fields);
-    S = applyPending(S);
+    // Rolled back, not merely forgotten: applyPending already wrote the value
+    // into the live row, so dropping the entry alone would leave the rejected
+    // value on screen with a toast next to it saying it had not been saved.
+    pendRollback(kind, id, fields);
     toast((o.failMsg || 'could not save') + ': ' + esc(err.message), 6000);
     // route() before onFail, so the handler is looking at the rebuilt page — and
-    // after the overlay is dropped, so what it rebuilds is the value the server
-    // still holds rather than the one that failed to land.
+    // after the rollback, so what it rebuilds is the value the server still
+    // holds rather than the one that failed to land.
     route();
     if (o.onFail) o.onFail(before);
+    // A timeout is not a refusal: the write may well have landed and only the
+    // answer was lost. Ask the server what is actually true rather than leaving
+    // the rollback standing as the last word.
+    refresh();
     return false;
   }
 
@@ -2469,10 +2534,12 @@ export function boardPage(): string {
   // them comes along — including the two-press delete confirm, which is the
   // only thing standing between a misclick and a ticket that is gone.
   async function ticketAct(b){
-    // The project page's own two acts come first: everything below reads a
-    // ticket and returns early without one, so a project control wired to this
-    // same [data-act] sweep would silently do nothing.
-    if (b.dataset.act === 'rename' || b.dataset.act === 'delproj') return projectAct(b);
+    // Dispatched on the VIEW, not on a list of act names. wire() binds every
+    // [data-act] on the sheet to this one handler, and everything below reads a
+    // ticket and returns early without one — so any control on a non-ticket page
+    // silently does nothing. Naming the two project acts here would have fixed
+    // exactly those two and left the next one to fail the same silent way.
+    if (view.kind === 'project') return projectAct(b);
     const t = view.kind === 'ticket' ? S.tickets.find((x) => x.id === view.id) : null;
     if (!t) return;
     const act = b.dataset.act;
@@ -2585,7 +2652,9 @@ export function boardPage(): string {
         // untouched name should close the picker, not fire a pointless PATCH.
         if (!name || name === p.name) return [];
         return [{ label: 'Rename to “' + name + '”', r: '⏎', act: () =>
-          writeField('renamed to ' + name,
+          // esc: toast writes innerHTML, and this name is whatever was typed
+          // into the box. Every other writeField call site escapes its subject.
+          writeField('renamed to ' + esc(name),
             () => api('/api/projects/' + p.id, { method: 'PATCH', body: JSON.stringify({ name }) }),
             { kind: 'project', id: p.id, fields: { name } }) }];
       },
@@ -2672,9 +2741,18 @@ export function boardPage(): string {
             // Moving apps drops the project with it — a project lives in one
             // app, so the old one cannot survive the move and showing it for a
             // round-trip would be a worse lie than the revert this replaces.
+            //
+            // ...but only when the app ACTUALLY changes. cmd_edit guards the
+            // strand-clearing on the repo differing, so picking the app the
+            // ticket is already in leaves project_id alone — and an overlay
+            // claiming null against a project id the server keeps returning
+            // never matches, so it would be re-applied over every read for the
+            // life of the tab and quietly strand the ticket on screen.
             act: () => writeField('moved to ' + esc(appLabel(r.slug)),
               () => patchTicket(t.id, { repo: r.slug }),
-              { kind: 'ticket', id: t.id, fields: { repo_slug: r.slug, project_id: null } }),
+              { kind: 'ticket', id: t.id, fields: r.slug === t.repo_slug
+                  ? { repo_slug: r.slug }
+                  : { repo_slug: r.slug, project_id: null } }),
           }));
         if (t.repo_slug && 'no app'.includes(ql))
           rows.push({ label: 'no app', r: 'back to an idea',

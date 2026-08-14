@@ -840,3 +840,19 @@ run_status_of() {
   run "$CLI" done 1
   [ "$status" -eq 0 ]
 }
+
+@test "rm: ends the ticket's open runs before deleting it" {
+  # runs.ticket_id is ON DELETE SET NULL, so a run left open here survives as an
+  # orphan with nothing to reconcile it against — the board needs a ticket for
+  # two of its three proofs and a stamped pane for the third. It would sit in
+  # "waiting on you" forever: the exact failure this area exists to remove,
+  # reintroduced by the one verb that destroys the evidence.
+  "$CLI" add "a thing" >/dev/null
+  local uid; uid=$(open_run_for 1)
+  "$CLI" rm 1 --yes >/dev/null
+
+  run "$TRACE" show "$uid"
+  [[ "$output" == *"failed"* ]]
+  # And nothing is left claiming to be open.
+  [ -z "$("$TRACE" list --active --json | grep -o "$uid" || true)" ]
+}

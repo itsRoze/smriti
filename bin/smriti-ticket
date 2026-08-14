@@ -454,6 +454,13 @@ base_branch_for() {
 # NOT reach its own ending, whatever became of the ticket. It is the same reading
 # the board applies to a pane it had to close on a run's behalf.
 #
+# The one route that legitimately reaches a terminal status with its run still
+# going is `smriti clean`, which /begin invokes FROM INSIDE the run as the last
+# step of a successful ship. That is why clean ends the run as `done` itself,
+# just before it calls `done` here — otherwise every clean ship would be filed
+# as a failure by this line, and the run's own `trace end` afterwards could not
+# correct it, because implicit_run only resolves runs that are still open.
+#
 # Best-effort, like every other trace call: observability must never be able to
 # fail the write it observes.
 end_open_runs() {
@@ -645,6 +652,15 @@ cmd_rm() {
     read -r ans || ans=""
     case "$ans" in y|Y|yes|YES) ;; *) echo "aborted."; exit 1 ;; esac
   fi
+
+  # BEFORE the delete, while there is still a ticket to end the runs of.
+  # `runs.ticket_id` is ON DELETE SET NULL, so a run left open here survives as
+  # an orphan with nothing to reconcile it against: the board's reconcile pass
+  # needs a ticket for two of its three proofs and a stamped pane for the third,
+  # and the waiting band cannot judge a run whose ticket is gone. It would sit
+  # in "waiting on you" forever — the exact failure this whole area exists to
+  # remove, reintroduced by the one verb that destroys the evidence.
+  end_open_runs "$id"
 
   # Only index rows go. The markdown on disk is the source of truth, and
   # deleting a ticket is not a reason to destroy the writing about it.

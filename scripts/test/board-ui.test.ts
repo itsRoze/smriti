@@ -1180,6 +1180,71 @@ describe('board UI', () => {
     } finally { await context.close(); }
   }, T);
 
+  it('a failed save rolls the value back, so the retry is a real change again', async () => {
+    if (!HAS_CHROMIUM) return;
+    // Dropping the pending entry is not the same as undoing it: applyPending
+    // writes into the live row, so forgetting the entry alone leaves the
+    // rejected value sitting in S. For the description box that is worse than
+    // cosmetic — current() then reports the text that FAILED, so retyping the
+    // same words hits the "nothing changed" guard and the retry silently does
+    // nothing at all.
+    //
+    // /api/state is blocked throughout, so only the rollback can put the value
+    // back; otherwise the resync would paper over a missing one.
+    const { context, page } = await open();
+    try {
+      await openBodyTicket(page);
+      await page.route('**/api/state', (route) => route.abort());
+      let patches = 0;
+      await page.route('**/api/tickets/**', (route) => {
+        if (route.request().method() !== 'PATCH') return route.continue();
+        patches++;
+        return route.fulfill({ status: 500, contentType: 'application/json',
+                               body: JSON.stringify({ error: 'nope' }) });
+      });
+
+      await page.keyboard.press('e');
+      await page.waitForSelector('#pagedescedit.on');
+      await page.locator('#pagedescedit').fill('a retry worth making');
+      await page.locator('#pagedescedit').press('Meta+Enter');
+      await page.waitForSelector('#pagedescedit.on');
+      expect(patches).toBe(1);
+
+      // Exactly the same text again. It must still be seen as a change, which
+      // it only is if the failure put the stored value back.
+      await page.locator('#pagedescedit').press('Meta+Enter');
+      await page.waitForFunction(() => true);
+      await page.waitForTimeout(400);
+      expect(patches).toBe(2);
+    } finally { await context.close(); }
+  }, T);
+
+  it('picking the app a ticket is already in does not strand it', async () => {
+    if (!HAS_CHROMIUM) return;
+    // cmd_edit only clears the project when the repo actually changes, so an
+    // overlay that claimed project_id=null for a no-op move would never match
+    // the echo — and would be re-applied over every read for the life of the
+    // tab, showing the ticket as loose forever.
+    const { context, page, errors } = await open();
+    try {
+      const tickets = JSON.parse(run(TICKET, ['list', '--all', '--json'], appDir).stdout) as any[];
+      const t = tickets.find((x) => x.title === 'index the corpus');
+      expect(t.project_ref).toBe('search-v2');
+
+      await page.locator('.card[data-tid="' + t.id + '"]').click();
+      await page.waitForSelector('.stub');
+      await page.keyboard.press('a');
+      await page.locator('#palopts .o:has-text("test-demo")').first().click();
+
+      // Give the write and its echo a moment, then confirm the project survived
+      // both on screen and in the store.
+      await page.waitForTimeout(600);
+      await page.waitForSelector('.stub .f[data-field="project"]:has-text("Search v2")');
+      expect(ticketRow(t.id).project_ref).toBe('search-v2');
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+
   // ── projects: rename, create, delete ───────────────────────────────────
   //
   // The CLI and the API could do all three since both existed. The board simply

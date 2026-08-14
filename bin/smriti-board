@@ -258,9 +258,19 @@ function parseAgents(out: string): Session[] {
 }
 
 function herdrSessions(): Session[] {
-  if (!Bun.which('herdr')) return [];
+  return herdrSessionsSync() ?? [];
+}
+
+// The synchronous tri-state, for /api/state. Same distinction the reconcile
+// pass needs, and the page needs it for the same reason: it decides whether a
+// ticket reads as running by looking for a live session, so "herdr said
+// nothing is running" and "we never got to ask" must not arrive as the same
+// empty array. On a machine with no herdr at all, the second is permanent —
+// and treating it as the first would mean no run ever reads as running again.
+function herdrSessionsSync(): Session[] | null {
+  if (!Bun.which('herdr')) return null;
   const r = sh('herdr', ['agent', 'list'], 8000);
-  return r.ok ? parseAgents(r.out) : [];
+  return r.ok ? parseAgentsOrNull(r.out) : null;
 }
 
 // Is there already a session for this ticket? Without this check, starting an
@@ -588,12 +598,9 @@ async function captureThenClose(
 //
 // Nothing here closes a pane; a run whose pane is somehow still alive is left to
 // the sweep, which captures it first.
-async function reconcileOpenRuns(agents: Session[] | null): Promise<void> {
+async function reconcileOpenRuns(agents: Session[] | null, tickets: ShipTicket[]): Promise<void> {
   const runs = await readJsonAsync<RunRow[]>(['list', '--active', '--json'], TRACE);
   if (!runs?.length) return;
-
-  const tickets = await readJsonAsync<ShipTicket[]>(['list', '--all', '--json']);
-  if (!tickets) return;
   const byId = new Map(tickets.map((t) => [t.id, t]));
   const livePanes = agents ? new Set(agents.map((s) => s.pane).filter(Boolean)) : null;
 
@@ -658,18 +665,28 @@ async function sweepShippedSessions(): Promise<void> {
     // capturing.
     const agents = await herdrSessionsRead();
 
+    // ONE ticket read too, for the same reason as the herdr read above: taking
+    // a second would not merely cost a spawn, it would have the two passes
+    // reasoning about two different moments of the same table.
+    const tickets = await readJsonAsync<ShipTicket[]>(['list', '--all', '--json']);
+    if (!tickets) return;
+
     // Runs first, and unconditionally: this is the pass that reaches a run whose
     // pane is already gone, which is precisely the case the sweep below cannot
     // see. It tolerates a null read by skipping only the liveness rule.
-    await reconcileOpenRuns(agents);
+    await reconcileOpenRuns(agents, tickets);
 
     if (!agents?.length) return;
-
-    const tickets = await readJsonAsync<ShipTicket[]>(['list', '--all', '--json']);
-    if (!tickets) return;
-    // Shipped, and the worktree actually gone. Both, because a shipped ticket
+    // Finished, and the worktree actually gone. Both, because a finished ticket
     // whose worktree is still there is a session someone may still be using.
-    const done = tickets.filter((t) => t.status === 'shipped' && t.worktree_path && !existsSync(t.worktree_path));
+    //
+    // `cancelled` counts as finished here. It did not used to, which left the
+    // mirror of the bug this sweep exists for: a session abandoned along with
+    // its ticket kept running in a directory nobody would return to, and no
+    // route on the board could reach it.
+    const done = tickets.filter((t) =>
+      (t.status === 'shipped' || t.status === 'cancelled') &&
+      t.worktree_path && !existsSync(t.worktree_path));
     if (!done.length) return;
 
     // Driven by AGENTS, not by shipped tickets. `done` only ever grows — every
@@ -920,7 +937,10 @@ async function cmdServer(): Promise<never> {
           documents: documents ?? [],
           repositories: repositories ?? [],
           projects: projects ?? [],
-          sessions: herdrSessions(),
+          // null, not [], when herdr could not be asked. The page treats an
+          // empty list as proof that nothing is running and an absent one as
+          // proof of nothing — see isLiveRun.
+          sessions: herdrSessionsSync(),
         });
       }
 
@@ -1130,7 +1150,7 @@ async function cmdServer(): Promise<never> {
         // A restart in flight has already closed this ticket's pane and has not
         // yet started its replacement. Starting into that gap duplicates the
         // session the restart is about to create.
-        if (sessionBusy.has(id)) return json({ error: 'a restart is already in flight' }, 409);
+        if (sessionBusy.has(id)) return json({ error: 'that session is already being changed' }, 409);
         const r = sh(TICKET, ['start', String(id)], 30000);
         if (!r.ok) return json({ error: r.errOut || 'could not start' }, 500);
         const dir = r.out.split('\n')[0].trim();
@@ -1149,7 +1169,7 @@ async function cmdServer(): Promise<never> {
         // starts a replacement, so two of them interleaved start two sessions
         // against one closed pane. It was a narrow race while the whole thing
         // was synchronous; capturing first makes it slower and reachable.
-        if (sessionBusy.has(id)) return json({ error: 'a restart is already in flight' }, 409);
+        if (sessionBusy.has(id)) return json({ error: 'that session is already being changed' }, 409);
         sessionBusy.add(id);
         try {
           // `start` is idempotent and reports the existing worktree, which is how
@@ -1212,9 +1232,14 @@ async function cmdServer(): Promise<never> {
       if (stop && req.method === 'POST') {
         touch();
         const id = Number(stop[1]);
+        // Two different failures, told apart rather than both blamed on the
+        // worktree: `show` exits 4 for a ticket that does not exist, and saying
+        // "it has no worktree" about a number you mistyped is a false statement
+        // about a thing that was never there.
         const shown = await readJsonAsync<{ ticket?: { worktree_path?: string | null } }>(
           ['show', String(id), '--json']);
-        const dir = shown?.ticket?.worktree_path ?? '';
+        if (!shown?.ticket) return json({ error: 'no ticket #' + id }, 404);
+        const dir = shown.ticket.worktree_path ?? '';
         if (!dir) return json({ error: 'that ticket has no worktree, so it has no session' }, 400);
 
         const res = await withSession(id, async () => {

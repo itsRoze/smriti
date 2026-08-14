@@ -476,6 +476,18 @@ mark_ticket_shipped() {
   st=$(printf '%s' "$out" | grep -E '^TICKET_STATUS=' | cut -d= -f2-)
   [ "$st" = "cancelled" ] && return 0
 
+  # End the run as DONE before the ticket moves, because this is the one place
+  # that knows the work succeeded: the branch merged and its worktree is gone.
+  #
+  # Order matters and is the whole point. `ticket done` ends any run still open
+  # as `failed` — correct for a run that never reached its own ending, and
+  # exactly wrong here, where /begin is running this command as the last step of
+  # a successful ship. Left to that path, every clean ship would be filed as a
+  # failure, and the run's own `trace end` afterwards could not undo it: it
+  # resolves through implicit_run, which only sees runs that are still open.
+  local tr; tr="$(cd "$(dirname "$0")" && pwd -P)/smriti-trace"
+  [ -x "$tr" ] && "$tr" end --ticket "$id" --status done >/dev/null 2>&1 || true
+
   if "$tk" done "$id" >/dev/null 2>&1; then
     echo "smriti-clean: ticket #$id → shipped"
   fi

@@ -776,3 +776,34 @@ test('/api/state does not resolve a URL for a run that is not at a gate', async 
   stopSession(sessionId);
   tr(['end', '--run', uid]);
 });
+
+// The whole client is authored inside ONE template literal, so a backtick
+// anywhere in it — including in a comment — ends the string early and the board
+// stops booting with a parse error dozens of lines further down. The file
+// already warns about the same trap for regex literals; this catches the comment
+// case, which is far easier to walk into and reads as unrelated when it breaks.
+test('lib/board-ui.ts contains no backtick but its own two delimiters', () => {
+  const src = readFileSync(join(REPO_ROOT, 'lib', 'board-ui.ts'), 'utf8');
+  const offenders = src.split('\n')
+    .map((line, i) => ({ n: i + 1, line }))
+    .filter(({ line }) => line.includes('`'))
+    .filter(({ line }) => !line.startsWith('  return `') && !line.endsWith('`;'));
+  expect(offenders.map((o) => `${o.n}: ${o.line.trim().slice(0, 70)}`)).toEqual([]);
+});
+
+// A machine with no herdr must not lose the running state entirely. /api/state
+// answers `sessions: null` — "we could not ask" — rather than `[]`, which is a
+// claim that nothing is running. The page hangs its whole "is this ticket
+// running" decision on that list, so collapsing the two would mean no run ever
+// read as running again on such a machine, live clock and all.
+test('/api/state reports sessions as null when herdr cannot be asked', async () => {
+  const res = await fetch(`http://127.0.0.1:${port}/api/state`, { headers: { cookie: jar } });
+  expect(res.status).toBe(200);
+  const state = await res.json() as { sessions: unknown };
+  // This suite runs with no herdr stub on PATH. If the developer happens to have
+  // a real herdr installed, an ARRAY is the correct answer and the distinction
+  // still holds — what must never appear is an empty array standing in for
+  // "unknown".
+  if (state.sessions === null) expect(state.sessions).toBeNull();
+  else expect(Array.isArray(state.sessions)).toBe(true);
+});
