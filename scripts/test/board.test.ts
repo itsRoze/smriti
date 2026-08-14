@@ -904,3 +904,80 @@ test('a cycle is refused as a 409, and a malformed edge as a 400', async () => {
   const cut = await post(b.id, { rm: a.id });
   expect(cut.status).toBe(200);
 });
+
+test('a move that contradicts the graph succeeds and says so', async () => {
+  // The CLI reports the contradiction on stderr and deliberately leaves the
+  // card where it was dropped. The route used to read stderr only on the
+  // failure path, so the board — the only surface where dragging exists —
+  // never said anything at all.
+  const tk = (args: string[]) =>
+    spawnSync(TICKET, args, { encoding: 'utf8', env: { ...process.env, SMRITI_HOME: HOME_DIR } });
+  tk(['add', 'order blocker', '--repo', 'ord-demo']);
+  tk(['add', 'order blocked', '--repo', 'ord-demo']);
+  const all = JSON.parse(tk(['list', '--all', '--json']).stdout) as
+    { id: number; title: string }[];
+  const blocker = all.find((t) => t.title === 'order blocker')!;
+  const blocked = all.find((t) => t.title === 'order blocked')!;
+  tk(['dep', String(blocked.id), '--blocked-by', String(blocker.id)]);
+
+  const res = await fetch(`${base()}/api/tickets/${blocked.id}/move`, {
+    method: 'POST', headers: { cookie: jar, 'content-type': 'application/json' },
+    body: JSON.stringify({ before: blocker.id }),
+  });
+  expect(res.status).toBe(200);
+  const said = (await res.json()) as { ok: boolean; note?: string };
+  expect(said.ok).toBe(true);
+  expect(said.note).toContain('#' + blocked.id);
+  expect(said.note).toContain('#' + blocker.id);
+
+  // And it really did move: the contradiction is surfaced, never corrected.
+  const after = JSON.parse(tk(['list', '--all', '--json']).stdout) as
+    { id: number; position: number }[];
+  const p = (id: number) => after.find((t) => t.id === id)!.position;
+  expect(p(blocked.id)).toBeLessThan(p(blocker.id));
+});
+
+test('a move with nothing to say carries no note', async () => {
+  const tk = (args: string[]) =>
+    spawnSync(TICKET, args, { encoding: 'utf8', env: { ...process.env, SMRITI_HOME: HOME_DIR } });
+  tk(['add', 'plain a', '--repo', 'plain-demo']);
+  tk(['add', 'plain b', '--repo', 'plain-demo']);
+  const all = JSON.parse(tk(['list', '--all', '--json']).stdout) as
+    { id: number; title: string }[];
+  const a = all.find((t) => t.title === 'plain a')!;
+  const b = all.find((t) => t.title === 'plain b')!;
+  const res = await fetch(`${base()}/api/tickets/${a.id}/move`, {
+    method: 'POST', headers: { cookie: jar, 'content-type': 'application/json' },
+    body: JSON.stringify({ after: b.id }),
+  });
+  expect(res.status).toBe(200);
+  expect((await res.json()) as { note?: string }).not.toHaveProperty('note');
+});
+
+test('start --force goes through when the page says so', async () => {
+  const tk = (args: string[]) =>
+    spawnSync(TICKET, args, { encoding: 'utf8', env: { ...process.env, SMRITI_HOME: HOME_DIR } });
+  tk(['add', 'force blocker', '--repo', 'force-demo']);
+  tk(['add', 'force blocked', '--repo', 'force-demo']);
+  const all = JSON.parse(tk(['list', '--all', '--json']).stdout) as
+    { id: number; title: string }[];
+  const blocker = all.find((t) => t.title === 'force blocker')!;
+  const blocked = all.find((t) => t.title === 'force blocked')!;
+  tk(['dep', String(blocked.id), '--blocked-by', String(blocker.id)]);
+
+  // Without force: refused as a conflict.
+  const no = await fetch(`${base()}/api/tickets/${blocked.id}/start`, {
+    method: 'POST', headers: { cookie: jar, 'content-type': 'application/json' }, body: '{}',
+  });
+  expect(no.status).toBe(409);
+
+  // With force it gets past the dependency check. There is no repo behind
+  // 'force-demo', so it now fails on the WORKTREE instead (exit 5 → 500) —
+  // which is the point: a different failure means the refusal was lifted.
+  const yes = await fetch(`${base()}/api/tickets/${blocked.id}/start`, {
+    method: 'POST', headers: { cookie: jar, 'content-type': 'application/json' },
+    body: JSON.stringify({ force: true }),
+  });
+  expect(yes.status).not.toBe(409);
+  expect(((await yes.json()) as { error: string }).error).not.toContain('blocked by unshipped');
+});

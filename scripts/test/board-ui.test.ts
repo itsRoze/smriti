@@ -1601,29 +1601,32 @@ describe('reordering', () => {
 
 // ─── dependencies (#12) ─────────────────────────────────────────────────────
 //
-// The fixtures for these live here rather than in the shared beforeAll: an
-// edge changes how OTHER tests' cards draw (a blocked card loses its status
-// chip), and the board's own suite should not have to know about that.
+// Fixtures live in their OWN app rather than in the shared one. Dependency
+// states change how a card draws, and the reordering tests measure a drag
+// against the loose group of test-demo — five more cards in it moves the
+// geometry those tests aim at. A separate app keeps the two from interfering.
+
+const DEP_APP = 'dep-demo';
 
 describe('dependencies', () => {
   it('a blocked card reads as not-yet, and names what it waits on', async () => {
     if (!HAS_CHROMIUM) return;
-    must(run(TICKET, ['add', 'the API piece', '--ready'], appDir), 'add blocker');
-    must(run(TICKET, ['add', 'the UI piece', '--ready'], appDir), 'add blocked');
+    must(run(TICKET, ['add', 'the API piece', '--repo', DEP_APP, '--ready'], appDir), 'add blocker');
+    must(run(TICKET, ['add', 'the UI piece', '--repo', DEP_APP, '--ready'], appDir), 'add blocked');
     const blocker = idOf('the API piece');
     const blocked = idOf('the UI piece');
     must(run(TICKET, ['dep', blocked, '--blocked-by', blocker], appDir), 'dep');
 
-    const { context, page, errors } = await open('#/r/test-demo');
+    const { context, page, errors } = await open('#/r/' + DEP_APP);
     try {
       const card = page.locator('.card[data-tid="' + blocked + '"]');
       await card.waitFor();
       expect(await card.getAttribute('class')).toContain('blocked');
-      // The chip replaces the status chip: what is in the way is the more
-      // useful fact about a card that cannot be started.
+      // The chip sits BESIDE the status, never in place of it: "blocked" is a
+      // note about a status, not one of its own, and replacing it made a card
+      // stop saying whether it was an idea or ready for as long as it had an edge.
       expect(await card.locator('.chip').innerText()).toBe('blocked by #' + blocker);
-      // Not orange, not highlighter — blocked is quiet, not urgent.
-      expect(await card.locator('.st').count()).toBe(0);
+      expect(await card.locator('.st').count()).toBe(1);
 
       // The blocker itself is untouched.
       const other = page.locator('.card[data-tid="' + blocker + '"]');
@@ -1653,6 +1656,27 @@ describe('dependencies', () => {
     } finally { await context.close(); }
   }, T);
 
+  it('a cross-app blocker names its app, since it may be off-screen', async () => {
+    if (!HAS_CHROMIUM) return;
+    must(run(TICKET, ['add', 'a far-off blocker', '--repo', 'other-app', '--ready'], appDir), 'add far');
+    const far = idOf('a far-off blocker');
+    const blocked = idOf('the UI piece');
+    must(run(TICKET, ['dep', blocked, '--blocked-by', far], appDir), 'dep far');
+
+    const { context, page, errors } = await open('#/t/' + blocked);
+    try {
+      await page.waitForSelector('.stub');
+      const by = page.locator('.stub .f', { hasText: 'blocked by' }).first();
+      const txt = await by.innerText();
+      expect(txt).toContain('a far-off blocker');
+      // Small caps by text-transform, and innerText is post-CSS.
+      expect(txt).toContain('OTHER-APP');
+      // The same-app blocker on the row above carries no app label.
+      expect(await by.locator('.dep .far').count()).toBe(1);
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+
   it('starting blocked work says what is in the way instead of cutting a worktree', async () => {
     if (!HAS_CHROMIUM) return;
     const blocked = idOf('the UI piece');
@@ -1675,16 +1699,18 @@ describe('dependencies', () => {
 
   it('a landed blocker stops blocking, and the card says freed', async () => {
     if (!HAS_CHROMIUM) return;
-    const blocker = idOf('the API piece');
+    must(run(TICKET, ['done', idOf('the API piece')], appDir), 'ship the blocker');
+    must(run(TICKET, ['done', idOf('a far-off blocker')], appDir), 'ship the far blocker');
     const blocked = idOf('the UI piece');
-    must(run(TICKET, ['done', blocker], appDir), 'ship the blocker');
 
-    const { context, page, errors } = await open('#/r/test-demo');
+    const { context, page, errors } = await open('#/r/' + DEP_APP);
     try {
       const card = page.locator('.card[data-tid="' + blocked + '"]');
       await card.waitFor();
       expect(await card.getAttribute('class')).not.toContain('blocked');
       expect(await card.locator('.chip.freed').innerText()).toBe('freed');
+      // Still says what it IS, as well as that it was freed.
+      expect(await card.locator('.st').innerText()).toBe('READY');
       expect(errors).toEqual([]);
     } finally { await context.close(); }
   }, T);
@@ -1706,6 +1732,55 @@ describe('dependencies', () => {
       });
       const grp = order.findIndex((c) => c.includes('freedgrp'));
       expect(grp).toBe(order.length - 1);
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+});
+
+describe('dependency states are about work you could pick up', () => {
+  it('a shipped ticket is never drawn as blocked', async () => {
+    if (!HAS_CHROMIUM) return;
+    // #1 blocks #2, #2 gets shipped anyway (--force is a real path). Finished
+    // work must not be painted as work that cannot start, and must keep its
+    // own status.
+    must(run(TICKET, ['add', 'guard blocker', '--repo', DEP_APP, '--ready'], appDir), 'add');
+    must(run(TICKET, ['add', 'guard shipped', '--repo', DEP_APP, '--ready'], appDir), 'add');
+    const blocker = idOf('guard blocker');
+    const shipped = idOf('guard shipped');
+    must(run(TICKET, ['dep', shipped, '--blocked-by', blocker], appDir), 'dep');
+    must(run(TICKET, ['done', shipped], appDir), 'done');
+
+    const { context, page, errors } = await open('#/r/' + DEP_APP);
+    try {
+      await page.keyboard.press('h');            // unfold completed work
+      const card = page.locator('.card[data-tid="' + shipped + '"]');
+      await card.waitFor();
+      expect(await card.getAttribute('class')).not.toContain('blocked');
+      expect(await card.locator('.chip').count()).toBe(0);
+      // innerText is post-CSS and .st is small caps by text-transform.
+      expect(await card.locator('.st').innerText()).toBe('SHIPPED');
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+
+  it('an in-progress ticket is not drawn as blocked', async () => {
+    if (!HAS_CHROMIUM) return;
+    // Its worktree is already cut, and the CLI checks blockers only on the
+    // path that CUTS one. Drawing it blocked would hide a live session's own
+    // state behind an edge nothing would act on.
+    must(run(TICKET, ['add', 'guard started', '--repo', DEP_APP, '--ready'], appDir), 'add');
+    const started = idOf('guard started');
+    must(run(TICKET, ['dep', started, '--blocked-by', idOf('guard blocker')], appDir), 'dep');
+    // Give it a branch the way `start` would, without cutting a real worktree.
+    spawnSync('sqlite3', [join(HOME_DIR, 'factory.db'),
+      "UPDATE tickets SET status='in_progress', branch='t-guard' WHERE id=" + started]);
+
+    const { context, page, errors } = await open('#/r/' + DEP_APP);
+    try {
+      const card = page.locator('.card[data-tid="' + started + '"]');
+      await card.waitFor();
+      expect(await card.getAttribute('class')).not.toContain('blocked');
+      expect(await card.locator('.chip').count()).toBe(0);
       expect(errors).toEqual([]);
     } finally { await context.close(); }
   }, T);

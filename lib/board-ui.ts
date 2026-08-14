@@ -24,7 +24,7 @@ export function boardPage(): string {
     --paper:#F7F4E9; --paper-2:#FDFBF3; --grid:#D9DCC8;
     --ink:#1E4032; --ink-2:#3D5F4A; --ink-3:#7A9182; --ink-4:#AFC0B2;
     --hi:#F2E85C; --hi-rgb:242,232,92; --orange:#E2703A;
-    --pine-a:#2E5C43; --pine-b:#3F7355; --pine-c:#58906B;
+    --pine-a:#2E5C43; --pine-b:#3F7355; --pine-c:#58906B; --pine-rgb:88,144,107;
     --tree:#2E5C43; --live-bg:#FFF4EC; --attach-bg:#F2F7EE;
     --sh:30,64,50; --veil:rgba(30,64,50,.18); --dust:.06;
     --hi-wash:.55; --hi-text:var(--ink-2);
@@ -40,7 +40,7 @@ export function boardPage(): string {
       --paper:#1B2422; --paper-2:#232E2B; --grid:#26332F;
       --ink:#E7EDE8; --ink-2:#BCCBC4; --ink-3:#7E9189; --ink-4:#4E5D57;
       --hi:#EBCB8B; --hi-rgb:235,203,139; --orange:#D08770;
-      --pine-a:#A3BE8C; --pine-b:#8FBCBB; --pine-c:#88C0D0;
+      --pine-a:#A3BE8C; --pine-b:#8FBCBB; --pine-c:#88C0D0; --pine-rgb:136,192,208;
       --tree:#7E9C86; --live-bg:#2E2A27; --attach-bg:#22302E;
       --sh:0,0,0; --veil:rgba(0,0,0,.55); --dust:.10;
       --hi-wash:.20; --hi-text:var(--hi);
@@ -51,7 +51,7 @@ export function boardPage(): string {
     --paper:#1B2422; --paper-2:#232E2B; --grid:#26332F;
     --ink:#E7EDE8; --ink-2:#BCCBC4; --ink-3:#7E9189; --ink-4:#4E5D57;
     --hi:#EBCB8B; --hi-rgb:235,203,139; --orange:#D08770;
-    --pine-a:#A3BE8C; --pine-b:#8FBCBB; --pine-c:#88C0D0;
+    --pine-a:#A3BE8C; --pine-b:#8FBCBB; --pine-c:#88C0D0; --pine-rgb:136,192,208;
     --tree:#7E9C86; --live-bg:#2E2A27; --attach-bg:#22302E;
     --sh:0,0,0; --veil:rgba(0,0,0,.55); --dust:.10;
     --hi-wash:.20; --hi-text:var(--hi);
@@ -60,7 +60,7 @@ export function boardPage(): string {
     --paper:#F7F4E9; --paper-2:#FDFBF3; --grid:#D9DCC8;
     --ink:#1E4032; --ink-2:#3D5F4A; --ink-3:#7A9182; --ink-4:#AFC0B2;
     --hi:#F2E85C; --hi-rgb:242,232,92; --orange:#E2703A;
-    --pine-a:#2E5C43; --pine-b:#3F7355; --pine-c:#58906B;
+    --pine-a:#2E5C43; --pine-b:#3F7355; --pine-c:#58906B; --pine-rgb:88,144,107;
     --tree:#2E5C43; --live-bg:#FFF4EC; --attach-bg:#F2F7EE;
     --sh:30,64,50; --veil:rgba(30,64,50,.18); --dust:.06;
     --hi-wash:.55; --hi-text:var(--ink-2);
@@ -280,7 +280,7 @@ export function boardPage(): string {
   .wait .freedrow{
     display:flex;align-items:baseline;gap:10px;padding:5px 6px;cursor:pointer;
     border-radius:8px;font-size:16px;color:var(--ink-2)}
-  .wait .freedrow.sel{background:rgba(88,144,107,.14);box-shadow:inset 3px 0 0 var(--pine-c)}
+  .wait .freedrow.sel{background:rgba(var(--pine-rgb),.14);box-shadow:inset 3px 0 0 var(--pine-c)}
   .wait .freedrow .fid{font-family:ui-monospace,Menlo,monospace;font-size:11px;color:var(--ink-3)}
   .wait .freedrow .fnm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .wait .freedrow .why{
@@ -552,7 +552,7 @@ export function boardPage(): string {
   /* Freed is the one dependency state that IS news, so it reads in pine —
      the agent's-own-work colour — rather than highlighter. */
   .card.freed{border-color:var(--pine-c)}
-  .chip.freed{border-color:var(--pine-c);color:var(--pine-b);background:rgba(88,144,107,.10)}
+  .chip.freed{border-color:var(--pine-c);color:var(--pine-b);background:rgba(var(--pine-rgb),.10)}
 
   .keys{
     position:fixed;left:var(--rail-w);right:0;bottom:0;z-index:8;padding:14px 26px;
@@ -1145,11 +1145,17 @@ export function boardPage(): string {
   function blockersOf(t){ return (S.deps || []).filter((e) => e.blocked_id === t.id); }
   function blockingOf(t){ return (S.deps || []).filter((e) => e.blocker_id === t.id); }
   function openBlockers(t){ return blockersOf(t).filter((e) => !edgeSatisfied(e)); }
-  function isBlocked(t){ return openBlockers(t).length > 0; }
+  // Only work that has not been picked up can BE blocked, which is the same
+  // line bin/smriti-ticket draws: it checks blockers on the path that cuts a
+  // worktree and not on the path that re-attaches one. Without this guard a
+  // shipped ticket drew as blocked behind the fold, and a started one hid its
+  // live session state ("asking you") behind an edge nothing would act on.
+  function isStartable(t){ return !isSatisfied(t) && !t.branch && !t.worktree_path; }
+  function isBlocked(t){ return isStartable(t) && openBlockers(t).length > 0; }
   // Had blockers, has none left, and nobody has picked it up yet. The board's
   // only reason to distinguish this from plain "unblocked" is that it is news.
   function isFreed(t){
-    if (isSatisfied(t) || t.branch) return false;
+    if (!isStartable(t)) return false;
     const b = blockersOf(t);
     return b.length > 0 && b.every(edgeSatisfied);
   }
@@ -1288,6 +1294,9 @@ export function boardPage(): string {
     const blocked = !run && isBlocked(t);
     const freed = !run && !blocked && isFreed(t);
     const depCls = blocked ? ' blocked' : (freed ? ' freed' : '');
+    // ADDED to the status chip, never in place of it. Replacing it meant a card
+    // stopped saying whether it was an idea or ready for as long as it had an
+    // edge — and "freed" is not a status, it is a note about one.
     const chip = blocked
       ? '<span class="chip" title="waiting on work that has not landed">blocked by ' +
         openBlockers(t).map((e) => '#' + e.blocker_id).join(' · ') + '</span>'
@@ -1296,7 +1305,7 @@ export function boardPage(): string {
       (t.status === 'shipped' ? '<span class="tick">✓</span>' : '') +
       '<div class="t">' + esc(t.title) + '</div>' +
       '<div class="foot"><span class="id">#' + t.id + '</span>' +
-      (chip || '<span class="st">' + st + '</span>') + ago + '</div></div>';
+      '<span class="st">' + st + '</span>' + chip + ago + '</div></div>';
   }
 
   function tallyHtml(list){
@@ -1419,7 +1428,11 @@ export function boardPage(): string {
     const day = new Date().toLocaleDateString(undefined,{weekday:'long'});
     $('#eye').innerHTML = esc(day) + ' · <b>' + open.length + '</b> open' +
       (running.length ? ' · <b>' + running.length + '</b> running' : '') +
-      ((waiting.length + blocked.length) ? ' · <b>' + (waiting.length + blocked.length) + '</b> waiting' : '');
+      ((waiting.length + blocked.length) ? ' · <b>' + (waiting.length + blocked.length) + '</b> waiting' : '') +
+      // Counted separately rather than folded into "waiting": freed work is not
+      // waiting ON you, it is available TO you, and adding it to that number
+      // would let the header read 5 waiting when nothing is actually stopped.
+      (freed.length ? ' · <b>' + freed.length + '</b> freed' : '');
 
     // waiting band
     let w = '<div class="lab">waiting on you</div><div class="box wait">';
@@ -2141,7 +2154,12 @@ export function boardPage(): string {
     setMoveKeys(false);
     if (!anchor || unchanged){ refresh(); return; }
     try {
-      await api('/api/tickets/' + id + '/move', { method: 'POST', body: JSON.stringify(anchor) });
+      const r = await api('/api/tickets/' + id + '/move', { method: 'POST', body: JSON.stringify(anchor) });
+      // The card stays exactly where it was dropped. You may be sequencing
+      // deliberately — about to force past the blocker, or about to cancel it —
+      // so this reports the contradiction and lets it stand. Announced as well
+      // as toasted, because the keyboard carry is the other way to cause it.
+      if (r && r.note){ toast('heads up — ' + esc(r.note), 6000); announce(r.note); }
     } catch (e){
       // 409 is the CLI refusing a target in another app or project — an
       // illegal drop, not a broken server, and worth saying plainly.
@@ -2722,9 +2740,12 @@ export function boardPage(): string {
     // a bare "#41" is often something you cannot place. A blocker that has
     // landed is struck through: the row then reads as history rather than as
     // something still in the way.
-    const edgeLine = (otherId, satisfied) => {
+    const edgeLine = (self, otherId, satisfied) => {
       const o = ticketById(otherId);
-      const elsewhere = o && (o.repo_slug || '') !== (t.repo_slug || '');
+      // Compared against the ticket the ROW belongs to, passed in. It used to
+      // close over the page's ticket while its caller took one as a parameter,
+      // so the two only agreed because there was a single call site.
+      const elsewhere = o && (o.repo_slug || '') !== (self.repo_slug || '');
       return '<span class="dep' + (satisfied ? ' met' : '') + '">' +
         '<span class="dnum">#' + otherId + '</span>' +
         // A ticket the current state does not carry is not an error — say what
@@ -2737,11 +2758,15 @@ export function boardPage(): string {
       const by = blockersOf(tk), bl = blockingOf(tk);
       let s = '<div class="f edit dep-f" data-k="w" data-field="deps" role="button" tabindex="0">' +
         '<span class="k2">blocked by</span><span class="v' + (by.length ? '' : ' empty') + '">' +
-        (by.length ? by.map((e) => edgeLine(e.blocker_id, edgeSatisfied(e))).join('')
+        (by.length ? by.map((e) => edgeLine(tk, e.blocker_id, edgeSatisfied(e))).join('')
                    : 'nothing — free to start') + '</span></div>';
       if (bl.length){
+        // Struck through once a dependent has landed, symmetrically with the
+        // row above — otherwise this row cannot answer "what is still waiting
+        // on me", which is the only question it is here to answer.
         s += '<div class="f"><span class="k2">blocks</span><span class="v">' +
-          bl.map((e) => edgeLine(e.blocked_id, false)).join('') + '</span></div>';
+          bl.map((e) => edgeLine(tk, e.blocked_id, isSatisfied(ticketById(e.blocked_id)))).join('') +
+          '</span></div>';
       }
       return s;
     };

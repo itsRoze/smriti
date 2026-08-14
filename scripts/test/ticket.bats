@@ -1291,3 +1291,86 @@ three_startable() {
   [ "$status" -eq 0 ]
   ! [[ "$output" == *"sits above"* ]]
 }
+
+# ─── dependency review fixes ────────────────────────────────────────────────
+
+@test "dep: operations run in the order they were typed" {
+  # Buckets meant every --rm ran before every --blocks whatever you typed, so
+  # "draw it, then cut it" left the edge in place and printed two contradictory
+  # lines about it.
+  three_deps
+  run "$CLI" dep 1 --blocks 2 --rm 2
+  [ "$status" -eq 0 ]
+  [ "$(dq "SELECT count(*) FROM ticket_deps;")" = "0" ]
+  # ...and the other way round it survives, because that is what was asked.
+  run "$CLI" dep 1 --rm 2 --blocks 2
+  [ "$status" -eq 0 ]
+  [ "$(dq "SELECT count(*) FROM ticket_deps;")" = "1" ]
+}
+
+@test "move: dragging the BLOCKER below its dependent warns too" {
+  # The same contradiction as dragging the dependent up, and it used to be
+  # silent because the check only looked at the moved ticket's blocked end.
+  three_deps
+  "$CLI" dep 1 --blocks 2 >/dev/null
+  run "$CLI" move 1 --after 2
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"sits above"* ]]
+  [[ "$output" == *"#2"* ]]
+  [ "$(ord demo)" = "2,1,3" ]
+}
+
+@test "list --unblocked: an app-less idea is not startable" {
+  # `start` refuses it with exit 5, so listing it as startable would hand a
+  # dispatcher work it can never begin — the same spin the branch clause
+  # prevents, through a different door.
+  three_deps
+  cd "$WORK"
+  "$CLI" add "a pure idea" >/dev/null
+  cd "$REPO"
+  run "$CLI" list --all --unblocked
+  ! [[ "$output" == *"a pure idea"* ]]
+  run "$CLI" list --all --blocked
+  ! [[ "$output" == *"a pure idea"* ]]
+}
+
+@test "done: re-shipping does not re-announce what it freed once" {
+  # smriti-clean calls `done` for every merged branch it sees, so a second
+  # clean over the same branch used to re-announce work unblocked days ago.
+  three_deps
+  "$CLI" dep 1 --blocks 2 >/dev/null
+  run "$CLI" done 1
+  [[ "$output" == *"unblocks"* ]]
+  run "$CLI" done 1
+  ! [[ "$output" == *"unblocks"* ]]
+}
+
+@test "cancel: re-cancelling does not re-announce either" {
+  three_deps
+  "$CLI" dep 1 --blocks 2 >/dev/null
+  run "$CLI" cancel 1
+  [[ "$output" == *"unblocks"* ]]
+  run "$CLI" cancel 1
+  ! [[ "$output" == *"unblocks"* ]]
+}
+
+@test "rm --yes: says what deleting freed, not only the interactive path" {
+  # The board always calls `rm --yes`, so the one case where deleting silently
+  # changed OTHER tickets' state was the case you could not see.
+  three_deps
+  "$CLI" dep 1 --blocks 2 >/dev/null
+  run "$CLI" rm 1 --yes
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"unblocks"* ]]
+  [[ "$output" == *"#2"* ]]
+}
+
+@test "list: an empty frontier does not claim a cause it has not checked" {
+  # Another filter can empty the result; saying "everything is blocked" then
+  # would be a different lie from the one the message replaced.
+  three_deps
+  run "$CLI" list --repo demo --status ready --unblocked
+  [ "$status" -eq 0 ]
+  ! [[ "$output" == *"blocked or already started"* ]]
+  ! [[ "$output" == *"no tickets yet"* ]]
+}

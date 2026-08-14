@@ -1200,7 +1200,17 @@ async function cmdServer(): Promise<never> {
           return json({ error: r.errOut || 'could not move it' }, code);
         }
         broadcast();
-        return json({ ok: true });
+        // A move can SUCCEED and still have something to say: dropping a ticket
+        // above one it is blocked by is a contradiction the CLI reports on
+        // stderr and deliberately does not correct. Dropping stderr on the ok
+        // path meant the board — the only surface where dragging exists — never
+        // said anything at all.
+        const note = (r.errOut || '')
+          .split('\n')
+          .filter((l) => l.includes('heads up'))
+          .map((l) => l.replace(/^[a-z-]+:\s*heads up —\s*/, ''))
+          .join('; ');
+        return json({ ok: true, ...(note ? { note } : {}) });
       }
 
       const done = url.pathname.match(/^\/api\/tickets\/(\d+)\/done$/);
