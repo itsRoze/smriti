@@ -731,3 +731,188 @@ split_run() {
   run "$CLI" emit approve ok --run "$uid" --if-html-session
   [ "$status" -ne 0 ]
 }
+
+# ── report / artifacts ──────────────────────────────────────────────────────
+#
+# A report is the one write in this file that is NOT best-effort. Everything
+# else here observes the work; a report IS the work, and the board treats a
+# stored one as licence to close the pane the summary was printed in.
+
+@test "report: stores the run's closing summary" {
+  uid=$(start_run)
+  printf 'built: a thing\nreview: clean\n' | "$CLI" report >/dev/null
+  [ "$(sq "SELECT count(*) FROM run_artifacts WHERE run_uid='$uid' AND kind='report';")" = "1" ]
+  [ "$(sq "SELECT source FROM run_artifacts WHERE run_uid='$uid';")" = "run" ]
+}
+
+@test "report: echoes the body to stdout as well as storing it" {
+  # Printing is not a convenience. If the store fails the text has at least been
+  # rendered into the pane, where a scrape can still recover it — losing both
+  # copies at once is the one outcome this feature exists to prevent.
+  start_run >/dev/null
+  run bash -c "printf 'built: a thing\n' | '$CLI' report"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"built: a thing"* ]]
+}
+
+@test "report: prints the body even when the store fails, and still fails" {
+  start_run >/dev/null
+  chmod 000 "$SMRITI_HOME/factory.db"
+  run bash -c "printf 'built: a thing\n' | '$CLI' report"
+  chmod 644 "$SMRITI_HOME/factory.db"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"built: a thing"* ]]
+}
+
+@test "report: a second write replaces rather than stacks" {
+  uid=$(start_run)
+  printf 'first\n'  | "$CLI" report >/dev/null
+  printf 'second\n' | "$CLI" report >/dev/null
+  [ "$(sq "SELECT count(*) FROM run_artifacts WHERE run_uid='$uid';")" = "1" ]
+  [ "$(sq "SELECT body FROM run_artifacts WHERE run_uid='$uid';")" = "second" ]
+}
+
+@test "report: newlines, quotes and unicode survive the round trip" {
+  uid=$(start_run)
+  printf "it's a 'quoted' line; with a semicolon\nand ✅ unicode\n" | "$CLI" report >/dev/null
+  [ "$(sq "SELECT body FROM run_artifacts WHERE run_uid='$uid';" | wc -l | tr -d ' ')" = "2" ]
+  [[ "$(sq "SELECT body FROM run_artifacts WHERE run_uid='$uid';")" == *"'quoted'"* ]]
+  [[ "$(sq "SELECT body FROM run_artifacts WHERE run_uid='$uid';")" == *"✅ unicode"* ]]
+}
+
+@test "report: still finds its run AFTER end, not only before" {
+  # implicit_run() only sees running/awaiting, so reusing it here would make the
+  # ORDER of two lines in a markdown prompt decide whether the report is stored
+  # at all — and a silently dropped report means a pane closed with nothing kept.
+  uid=$(start_run)
+  "$CLI" end
+  printf 'written after end\n' | "$CLI" report >/dev/null
+  [ "$(sq "SELECT body FROM run_artifacts WHERE run_uid='$uid';")" = "written after end" ]
+}
+
+@test "report: with no run on this branch it fails loudly" {
+  # A store that exists but holds no run for this branch: exit 4, the same code
+  # every other "no such run" in this file uses. Silence here would be a report
+  # that went nowhere while the caller believed it was safe to close the pane.
+  "$FAKE_BIN/smriti-ticket" add "makes the store exist" >/dev/null
+  run bash -c "printf 'orphan\n' | '$CLI' report"
+  [ "$status" -eq 4 ]
+}
+
+@test "report: with no store at all it fails too, rather than inventing one" {
+  run bash -c "printf 'orphan\n' | '$CLI' report"
+  [ "$status" -eq 3 ]
+  [ ! -f "$SMRITI_HOME/factory.db" ]
+}
+
+@test "report: --source must be run or pane" {
+  start_run >/dev/null
+  run bash -c "printf 'x\n' | '$CLI' report --source guesswork"
+  [ "$status" -eq 2 ]
+}
+
+@test "report: a scrape is recorded as a scrape" {
+  uid=$(start_run)
+  printf 'scraped text\n' | "$CLI" report --source pane >/dev/null
+  [ "$(sq "SELECT source FROM run_artifacts WHERE run_uid='$uid';")" = "pane" ]
+}
+
+@test "start: stamps the herdr pane from the environment" {
+  HERDR_PANE_ID="w7:p3" uid=$(HERDR_PANE_ID="w7:p3" "$CLI" start begin | cut -d= -f2-)
+  [ "$(sq "SELECT herdr_pane FROM runs WHERE run_uid='$uid';")" = "w7:p3" ]
+}
+
+@test "start: a run outside herdr simply has no pane" {
+  uid=$(env -u HERDR_PANE_ID "$CLI" start begin | cut -d= -f2-)
+  [ "$(sq "SELECT coalesce(herdr_pane,'NULL') FROM runs WHERE run_uid='$uid';")" = "NULL" ]
+}
+
+@test "list --json: carries the stamped pane, for the board to match on" {
+  HERDR_PANE_ID="w9:p1" "$CLI" start begin >/dev/null
+  run "$CLI" list --json
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'"herdr_pane":"w9:p1"'* ]]
+}
+
+@test "artifacts --json: reads back with the pane that produced it" {
+  uid=$(HERDR_PANE_ID="w4:p2" "$CLI" start begin | cut -d= -f2-)
+  printf 'body here\n' | "$CLI" report --status ok >/dev/null
+  run "$CLI" artifacts --run "$uid" --json
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'"kind":"report"'* ]]
+  [[ "$output" == *'"herdr_pane":"w4:p2"'* ]]
+  [[ "$output" == *'"status":"ok"'* ]]
+}
+
+@test "artifacts: on an empty store it answers [] and creates nothing" {
+  rm -rf "$SMRITI_HOME"; mkdir -p "$SMRITI_HOME"
+  run "$CLI" artifacts --json
+  [ "$status" -eq 0 ]
+  [ "$output" = "[]" ]
+  [ ! -f "$SMRITI_HOME/factory.db" ]
+}
+
+@test "artifacts --ticket: only that ticket's artifacts" {
+  "$FAKE_BIN/smriti-ticket" add "one" >/dev/null
+  "$FAKE_BIN/smriti-ticket" add "two" >/dev/null
+  u1=$("$CLI" start begin --ticket 1 | cut -d= -f2-)
+  printf 'for one\n' | "$CLI" report --run "$u1" >/dev/null
+  u2=$("$CLI" start begin --ticket 2 | cut -d= -f2-)
+  printf 'for two\n' | "$CLI" report --run "$u2" >/dev/null
+  run "$CLI" artifacts --ticket 1 --json
+  [[ "$output" == *"for one"* ]]
+  [[ "$output" != *"for two"* ]]
+}
+
+@test "report: an empty body is refused, not stored" {
+  # Worse than no report: the board treats a stored one as licence to close the
+  # pane, so an empty row would close a session having kept nothing.
+  uid=$(start_run)
+  run bash -c "printf '' | '$CLI' report"
+  [ "$status" -eq 2 ]
+  [ "$(sq "SELECT count(*) FROM run_artifacts WHERE run_uid='$uid';")" = "0" ]
+}
+
+@test "report: a whitespace-only body is refused too" {
+  uid=$(start_run)
+  run bash -c "printf '   \n\n  \n' | '$CLI' report"
+  [ "$status" -eq 2 ]
+  [ "$(sq "SELECT count(*) FROM run_artifacts WHERE run_uid='$uid';")" = "0" ]
+}
+
+@test "report: --path records an artifact on disk without demanding a body" {
+  # The path-only form is for evidence that lives as a file — a browse audit, a
+  # screenshot. Requiring stdin as well made it hang at a terminal.
+  uid=$(start_run)
+  run "$CLI" report --run "$uid" --kind screenshot --path /tmp/shot.png < /dev/null
+  [ "$status" -eq 0 ]
+  [ "$(sq "SELECT path FROM run_artifacts WHERE run_uid='$uid';")" = "/tmp/shot.png" ]
+}
+
+@test "report: a scrape declines rather than overwrite the run's own words" {
+  # The board decides to scrape from a read taken moments earlier; a run
+  # reaching Gate 3 in between must not have its complete summary replaced by
+  # one viewport of terminal.
+  uid=$(start_run)
+  printf 'the complete summary\n' | "$CLI" report >/dev/null
+  run bash -c "printf 'one viewport of terminal\n' | '$CLI' report --source pane"
+  [ "$status" -eq 0 ]
+  [ "$(sq "SELECT source FROM run_artifacts WHERE run_uid='$uid';")" = "run" ]
+  [ "$(sq "SELECT body FROM run_artifacts WHERE run_uid='$uid';")" = "the complete summary" ]
+}
+
+@test "report: a scrape still replaces an earlier scrape" {
+  uid=$(start_run)
+  printf 'first scrape\n'  | "$CLI" report --source pane >/dev/null
+  printf 'second scrape\n' | "$CLI" report --source pane >/dev/null
+  [ "$(sq "SELECT count(*) FROM run_artifacts WHERE run_uid='$uid';")" = "1" ]
+  [ "$(sq "SELECT body FROM run_artifacts WHERE run_uid='$uid';")" = "second scrape" ]
+}
+
+@test "report: the run's own words replace an earlier scrape" {
+  uid=$(start_run)
+  printf 'scraped guess\n' | "$CLI" report --source pane >/dev/null
+  printf 'the real thing\n' | "$CLI" report >/dev/null
+  [ "$(sq "SELECT source FROM run_artifacts WHERE run_uid='$uid';")" = "run" ]
+  [ "$(sq "SELECT body FROM run_artifacts WHERE run_uid='$uid';")" = "the real thing" ]
+}

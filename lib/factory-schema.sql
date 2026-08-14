@@ -126,7 +126,17 @@ CREATE TABLE IF NOT EXISTS runs (
   -- server and a link built from a remembered port is a link to nothing. Only
   -- ever meaningful while status = 'awaiting' — every event rewrites it, and
   -- `trace end` clears it.
-  html_session TEXT
+  html_session TEXT,
+  -- The herdr pane this run is executing in, read from $HERDR_PANE_ID at
+  -- `trace start`. herdr injects it into every managed pane, so the run knows
+  -- its own pane exactly and nothing has to match on anything.
+  --
+  -- It is here so the board can find a finished run's session AFTER `smriti
+  -- clean` has deleted the worktree, which is the only other handle there was.
+  -- It also keeps that lookup off herdr's agent NAMES, which are machine-global
+  -- (`t<id>`) and have already let a test fixture collide with a real session.
+  -- NULL for a run started outside herdr, which is normal and not an error.
+  herdr_pane   TEXT
 );
 
 -- The trace. `id` is the cursor: readers poll `WHERE id > ?` and that single
@@ -139,6 +149,43 @@ CREATE TABLE IF NOT EXISTS events (
   note    TEXT,
   at      TEXT NOT NULL
 );
+
+-- What a run produced, as opposed to how long it took. The trace records the
+-- shape of a run; this records its findings.
+--
+-- The first kind is `report`: the closing summary /begin writes at Gate 3. That
+-- text used to exist only as pixels in a herdr pane, so closing the pane after a
+-- ship destroyed the most valuable thing the run made. Storing it is what makes
+-- closing the pane safe.
+--
+-- Deliberately general from the outset, because the evidence record (tests
+-- green, browse audit clean, screenshots) is the same table approached from the
+-- other side and must not be designed twice: `kind` is open, `body` holds text
+-- inline, `path` points at something on disk instead, and `status` carries the
+-- machine-checkable verdict an unattended run has to be judged on.
+CREATE TABLE IF NOT EXISTS run_artifacts (
+  id          INTEGER PRIMARY KEY,
+  run_uid     TEXT    NOT NULL REFERENCES runs(run_uid) ON DELETE CASCADE,
+  kind        TEXT    NOT NULL,   -- report | tests | audit | screenshot
+  -- How we came to have this. `run` = the run wrote it down itself, and is
+  -- complete. `pane` = we scraped it off the terminal before closing it, and is
+  -- one viewport of whatever had not scrolled away. The board shows the
+  -- difference rather than presenting a photograph as a record.
+  source      TEXT    NOT NULL DEFAULT 'run',   -- run | pane
+  status      TEXT,                             -- ok | fail | NULL
+  body        TEXT,
+  path        TEXT,
+  created_at  TEXT    NOT NULL
+);
+
+-- One report per run, so re-running the writer replaces rather than stacks.
+-- PARTIAL on purpose: a run may accumulate many screenshots or test rows, and a
+-- blanket UNIQUE(run_uid, kind) would forbid exactly what this table is meant
+-- to grow into.
+CREATE UNIQUE INDEX IF NOT EXISTS run_artifacts_one_report
+  ON run_artifacts (run_uid) WHERE kind = 'report';
+
+CREATE INDEX IF NOT EXISTS run_artifacts_by_run ON run_artifacts (run_uid, id);
 
 -- A project's handle is unique within its app — two apps may both have a
 -- "cleanup" project. coalesce() rather than the bare column because SQLite

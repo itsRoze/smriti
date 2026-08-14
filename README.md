@@ -313,6 +313,7 @@ smriti trace tail --after 0    # the cursor query — live tail and history in o
 | `codex_default` | `on` / `auto` / `off` | `auto` | Codex review mode — `on` always runs it, `auto` lets Claude decide per change (runs unless the change is really small or straightforward), `off` never runs it. Legacy `ask` is treated as `auto`. |
 | `browse_enabled` | `true` / `false` | (asked at `./setup`) | enables `/begin`'s verify browser step via `smriti browse` (Playwright) |
 | `ship_target` | `pr` / `main` | `pr` | where `/begin` lands a change once you say ship — `pr` pushes and opens/updates a PR (ticket → in review), `main` merges into the base branch and cleans up (ticket → shipped) |
+| `close_session_on_ship` | `true` / `false` | `true` | whether the board closes a shipped ticket's herdr session once its worktree is gone, its agent has finished, and its closing report is stored. Capture is unconditional; only the closing is gated |
 | `proactive` | `true` / `false` | `true` | reserved (proactive skill suggestions) |
 | `explain_level` | `default` / `terse` | `default` | reserved (output verbosity) |
 

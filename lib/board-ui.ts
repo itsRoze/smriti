@@ -641,6 +641,45 @@ export function boardPage(): string {
   .phz .p .sw i.a{background:var(--pine-c)}
   .phz .p .sw i.y{background:rgba(var(--hi-rgb),.9)}
 
+  /* What the run concluded, above where its time went — the what before the
+     how-long. Drawn as a margin rule rather than another dashed rectangle: the
+     run is already a box, and the app index next door sets the precedent that
+     a second frame inside a frame is one frame too many. Pine, because pine has
+     meant the agent's own work everywhere else on this board. */
+  /* Two columns across the WHOLE block, not per row. The labels are whatever
+     the run chose to call its fields, so a fixed guess at their width left the
+     longest one — "next (you)", the canonical last line — pushing its value out
+     of line with every row above it. display:contents hands each row's cells to
+     this grid, so one column width is negotiated across all of them at once. */
+  .rep{border-left:3px solid var(--pine-c);padding:1px 0 2px 13px;margin:0 0 13px;
+    display:grid;grid-template-columns:auto 1fr;gap:4px 12px;align-items:baseline}
+  .rep .r{display:contents}
+  /* .lb, not .k — .k is the keycap class on this page, and inheriting its
+     border, paper fill and drop shadow turned every field label into a fake
+     button. (No backticks anywhere in this file: it is one template literal.) */
+  .rep .r .lb{color:var(--ink-3);font-family:ui-monospace,Menlo,monospace;
+    font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;
+    line-height:1.6;white-space:nowrap}
+  .rep .r .v{color:var(--ink);min-width:0;overflow-wrap:anywhere;
+    font-family:ui-monospace,Menlo,monospace;font-size:12px;line-height:1.5}
+  /* A line the run wrote without a label spans both columns rather than sitting
+     in the label one — a report is still its own words when it is not a table. */
+  .rep .r .v:only-child{grid-column:1 / -1}
+  .rep > .prov,.rep > .raw{grid-column:1 / -1}
+  /* A scraped report is one viewport of terminal, not the run's own words, and
+     says so in a sentence rather than wearing a badge. The rule goes dotted for
+     the same reason a dashed border reads as provisional. */
+  .rep.scraped{border-left-style:dotted;border-left-color:var(--ink-4)}
+  .rep .prov{font-size:14px;color:var(--ink-3);margin:0}
+  /* Bounded and scrollable rather than folded behind a button. The ticket page
+     rebuilds this html from a cached string on every redraw, so any open/closed
+     state living in the DOM would snap shut under the reader — and a box that
+     scrolls in place already answers what the fold was for: a scrape must not
+     become a wall of terminal. */
+  .rep .raw{font-family:ui-monospace,Menlo,monospace;font-size:11.5px;line-height:1.5;
+    color:var(--ink-2);background:rgba(var(--sh),.05);border-radius:6px;
+    padding:9px 11px;margin:2px 0 0;white-space:pre;overflow:auto;max-height:260px}
+
   /* ── the ticket page ─────────────────────────────────────────────────
      A ticket is a job card, and this is that card laid flat: a printed head,
      a hand-written body, a routing stub down the side, and the timesheet the
@@ -2781,8 +2820,14 @@ export function boardPage(): string {
     if (runInFlight.has(ticketId)) return;
     runInFlight.add(ticketId);
     try {
-      let runs;
-      try { runs = (await api('/api/runs?ticket=' + ticketId)).runs || []; }
+      let runs, reports;
+      try {
+        const got = await api('/api/runs?ticket=' + ticketId);
+        runs = got.runs || [];
+        // Every run's report arrives with the run list, so filling N bodies
+        // costs N fetches rather than 2N.
+        reports = got.artifacts || [];
+      }
       catch (e) {
         // A ticket with no runs comes back as an empty list, not an error — so
         // the only things reaching here are a broken store or a dead server.
@@ -2811,8 +2856,9 @@ export function boardPage(): string {
       // the server, and awaiting them in sequence made opening a ticket with
       // several runs take as long as all of them put together.
       const bodies = await Promise.all(runs.map(async (r) => {
-        try { const d = await api('/api/run/' + r.run_uid); return phaseBreakdown(d.phases || [], d.totals || {}); }
-        catch { return ''; }
+        const rep = reportHtml(reports.filter((a) => a.run_uid === r.run_uid));
+        try { const d = await api('/api/run/' + r.run_uid); return rep + phaseBreakdown(d.phases || [], d.totals || {}); }
+        catch { return rep; }
       }));
       const html = runs.map((r, i) => runShell(r, bodies[i])).join('');
       runCache.set(ticketId, { at: Date.now(), live: runs.some((r) => !r.ended_at), runs, html });
@@ -2846,6 +2892,51 @@ export function boardPage(): string {
       '<span class="tot"' + (live ? ' data-live="dur" data-since="' + esc(r.started_at) + '"' : '') + '>' +
       fmtDur(secs) + '</span>' + split + '</div>' +
       '<div class="bd">' + (body || '') + '</div></div>';
+  }
+
+  // What the run concluded. Until this existed the text lived only in a herdr
+  // pane, so shipping — which deletes the worktree and lets the board close the
+  // pane — destroyed it.
+  //
+  // Two provenances, shown honestly. A run-written report gets no marker at all:
+  // it is the normal case, and a badge on the normal case only teaches the eye
+  // to ignore badges. A scrape is one viewport of terminal that happened not to
+  // have scrolled away, so it says so in a sentence and folds its raw text away.
+  function reportHtml(artifacts){
+    const rep = (artifacts || []).find((a) => a.kind === 'report');
+    if (!rep || !rep.body) return '';
+    const scraped = rep.source === 'pane';
+    if (scraped){
+      return '<div class="rep scraped">' +
+        '<p class="prov">recovered from the terminal — may be partial</p>' +
+        '<pre class="raw">' + esc(rep.body) + '</pre></div>';
+    }
+    // The shape /begin writes is "label: value" lines. Parsed into a two-column
+    // grid when it holds, rendered verbatim when it does not — a report that
+    // arrived in some other shape is still the run's own words and must not be
+    // dropped for failing to match a pattern.
+    // (No backticks in here: this whole file is one template literal.)
+    // The split argument is DOUBLE-escaped on purpose. This whole file is one
+    // template literal, so a single backslash-n is consumed there and reaches
+    // the browser as a real line break inside a string literal — which ends the
+    // string, and the script stops parsing at that point. Same trap the regex on
+    // the route matcher notes. (Do not write the sequence in these comments
+    // either: it breaks the comment line and spills the rest into code.)
+    const lines = String(rep.body).split('\\n').map((l) => l.trim()).filter(Boolean)
+      .filter((l) => !/^✅/.test(l));
+    const rows = lines.map((l) => {
+      // Parentheses are in the class because the canonical last line of a
+      // /begin report is "next (you): …" — the one row always present was the
+      // one row that never got a label. And the separator demands a SPACE after
+      // the colon, which is what keeps a bare URL in the body from parsing as a
+      // field: "https://…" would otherwise render an uppercase HTTPS label
+      // beside a mangled value.
+      const m = l.match(/^([a-z][a-z ()]{0,14}): +(.+)$/i);
+      return m
+        ? '<div class="r"><span class="lb">' + esc(m[1]) + '</span><span class="v">' + esc(m[2]) + '</span></div>'
+        : '<div class="r"><span class="v">' + esc(l) + '</span></div>';
+    }).join('');
+    return rows ? '<div class="rep">' + rows + '</div>' : '';
   }
 
   // A stacked bar over the phases in order, then the same numbers as rows.

@@ -1265,6 +1265,118 @@ describe('the fold', () => {
   }, T);
 });
 
+// What the run concluded, on a finished run. Until this existed the text lived
+// only in a herdr pane, so shipping — which lets the board close that pane —
+// destroyed it. These are browser tests because the renderer lives inside the
+// one big template string and nothing else parses it.
+describe('the closing report', () => {
+  // trace report takes its body on stdin, which the shared run() helper has no
+  // way to supply.
+  const report = (uid: string, body: string, source = 'run') =>
+    spawnSync(TRACE, ['report', '--run', uid, '--source', source], {
+      encoding: 'utf8', cwd: appDir, input: body,
+      env: { ...process.env, SMRITI_HOME: HOME_DIR },
+    });
+
+  function finishedRunOn(title: string, body: string, source = 'run'): number {
+    const tid = idOf(title);
+    const uid = run(TRACE, ['start', 'begin', '--ticket', String(tid)], appDir).stdout.trim().split('=')[1];
+    run(TRACE, ['emit', 'plan', 'ok', '--run', uid], appDir);
+    run(TRACE, ['emit', 'implement', 'ok', '--run', uid], appDir);
+    expect(report(uid, body, source).status).toBe(0);
+    run(TRACE, ['end', '--run', uid], appDir);
+    return tid;
+  }
+
+  async function openRunBody(page: import('playwright').Page, tid: number) {
+    await page.goto(url.split('?')[0] + '#/t/' + tid, { waitUntil: 'domcontentloaded' });
+    await page.waitForSelector('#runs .run');
+    await page.waitForSelector('#runs .run .bd .rep');
+  }
+
+  it('a run-written report renders as labelled rows, with no provenance line', async () => {
+    if (!HAS_CHROMIUM) return;
+    const tid = finishedRunOn('index the corpus',
+      '✅ /begin complete on t9-demo\n   built:  the parser\n   review: 2 findings, both fixed\n');
+    const { context, page, errors } = await open();
+    try {
+      await openRunBody(page, tid);
+      const keys = await page.locator('#runs .rep .r .lb').allTextContents();
+      expect(keys).toEqual(['built', 'review']);
+      const vals = await page.locator('#runs .rep .r .v').allTextContents();
+      expect(vals[0]).toBe('the parser');
+      expect(vals[1]).toBe('2 findings, both fixed');
+      // The ✅ headline is the terminal's greeting, not a field; the board has
+      // its own way of saying a run finished.
+      expect(await page.locator('#runs .rep').innerText()).not.toContain('/begin complete');
+      // No badge on the normal case: a marker worn by everything teaches the
+      // eye to skip it, and then the exceptional case cannot be signalled.
+      expect(await page.locator('#runs .rep.scraped').count()).toBe(0);
+      expect(await page.locator('#runs .rep .prov').count()).toBe(0);
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+
+  it('a scraped report says so, and folds its raw terminal text away', async () => {
+    if (!HAS_CHROMIUM) return;
+    const tid = finishedRunOn('a one-off bug', 'built: from the terminal\nnoise from a spinner\n', 'pane');
+    const { context, page, errors } = await open();
+    try {
+      await openRunBody(page, tid);
+      expect(await page.locator('#runs .rep.scraped').count()).toBe(1);
+      expect(await page.locator('#runs .rep .prov').innerText()).toContain('recovered from the terminal');
+      expect(await page.locator('#runs .rep .raw').innerText()).toContain('noise from a spinner');
+      // Bounded and scrolling in place, so a scrape cannot become a wall — and
+      // no open/closed state to be reset by the page's own redraw.
+      const box = await page.locator('#runs .rep .raw').evaluate((el) =>
+        ({ max: getComputedStyle(el).maxHeight, over: getComputedStyle(el).overflowY }));
+      expect(box.max).not.toBe('none');
+      expect(['auto', 'scroll']).toContain(box.over);
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+
+  it('parses the fields the /begin template actually writes', async () => {
+    if (!HAS_CHROMIUM) return;
+    // Two regressions in one: `next (you):` is the canonical LAST line of a
+    // /begin report, and a label class of [a-z ] excluded its parentheses — so
+    // the one row always present was the one row that never got a label. And a
+    // bare URL must not parse as a field, or `https://…` renders an uppercase
+    // HTTPS label beside a mangled value.
+    const tid = finishedRunOn('an idea with no app',
+      'built: the thing\n' +
+      'next (you): test it, then say the word to ship.\n' +
+      'https://github.com/test/demo/pull/12\n');
+    const { context, page, errors } = await open();
+    try {
+      await openRunBody(page, tid);
+      const keys = await page.locator('#runs .rep .r .lb').allTextContents();
+      expect(keys).toEqual(['built', 'next (you)']);
+      const rows = await page.locator('#runs .rep .r').allTextContents();
+      // The URL survives as its own unlabelled line rather than being split.
+      expect(rows[2]).toContain('https://github.com/test/demo/pull/12');
+      expect(keys).not.toContain('https');
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+
+  it('a report cannot inject markup', async () => {
+    if (!HAS_CHROMIUM) return;
+    // A scraped body is raw terminal bytes from a process the board did not
+    // write, so it is exactly the value that must not reach innerHTML unescaped.
+    const tid = finishedRunOn('a ticket with a real body',
+      'built: <img src=x onerror="window.__pwned=1">\n', 'pane');
+    const { context, page, errors } = await open();
+    try {
+      await openRunBody(page, tid);
+      expect(await page.locator('#runs .rep .raw img').count()).toBe(0);
+      expect(await page.evaluate(() => (window as unknown as { __pwned?: number }).__pwned)).toBeUndefined();
+      expect(await page.locator('#runs .rep .raw').innerText()).toContain('onerror');
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+});
+
 // The board, specifically. The fold test above runs on an app page, and the
 // exemption that broke this only ever existed on the board — which is exactly
 // why it shipped: the behaviour was tested on the one surface that did not have

@@ -117,3 +117,16 @@ teardown() {
   [ "$output" = "ask" ]
   "$SMRITI" config unset board_permissions
 }
+
+@test "close_session_on_ship is a recognised config key" {
+  # On is the default, so this key exists only to opt OUT of the board closing
+  # a shipped ticket's session — which means config has to take it silently.
+  run "$SMRITI" config set close_session_on_ship false
+  [ "$status" -eq 0 ]
+  ! [[ "$output" == *"unknown key"* ]]
+  run "$SMRITI" config get close_session_on_ship
+  [ "$output" = "false" ]
+  "$SMRITI" config unset close_session_on_ship
+  run "$SMRITI" config get close_session_on_ship
+  [ -z "$output" ]
+}
