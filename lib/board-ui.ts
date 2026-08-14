@@ -607,6 +607,7 @@ export function boardPage(): string {
   .trail{display:grid;gap:7px;margin-bottom:14px}
   .trail .doc{display:flex;gap:12px;align-items:baseline;font-family:ui-monospace,Menlo,monospace;font-size:11px;color:var(--ink-2);cursor:pointer}
   .trail .doc:hover{color:var(--ink)}
+  .trail .doc .empty{color:var(--ink-4);font-style:italic}
   .tag{color:var(--pine-a);font-size:9.5px;letter-spacing:.15em;text-transform:uppercase;min-width:50px}
   .docview{
     border:2.5px dashed var(--ink-4);border-radius:14px;padding:18px 20px;background:var(--paper);
@@ -1213,11 +1214,16 @@ export function boardPage(): string {
       (building ? '<div class="warm"><b>' + building + '</b> building</div>' : '');
   }
 
+  // The paper trail. The factory stores document bodies, so a row here outlives
+  // the branch, the worktree and the file — which is the whole point, and also
+  // why a row can exist with nothing to show yet: /begin registers a plan a
+  // moment before it writes it. Saying so is better than a click that errors.
   function trailHtml(docs){
     if (!docs.length) return '';
     return '<div class="lab">paper trail</div><div class="trail">' + docs.map((d) =>
       '<div class="doc" data-doc="' + d.id + '"><span class="tag">' + esc(d.type) + '</span>' +
-      '<span>' + esc(d.path.split('/').pop()) + '</span></div>'
+      '<span>' + esc(d.path.split('/').pop()) + '</span>' +
+      (d.has_body ? '' : '<span class="empty">no content yet</span>') + '</div>'
     ).join('') + '</div><div class="docview md" id="pagedoc"></div>';
   }
 
@@ -1759,16 +1765,20 @@ export function boardPage(): string {
     if (rl) rl.addEventListener('click', () => {
       if (view.kind === 'app'){ loadDoc(view.slug, true); toast('re-read from disk'); }
     });
+    // A CLICK always refetches. The cache below exists to survive route()'s
+    // once-a-second redraw, and serving a click out of it meant a plan revised
+    // since you last opened it rendered as the old text — which is the one
+    // failure a document viewer must not have, because it looks correct.
     $$('[data-doc]').forEach((el) => el.addEventListener('click', async () => {
       const dv = $('#pagedoc'); if (!dv) return;
       const id = el.dataset.doc;
       try {
-        const html = trailCache.has(id) ? trailCache.get(id) : (await api('/api/doc/' + id)).html;
+        const html = (await api('/api/doc/' + id)).html;
         trailCache.set(id, html);
         trailOpen = id;
         const live = $('#pagedoc');
         if (live){ live.innerHTML = html; live.classList.add('on'); }
-      } catch (e) { toast('could not read the file: ' + esc(e.message)); }
+      } catch (e) { toast('could not read the document: ' + esc(e.message)); }
     }));
     // Re-open whatever you were reading. route() replaces the sheet wholesale
     // about once a second while an agent runs, and trailHtml emits an empty

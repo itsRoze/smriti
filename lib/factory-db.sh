@@ -71,7 +71,7 @@ _factory_conn_args() {
 # Reading it costs one sqlite3 invocation (~4ms against ~16ms for a whole
 # `ticket list`). That is the price of a version that cannot lie, and it is also
 # what let v3 be added without guesswork about what any given store already has.
-FACTORY_SCHEMA_VERSION=5
+FACTORY_SCHEMA_VERSION=6
 
 # The store's schema version. Three answers, and they must stay distinct:
 # a number, or failure — because "could not read it" is not "it is current".
@@ -247,6 +247,45 @@ _db_migrate() {
        COMMIT;" \
       >/dev/null 2>&1 || {
         rmdir "$lock" 2>/dev/null || true; return 1; }
+  fi
+
+  # ── step v6: documents.body + documents.captured_at ─────────────────────
+  #
+  # `documents` stops being an index into files on disk and becomes the store.
+  # Two pure column adds, for the same reason v3/v4/v5 were pure adds: this
+  # database is written by every live /begin session at once and a table rebuild
+  # under concurrent writers can lose rows.
+  #
+  # ONE TRANSACTION for the pair, which matters more here than it looks. The
+  # steps in this function are guarded on SHAPE, and the version is stamped once
+  # at the end — so if the process died between two unwrapped ALTERs, the next
+  # invocation would find `body` present, skip the block whole, stamp current,
+  # and leave `captured_at` missing forever. Every read would then fail on a
+  # column that the schema file cannot add (it only CREATEs). Wrapped, a failure
+  # rolls back to neither column and the next run simply tries again.
+  #
+  # Hence the guard is on the table and BOTH columns: re-run only when the pair
+  # is incomplete, and treat "one of two present" as work still to do.
+  local has_documents has_body has_captured
+  has_documents=$(sqlite3 "$FACTORY_DB" ".timeout 10000" \
+    "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='documents';" 2>/dev/null) || {
+      rmdir "$lock" 2>/dev/null || true; return 1; }
+  has_body=$(sqlite3 "$FACTORY_DB" ".timeout 10000" \
+    "SELECT count(*) FROM pragma_table_info('documents') WHERE name='body';" 2>/dev/null) || {
+      rmdir "$lock" 2>/dev/null || true; return 1; }
+  has_captured=$(sqlite3 "$FACTORY_DB" ".timeout 10000" \
+    "SELECT count(*) FROM pragma_table_info('documents') WHERE name='captured_at';" 2>/dev/null) || {
+      rmdir "$lock" 2>/dev/null || true; return 1; }
+  if [ "$has_documents" = "1" ] && { [ "$has_body" != "1" ] || [ "$has_captured" != "1" ]; }; then
+    # Each ALTER is itself conditional on that column being absent, so a store
+    # that already has exactly one of the pair converges rather than failing on
+    # `duplicate column`.
+    local v6_sql="BEGIN IMMEDIATE;"
+    [ "$has_body" != "1" ]     && v6_sql="$v6_sql ALTER TABLE documents ADD COLUMN body TEXT;"
+    [ "$has_captured" != "1" ] && v6_sql="$v6_sql ALTER TABLE documents ADD COLUMN captured_at TEXT;"
+    v6_sql="$v6_sql COMMIT;"
+    sqlite3 "$FACTORY_DB" ".timeout 10000" "$v6_sql" >/dev/null 2>&1 || {
+      rmdir "$lock" 2>/dev/null || true; return 1; }
   fi
 
   # Only now, with every step applied, does the version become current.

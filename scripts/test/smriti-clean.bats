@@ -702,3 +702,101 @@ make_merged_branch_in_worktree() {
   [ "$(echo "$output" | jq -r .action)" = "refuse" ]
   echo "$output" | jq -r .refusal_reason | grep -q "dirty"
 }
+
+# ─── artifact purge: the store keeps what the disk gives up ─────────────
+#
+# The purge used to destroy the record at exactly the moment the work
+# succeeded — it deleted the markdown AND called doc-forget on the rows. The
+# factory stores document bodies now, so this reclaims the working copy and
+# keeps the document, under one rule: delete only what has been stored.
+
+# The factory db these tests read back. smriti-clean finds smriti-ticket via
+# the bin/ dir it prepends to PATH, so nothing needs symlinking for it.
+fdb() { sqlite3 "$SMRITI_HOME/factory.db" "$1"; }
+
+@test "purge: a plan survives the branch it was written on" {
+  # The end-to-end guarantee the whole change exists for.
+  init_repo
+  make_merged_branch "feat-a"
+  git checkout -q main
+  PROJ=$(seed_project_dir)
+  printf '# the plan\n\nwhy we did it this way\n' > "$PROJ/feat-a-plan-2026-01-01T00-00-00Z.md"
+
+  run "$CLI" --branch feat-a --force
+  [ "$status" -eq 0 ]
+  [ ! -f "$PROJ/feat-a-plan-2026-01-01T00-00-00Z.md" ]
+
+  [ "$(fdb "SELECT count(*) FROM documents;")" = "1" ]
+  run bash -c "sqlite3 '$SMRITI_HOME/factory.db' \"SELECT body FROM documents WHERE id=1;\""
+  [[ "$output" == *"why we did it this way"* ]]
+}
+
+@test "purge: adopts a file nobody registered before deleting it" {
+  # The purge globs filenames and never consulted the index. Without adoption
+  # first, a file written but never registered was deleted with nothing
+  # anywhere recording that it had existed.
+  init_repo
+  make_merged_branch "feat-a"
+  git checkout -q main
+  PROJ=$(seed_project_dir)
+  printf 'nobody registered me\n' > "$PROJ/feat-a-debug-2026-01-01T00-00-00Z.md"
+
+  run "$CLI" --branch feat-a --force
+  [ "$status" -eq 0 ]
+  [ ! -f "$PROJ/feat-a-debug-2026-01-01T00-00-00Z.md" ]
+  [ "$(fdb "SELECT type FROM documents WHERE id=1;")" = "debug" ]
+  run bash -c "sqlite3 '$SMRITI_HOME/factory.db' \"SELECT body FROM documents WHERE id=1;\""
+  [[ "$output" == *"nobody registered me"* ]]
+}
+
+@test "purge: a file that cannot be stored is NOT deleted, and the clean still succeeds" {
+  # The rule with teeth. Over the ceiling means unstorable, and unstorable
+  # means untouchable — while the clean itself finishes normally, because a
+  # bookkeeping failure aborting a clean would be a worse bug than this one.
+  init_repo
+  make_merged_branch "feat-a"
+  git checkout -q main
+  PROJ=$(seed_project_dir)
+  BIG="$PROJ/feat-a-plan-2026-01-01T00-00-00Z.md"
+  dd if=/dev/zero bs=1024 count=2100 2>/dev/null | tr '\0' 'x' > "$BIG"
+  # A normal one beside it, to prove the sparing is per-file and not per-branch.
+  printf 'small and safe\n' > "$PROJ/feat-a-debug-2026-01-01T00-00-00Z.md"
+
+  run "$CLI" --branch feat-a --force
+  [ "$status" -eq 0 ]
+  ! git show-ref --verify --quiet refs/heads/feat-a
+  [ -f "$BIG" ]
+  [ ! -f "$PROJ/feat-a-debug-2026-01-01T00-00-00Z.md" ]
+  echo "$output" | grep -q "spared 1 file"
+}
+
+@test "purge: the document rows survive — doc-forget is no longer called" {
+  init_repo
+  make_merged_branch "feat-a"
+  git checkout -q main
+  PROJ=$(seed_project_dir)
+  printf 'a\n' > "$PROJ/feat-a-plan-2026-01-01T00-00-00Z.md"
+  printf 'b\n' > "$PROJ/feat-a-design-2026-01-01T00-00-00Z.md"
+  printf 'c\n' > "$PROJ/feat-a-debug-2026-01-01T00-00-00Z.md"
+
+  run "$CLI" --branch feat-a --force
+  [ "$status" -eq 0 ]
+  [ "$(fdb "SELECT count(*) FROM documents;")" = "3" ]
+  [ "$(fdb "SELECT count(*) FROM documents WHERE body IS NOT NULL;")" = "3" ]
+}
+
+@test "purge: audit directories are still reclaimed and stay out of the store" {
+  # Screenshots are large binaries. They are scratch in the old sense and the
+  # database is deliberately not where they go.
+  init_repo
+  make_merged_branch "feat-a"
+  git checkout -q main
+  PROJ=$(seed_project_dir)
+  mkdir -p "$PROJ/audits/feat-a-2026-01-01T00-00-00Z"
+  touch "$PROJ/audits/feat-a-2026-01-01T00-00-00Z/shot.png"
+
+  run "$CLI" --branch feat-a --force
+  [ "$status" -eq 0 ]
+  [ ! -d "$PROJ/audits/feat-a-2026-01-01T00-00-00Z" ]
+  [ "$(fdb "SELECT count(*) FROM documents;" 2>/dev/null || echo 0)" = "0" ]
+}

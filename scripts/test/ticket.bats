@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# Tests for bin/smriti-ticket — the work layer (tickets + the document index).
+# Tests for bin/smriti-ticket — the work layer (tickets + the document store).
 # Run via: bun run test (which shells out to scripts/run-tests.sh)
 
 setup() {
@@ -443,6 +443,221 @@ four() {
 
   run sqlite3 "$SMRITI_HOME/factory.db" "SELECT count(*) FROM documents WHERE ticket_id IS NULL;"
   [ "$output" = "1" ]
+}
+
+# ─── documents: the content ─────────────────────────────────────────────────
+#
+# The factory STORES documents; the file on disk is a working copy. The file
+# wins while it exists, the store wins once it is gone, and nothing may be
+# deleted that has not been stored. These are that contract.
+
+# A document file under an isolated projects dir, echoing its path.
+seed_doc_file() {
+  local name="$1" body="$2"
+  local dir="$SMRITI_HOME/projects/testapp"
+  mkdir -p "$dir"
+  printf '%s' "$body" > "$dir/$name"
+  printf '%s' "$dir/$name"
+}
+
+@test "doc: registering a file that already exists takes its content" {
+  "$CLI" add "x"
+  local f; f=$(seed_doc_file "feat-a-plan-2026-01-01T00-00-00Z.md" $'# a plan\n\nwith text\n')
+  run "$CLI" doc 1 --type plan --path "$f"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"content stored"* ]]
+  run "$CLI" doc-show 1
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"# a plan"* ]]
+}
+
+@test "doc: registering before the file exists is silent, and catches up on read" {
+  # The normal /begin shape for a moment: the row is created, then the plan is
+  # written into it. Registering must not fail, and the first read must sync.
+  "$CLI" add "x"
+  local dir="$SMRITI_HOME/projects/testapp"; mkdir -p "$dir"
+  local f="$dir/feat-a-plan-2026-01-01T00-00-00Z.md"
+  run "$CLI" doc 1 --type plan --path "$f"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"content"* ]]
+  [ "$(sqlite3 "$SMRITI_HOME/factory.db" "SELECT body IS NULL FROM documents WHERE id=1;")" = "1" ]
+
+  printf 'written later\n' > "$f"
+  run "$CLI" doc-show 1
+  [[ "$output" == *"written later"* ]]
+  [ "$(sqlite3 "$SMRITI_HOME/factory.db" "SELECT body IS NULL FROM documents WHERE id=1;")" = "0" ]
+}
+
+@test "doc-show: the working copy wins while it exists" {
+  # The whole reason every read goes through this one verb. Nothing
+  # re-registers the plan after a Gate 2 revision, so a read that served the
+  # stored copy would show the old text — which looks correct, and is the one
+  # failure a document viewer must not have.
+  "$CLI" add "x"
+  local f; f=$(seed_doc_file "feat-a-plan-2026-01-01T00-00-00Z.md" $'first draft\n')
+  "$CLI" doc 1 --type plan --path "$f"
+  printf 'second draft\n' > "$f"
+  run "$CLI" doc-show 1
+  [[ "$output" == *"second draft"* ]]
+  [[ "$output" != *"first draft"* ]]
+}
+
+@test "doc-show: an edit that preserves the length is still noticed" {
+  # A length comparison would miss this, which is why the check is byte-exact.
+  "$CLI" add "x"
+  local f; f=$(seed_doc_file "feat-a-plan-2026-01-01T00-00-00Z.md" "aaaa")
+  "$CLI" doc 1 --type plan --path "$f"
+  printf 'bbbb' > "$f"
+  run "$CLI" doc-show 1
+  [[ "$output" == *"bbbb"* ]]
+}
+
+@test "doc-show: the store wins once the working copy is gone" {
+  "$CLI" add "x"
+  local f; f=$(seed_doc_file "feat-a-plan-2026-01-01T00-00-00Z.md" $'the whole plan\n')
+  "$CLI" doc 1 --type plan --path "$f"
+  rm -f "$f"
+  run "$CLI" doc-show 1
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"the whole plan"* ]]
+}
+
+@test "doc-show: never captured is an answer, not an error" {
+  "$CLI" add "x"
+  "$CLI" doc 1 --type plan --path "$SMRITI_HOME/projects/testapp/never-plan-2026-01-01T00-00-00Z.md"
+  run "$CLI" doc-show 1
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"never captured"* ]]
+  run "$CLI" doc-show 1 --json
+  [ "$(echo "$output" | jq -r '.has_body')" = "0" ]
+  [ "$(echo "$output" | jq -r '.body')" = "null" ]
+}
+
+@test "doc-show: unknown id exits 4" {
+  run "$CLI" doc-show 99
+  [ "$status" -eq 4 ]
+}
+
+@test "doc-show: content round-trips byte for byte" {
+  # Quotes, newlines, unicode and a trailing newline. `$(cat f)` would have
+  # eaten the last one, which is why the capture uses sqlite3's readfile().
+  "$CLI" add "x"
+  local body=$'# it'"'"'s a "plan" — ünïcode\n\n| a | b |\n|---|---|\n| 1 | 2 |\n'
+  local f; f=$(seed_doc_file "feat-a-plan-2026-01-01T00-00-00Z.md" "$body")
+  "$CLI" doc 1 --type plan --path "$f"
+  local bytes; bytes=$(wc -c < "$f" | tr -d ' ')
+  [ "$(sqlite3 "$SMRITI_HOME/factory.db" "SELECT length(CAST(body AS BLOB)) FROM documents WHERE id=1;")" = "$bytes" ]
+}
+
+@test "doc-capture: adopts a file nobody registered, then stores it" {
+  # The purge globs filenames and never consulted the index, so without this an
+  # unregistered file was deleted with nothing recording that it existed.
+  local f; f=$(seed_doc_file "feat-a-debug-2026-01-01T00-00-00Z.md" $'found me\n')
+  run "$CLI" doc-capture --branch feat-a --slug testapp --dir "$SMRITI_HOME/projects/testapp"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"stored"* ]]
+  [ "$(sqlite3 "$SMRITI_HOME/factory.db" "SELECT count(*) FROM documents;")" = "1" ]
+  [ "$(sqlite3 "$SMRITI_HOME/factory.db" "SELECT type FROM documents WHERE id=1;")" = "debug" ]
+  rm -f "$f"
+  run "$CLI" doc-show 1
+  [[ "$output" == *"found me"* ]]
+}
+
+@test "doc-capture: reports absent for a row whose working copy is gone" {
+  "$CLI" add "x"
+  local f; f=$(seed_doc_file "feat-a-plan-2026-01-01T00-00-00Z.md" $'x\n')
+  "$CLI" doc 1 --type plan --path "$f" --branch feat-a
+  rm -f "$f"
+  run "$CLI" doc-capture --branch feat-a --slug testapp --dir "$SMRITI_HOME/projects/testapp"
+  [[ "$output" == *"absent"* ]]
+  [[ "$output" != *"stored"* ]]
+}
+
+@test "doc-capture: an oversized document is skipped, with a reason" {
+  # And, by the rule in smriti-clean, is therefore never deleted.
+  "$CLI" add "x"
+  local dir="$SMRITI_HOME/projects/testapp"; mkdir -p "$dir"
+  local f="$dir/feat-a-plan-2026-01-01T00-00-00Z.md"
+  dd if=/dev/zero bs=1024 count=2100 2>/dev/null | tr '\0' 'x' > "$f"
+  "$CLI" doc 1 --type plan --path "$f" --branch feat-a
+  run "$CLI" doc-capture --branch feat-a --slug testapp --dir "$dir"
+  [[ "$output" == *"skipped"* ]]
+  [[ "$output" == *"ceiling"* ]]
+  [ "$(sqlite3 "$SMRITI_HOME/factory.db" "SELECT body IS NULL FROM documents WHERE id=1;")" = "1" ]
+}
+
+@test "doc-capture: a branch stored in slug form is still found" {
+  # `/` becomes `--` in a filename and that is not reversible, so an adopted row
+  # may hold either form. Both must match, or the row silently drops out of
+  # every later branch-scoped operation. doc-forget scopes by the CURRENT repo's
+  # slug, so this one seeds under that rather than the fixed test app.
+  local slug; slug=$("$FAKE_BIN/smriti-slug" --print)
+  local dir="$SMRITI_HOME/projects/$slug"; mkdir -p "$dir"
+  printf 'slashed\n' > "$dir/feat--x-plan-2026-01-01T00-00-00Z.md"
+
+  "$CLI" doc-capture --branch "feat--x" --slug "$slug" --dir "$dir" >/dev/null
+  [ "$(sqlite3 "$SMRITI_HOME/factory.db" "SELECT branch FROM documents WHERE id=1;")" = "feat--x" ]
+
+  # Asked for by its RAW name, which the filename could not have preserved.
+  run "$CLI" doc-capture --branch "feat/x" --slug "$slug" --dir "$dir"
+  [[ "$output" == *"stored"* ]]
+  run "$CLI" doc-forget --branch "feat/x"
+  [[ "$output" == *"forgot 1 document"* ]]
+}
+
+@test "doc-adopt: takes in orphans, skips pre-contract names, is idempotent" {
+  local dir="$SMRITI_HOME/projects/testapp"; mkdir -p "$dir"
+  printf 'one\n'   > "$dir/main-plan-2026-06-01T10-00-00Z.md"
+  printf 'two\n'   > "$dir/claude--bold-x-design-2026-06-02T11-22-33Z.md"
+  printf 'three\n' > "$dir/design-audit-20260522-005246.md"
+
+  run "$CLI" doc-adopt --dry-run
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"would adopt 2, already known 0, skipped 1"* ]]
+  # A dry run writes nothing.
+  [ "$(sqlite3 "$SMRITI_HOME/factory.db" "SELECT count(*) FROM documents;" 2>/dev/null || echo 0)" = "0" ]
+
+  run "$CLI" doc-adopt
+  [[ "$output" == *"adopted 2, already known 0, skipped 1"* ]]
+  [ "$(sqlite3 "$SMRITI_HOME/factory.db" "SELECT count(*) FROM documents;")" = "2" ]
+  # The timestamp in the filename becomes created_at, not "now".
+  [ "$(sqlite3 "$SMRITI_HOME/factory.db" "SELECT created_at FROM documents WHERE branch='main';")" = "2026-06-01T10:00:00Z" ]
+  [ "$(sqlite3 "$SMRITI_HOME/factory.db" "SELECT count(*) FROM documents WHERE body IS NOT NULL;")" = "2" ]
+
+  run "$CLI" doc-adopt
+  [[ "$output" == *"adopted 0, already known 2, skipped 1"* ]]
+}
+
+@test "doc-adopt: a branch name containing -plan- resolves on the LAST separator" {
+  local dir="$SMRITI_HOME/projects/testapp"; mkdir -p "$dir"
+  printf 'x\n' > "$dir/fix-plan-rendering-plan-2026-06-03T01-02-03Z.md"
+  "$CLI" doc-adopt >/dev/null
+  [ "$(sqlite3 "$SMRITI_HOME/factory.db" "SELECT branch FROM documents WHERE id=1;")" = "fix-plan-rendering" ]
+  [ "$(sqlite3 "$SMRITI_HOME/factory.db" "SELECT type FROM documents WHERE id=1;")" = "plan" ]
+}
+
+@test "docs --json: carries captured_at and has_body, but never the body" {
+  # The board polls this about once a second; shipping every document's text
+  # every tick to serve the one somebody clicked would be a bad trade.
+  "$CLI" add "x"
+  local f; f=$(seed_doc_file "feat-a-plan-2026-01-01T00-00-00Z.md" $'body text\n')
+  "$CLI" doc 1 --type plan --path "$f"
+  run "$CLI" docs --json
+  [ "$(echo "$output" | jq -r '.[0].has_body')" = "1" ]
+  [ "$(echo "$output" | jq -r '.[0].captured_at')" != "null" ]
+  [ "$(echo "$output" | jq -r '.[0] | has("body")')" = "false" ]
+  [[ "$output" != *"body text"* ]]
+}
+
+@test "rm: says the content goes too, and it does" {
+  "$CLI" add "x"
+  local f; f=$(seed_doc_file "feat-a-plan-2026-01-01T00-00-00Z.md" $'gone with it\n')
+  "$CLI" doc 1 --type plan --path "$f"
+  run "$CLI" rm 1 --yes
+  [ "$status" -eq 0 ]
+  [ "$(sqlite3 "$SMRITI_HOME/factory.db" "SELECT count(*) FROM documents;")" = "0" ]
+  # The working copy on disk is not the store's to delete.
+  [ -f "$f" ]
 }
 
 # ─── current ────────────────────────────────────────────────────────────────

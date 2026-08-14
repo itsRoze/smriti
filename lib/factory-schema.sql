@@ -94,18 +94,34 @@ CREATE TABLE IF NOT EXISTS tickets (
   updated_at    TEXT    NOT NULL
 );
 
--- An index of documents that live on disk. The markdown file is the source of
--- truth and is never copied in here — this table only answers "which docs
--- belong to this ticket, and where are they."
+-- The documents themselves — plans, debug write-ups, design notes. This table
+-- USED to be an index into files on disk, and the file used to be the source of
+-- truth. It is not any more: `smriti clean` deletes those files when a branch
+-- merges, so the record died at exactly the moment the work succeeded.
+--
+-- The body lives here. The file on disk is a WORKING COPY — the thing being
+-- edited while a run is live, because authoring and reviewing both need a real
+-- path. One authority with a clear handover: the file wins while it exists, this
+-- table wins once it is gone. They can never disagree, because every read syncs
+-- from disk first (`ticket doc-show`) and `smriti clean` deletes only the files
+-- it has already stored.
 CREATE TABLE IF NOT EXISTS documents (
   id           INTEGER PRIMARY KEY,
   ticket_id    INTEGER REFERENCES tickets(id) ON DELETE SET NULL,
   repo_slug    TEXT,
   project_id   INTEGER REFERENCES projects(id) ON DELETE SET NULL,
   type         TEXT    NOT NULL,        -- plan | debug | design | audit
-  path         TEXT    NOT NULL UNIQUE, -- absolute path on disk
+  -- Where the working copy lives, or lived. Still the identity key for
+  -- re-registration; NO LONGER a promise that a file is there.
+  path         TEXT    NOT NULL UNIQUE,
   branch       TEXT,
-  created_at   TEXT    NOT NULL
+  created_at   TEXT    NOT NULL,
+  -- The markdown itself. NULL until first captured — a document registered
+  -- before its file was written has a row and no body yet, which is a normal
+  -- state and distinct from an error.
+  body         TEXT,
+  -- When `body` was last taken from disk. NULL means never captured.
+  captured_at  TEXT
 );
 
 -- One row per skill invocation that wants to be observable.

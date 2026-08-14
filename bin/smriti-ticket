@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# smriti ticket — the work layer: work items and the index of documents about them.
+# smriti ticket — the work layer: work items and the documents about them.
 # State: $SMRITI_HOME/factory.db   (schema: lib/factory-schema.sql)
 #
 # Subcommands:
@@ -10,12 +10,16 @@
 #   smriti ticket edit <id> [--title T] [--body T] [--priority N] [--repo S]
 #                           [--project P | --no-project]
 #   smriti ticket cancel <id>                 park it out of the way, reversibly
-#   smriti ticket rm <id> [--yes]             delete it and its document rows
+#   smriti ticket rm <id> [--yes]             delete it and its documents, content and all
 #   smriti ticket pr <id> <url>               record the PR and move to in_review
 #   smriti ticket move <id> --before <id>|--after <id>|--top|--bottom
 #   smriti ticket status <id> <status>        idea|ready|in_progress|in_review|shipped|cancelled
 #   smriti ticket done <id>                   shorthand for `status <id> shipped`
 #   smriti ticket doc <id|-> --type T --path P [--branch B]
+#   smriti ticket doc-show <id> [--json]      one document's content
+#   smriti ticket doc-capture --branch B      store every doc for a branch
+#   smriti ticket doc-adopt [--dry-run]       take in orphaned files, one shot
+#   smriti ticket doc-forget --branch B       drop rows (deliberate forgetting)
 #   smriti ticket docs [--json]               the whole document index
 #   smriti ticket current [--json]            the ticket for this branch, as `KEY=value`
 #
@@ -23,7 +27,7 @@
 #   0  ok
 #   2  usage error
 #   3  sqlite3 or schema missing
-#   4  no such ticket
+#   4  no such ticket, or no such document
 #   5  could not create or attach the worktree
 #   6  a reorder named a target in another app or project
 #
@@ -31,10 +35,16 @@
 # neither — an idea, capturable from anywhere, including outside a git repo.
 # Both edges are optional on purpose; see lib/factory-schema.sql.
 #
-# Documents are *indexed*, never stored: `doc` records where a markdown file
-# lives so a ticket can carry its paper trail, while the file on disk under
-# ~/.smriti/projects/<slug>/ stays the source of truth. This deliberately does
-# not touch the filename contract in bin/smriti-latest-doc.
+# Documents are STORED, not indexed. `doc` records a markdown file and takes a
+# copy of its content; the file under ~/.smriti/projects/<slug>/ is a working
+# copy, because authoring and reviewing both need a real path. The file wins
+# while it exists — every read syncs from disk first — and the database wins
+# once it is gone, which is what lets `smriti clean` reclaim a shipped branch's
+# scratch without destroying the record of how the work was done.
+#
+# This deliberately does not touch the filename contract in
+# bin/smriti-latest-doc: that answers "hand me a path for a tool to open",
+# which is still a disk question.
 
 set -e
 
@@ -78,6 +88,10 @@ usage:
   smriti ticket status <id> <idea|ready|in_progress|in_review|shipped|cancelled>
   smriti ticket done <id>
   smriti ticket doc <id|-> --type <plan|debug|design|audit> --path P [--branch B]
+  smriti ticket doc-show <id> [--json]
+  smriti ticket doc-capture --branch B [--slug S] [--dir D]
+  smriti ticket doc-adopt [--dry-run]
+  smriti ticket doc-forget --branch B
   smriti ticket docs [--json]
   smriti ticket current [--json]
 USAGE
@@ -129,6 +143,113 @@ validate_doc_type() {
     *" $1 "*) ;;
     *) die "invalid --type '$1' (expected: $VALID_DOC_TYPES)" ;;
   esac
+}
+
+# ─── documents: the content ─────────────────────────────────────────────────
+
+# The per-document ceiling, matching the cap bin/smriti-board already enforced
+# on the route that used to read these files. A document over it keeps its row
+# and its path and stores no body — and, by the rule in `doc-capture`, its file
+# is then never deleted, so nothing is lost by refusing to store it.
+MAX_DOC_BYTES=2000000
+
+# A branch predicate that matches BOTH forms of the name.
+#
+# The filename contract replaces `/` with `--`, and that is not reversible: a
+# branch genuinely named `a--b` and a branch named `a/b` produce the same
+# filename, so a row adopted from disk may hold either form. Matching both is
+# one extra OR and makes the ambiguity stop mattering, where guessing would
+# silently drop an adopted row out of every later branch-scoped operation.
+branch_match_sql() {
+  local raw="$1" slug="${1//\//--}"
+  if [ "$raw" = "$slug" ]; then
+    printf 'branch = %s' "$(sql_quote "$raw")"
+  else
+    printf '(branch = %s OR branch = %s)' "$(sql_quote "$raw")" "$(sql_quote "$slug")"
+  fi
+}
+
+# Take a copy of the working copy into the row. Sets $CAPTURE_REASON and returns
+# non-zero when the body is NOT stored, which is the signal every caller acts on
+# — most importantly `smriti clean`, which deletes only files this succeeded for.
+#
+# readfile() rather than shelling the content in through a SQL literal, for two
+# reasons that both bite at real document sizes: `$(cat f)` strips every
+# trailing newline, and a 2 MB literal in argv is over ARG_MAX on macOS. It is
+# a standard sqlite3 CLI function, and if it were ever missing the write simply
+# fails — which by the rule above means the file stays put.
+CAPTURE_REASON=""
+capture_doc() {
+  local id="$1" path="$2" bytes
+  CAPTURE_REASON=""
+
+  [ -n "$path" ] || { CAPTURE_REASON="no path"; return 1; }
+  [ -f "$path" ] || { CAPTURE_REASON="no file on disk"; return 1; }
+  [ -r "$path" ] || { CAPTURE_REASON="not readable"; return 1; }
+
+  bytes=$(wc -c < "$path" 2>/dev/null | tr -d ' ') || bytes=""
+  case "$bytes" in
+    ''|*[!0-9]*) CAPTURE_REASON="could not size the file"; return 1 ;;
+  esac
+  if [ "$bytes" -gt "$MAX_DOC_BYTES" ]; then
+    CAPTURE_REASON="$bytes bytes is over the ${MAX_DOC_BYTES}-byte ceiling"
+    return 1
+  fi
+
+  local qpath; qpath=$(sql_quote "$path")
+
+  # Byte-exact comparison, not a length check: an edit that happens to preserve
+  # the length is exactly the edit a length check would miss.
+  local same
+  if ! same=$(db "SELECT CASE WHEN body IS NOT NULL AND CAST(body AS BLOB) = readfile($qpath)
+                              THEN 1 ELSE 0 END
+                     FROM documents WHERE id = $id;" 2>/dev/null); then
+    CAPTURE_REASON="could not read the store"
+    return 1
+  fi
+  [ "$same" = "1" ] && return 0
+
+  # `AND readfile(...) IS NOT NULL` guards the race where the file vanishes
+  # between the check above and this write: readfile returns NULL for a missing
+  # file, and without the guard that NULL would overwrite a good stored body
+  # with nothing — turning a capture into a deletion.
+  if ! db_write "UPDATE documents
+                    SET body        = CAST(readfile($qpath) AS TEXT),
+                        captured_at = $(sql_quote "$(now_utc)")
+                  WHERE id = $id AND readfile($qpath) IS NOT NULL;" >/dev/null 2>&1; then
+    CAPTURE_REASON="could not write the content"
+    return 1
+  fi
+
+  # Verify rather than assume. A short write, a NUL byte truncating the TEXT
+  # cast, or a readfile that quietly did nothing all look like success up to
+  # here, and all of them would let `clean` delete the only real copy.
+  local stored
+  if ! stored=$(db "SELECT coalesce(length(CAST(body AS BLOB)), -1)
+                      FROM documents WHERE id = $id;" 2>/dev/null); then
+    CAPTURE_REASON="could not verify the content"
+    return 1
+  fi
+  if [ "$stored" != "$bytes" ]; then
+    CAPTURE_REASON="stored $stored of $bytes bytes"
+    return 1
+  fi
+  return 0
+}
+
+# The id of the row for a path, or empty.
+doc_id_for_path() {
+  db "SELECT id FROM documents WHERE path = $(sql_quote "$1");"
+}
+
+# The ticket working a branch in an app, or empty. Used when adopting a file
+# nobody registered, so the document still lands on the right ticket.
+ticket_for_branch() {
+  local branch="$1" slug="$2" where
+  [ -n "$branch" ] || return 0
+  where="$(branch_match_sql "$branch")"
+  [ -n "$slug" ] && where="$where AND repo_slug = $(sql_quote "$slug")"
+  db "SELECT id FROM tickets WHERE $where ORDER BY id LIMIT 1;"
 }
 
 # Resolve the app for a write. Explicit --repo wins; otherwise derive from the
@@ -336,7 +457,7 @@ cmd_show() {
   if [ "$json" -eq 1 ]; then
     local t d
     t=$(db_json_one "SELECT * FROM tickets WHERE id = $id;")
-    d=$(db_json "SELECT id, type, path, branch, created_at FROM documents WHERE ticket_id = $id ORDER BY id;")
+    d=$(db_json "SELECT id, type, path, branch, created_at, captured_at, (body IS NOT NULL) AS has_body FROM documents WHERE ticket_id = $id ORDER BY id;")
     printf '{"ticket":%s,"documents":%s}\n' "$t" "$d"
     return 0
   fi
@@ -790,14 +911,17 @@ cmd_rm() {
       die "refusing to delete without --yes in a non-interactive shell" 1
     fi
     echo "About to delete #$id  $title"
-    [ "$docs" != "0" ] && echo "  $docs document row(s) forgotten (the files stay on disk)"
+    [ "$docs" != "0" ] && echo "  $docs document(s) destroyed, content and all — any working copy still on disk stays"
     printf "Delete? [y/N] "
     read -r ans || ans=""
     case "$ans" in y|Y|yes|YES) ;; *) echo "aborted."; exit 1 ;; esac
   fi
 
-  # Only index rows go. The markdown on disk is the source of truth, and
-  # deleting a ticket is not a reason to destroy the writing about it.
+  # The documents go with the ticket, and that now means their CONTENT, not just
+  # a pointer at a file. Deliberate: `rm` is an explicit verb, it counts what it
+  # will take and asks first, and a delete that secretly keeps things is its own
+  # trap. A working copy still on disk is untouched — this deletes the store's
+  # copy, not the filesystem.
   db_write "DELETE FROM documents WHERE ticket_id = $id;
             DELETE FROM tickets WHERE id = $id;"
   echo "deleted: #$id  $title"
@@ -875,11 +999,239 @@ cmd_doc() {
               repo_slug  = excluded.repo_slug,
               project_id = excluded.project_id,
               branch     = excluded.branch;"
-  echo "registered: $type → $path${ticket_sql:+ (#$id)}"
+
+  # Take the content now if the file is already there. /begin registers its plan
+  # before writing it, so the usual answer at this moment is "no file yet" —
+  # which is silent and normal, because `doc-show` and `doc-capture` both catch
+  # up later. A file that IS there and could not be read is worth saying out
+  # loud, since something is wrong with it.
+  local note="" row_id
+  if [ -f "$path" ]; then
+    row_id=$(doc_id_for_path "$path")
+    if [ -n "$row_id" ] && capture_doc "$row_id" "$path"; then
+      note="  (content stored)"
+    else
+      note="  (content NOT stored: ${CAPTURE_REASON:-no row for that path})"
+    fi
+  fi
+  echo "registered: $type → $path${ticket_sql:+ (#$id)}$note"
+}
+
+# ─── doc-show ───────────────────────────────────────────────────────────────
+
+# One document's content, and the ONLY read path for a body.
+#
+# Single, because "the file wins while it exists" is only true if every reader
+# syncs from disk first. bin/smriti-board reads through this rather than
+# selecting `body` itself — which is also what removed its last path-driven file
+# read, and the traversal risk class with it.
+cmd_doc_show() {
+  [ $# -ge 1 ] || usage
+  local id="$1"; shift
+  local json=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json) json=1; shift ;;
+      *) die "unknown flag: $1" ;;
+    esac
+  done
+  require_num "$id" "document id"
+
+  [ "$(db "SELECT count(*) FROM documents WHERE id = $id;")" = "1" ] \
+    || die "no document #$id" 4
+  local path; path=$(db "SELECT path FROM documents WHERE id = $id;")
+
+  # Sync from disk. A failure here is not fatal: the stored body may still be
+  # perfectly good, and refusing to show it because the working copy has gone
+  # bad would defeat the point of storing it.
+  capture_doc "$id" "$path" >/dev/null 2>&1 || true
+
+  if [ "$json" -eq 1 ]; then
+    db_json_one "SELECT id, ticket_id, repo_slug, project_id, type, path, branch,
+                        created_at, captured_at,
+                        (body IS NOT NULL) AS has_body, body
+                   FROM documents WHERE id = $id;"
+    return 0
+  fi
+
+  # "Never captured" is an answer, not an error — a document registered before
+  # its file was written is in exactly that state for a few seconds every run.
+  if [ "$(db "SELECT body IS NULL FROM documents WHERE id = $id;")" = "1" ]; then
+    echo "smriti-ticket: #$id has no stored content yet (never captured)" >&2
+    return 0
+  fi
+  db "SELECT body FROM documents WHERE id = $id;"
+}
+
+# ─── doc-capture ────────────────────────────────────────────────────────────
+
+# Store every document for a branch, registering any file nobody registered.
+#
+# This is what stands between `smriti clean` and data loss, so its output is a
+# contract, one line per document:
+#
+#   stored   <path>     content matches the file right now — safe to delete
+#   absent   <path>     no working copy on disk — nothing to delete
+#   skipped  <path>     the file is there and could NOT be stored — DO NOT delete
+#
+# The scan half matters as much as the capture half: the purge in smriti-clean
+# globs filenames and never consulted the index, so a file written but never
+# registered used to be deleted with no row anywhere recording that it existed.
+# Adopting first means there are no unindexed casualties.
+cmd_doc_capture() {
+  local branch="" slug="" dir=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --branch) [ $# -ge 2 ] || die "--branch requires a value"; branch="$2"; shift 2 ;;
+      --slug)   [ $# -ge 2 ] || die "--slug requires a value";   slug="$2";   shift 2 ;;
+      --dir)    [ $# -ge 2 ] || die "--dir requires a value";    dir="$2";    shift 2 ;;
+      *) die "unknown flag: $1" ;;
+    esac
+  done
+  [ -n "$branch" ] || die "--branch is required"
+
+  [ -n "$slug" ] || slug=$(current_slug)
+  [ -n "$dir" ] || { [ -n "$slug" ] && dir="${SMRITI_HOME:-$HOME/.smriti}/projects/$slug"; }
+
+  local branch_slug="${branch//\//--}"
+
+  # ── adopt anything on disk that has no row ──
+  if [ -n "$dir" ] && [ -d "$dir" ]; then
+    local f base type ticket_sql project_sql
+    for f in "$dir/$branch_slug"-plan-*.md \
+             "$dir/$branch_slug"-design-*.md \
+             "$dir/$branch_slug"-debug-*.md; do
+      [ -f "$f" ] || continue                      # unmatched glob stays literal
+      [ -n "$(doc_id_for_path "$f")" ] && continue
+      base=$(basename "$f")
+      case "$base" in
+        *-plan-*)   type=plan ;;
+        *-design-*) type=design ;;
+        *-debug-*)  type=debug ;;
+        *) continue ;;
+      esac
+      ticket_sql=$(ticket_for_branch "$branch" "$slug")
+      [ -n "$ticket_sql" ] || ticket_sql=NULL
+      project_sql=NULL
+      if [ "$ticket_sql" != "NULL" ]; then
+        project_sql=$(db "SELECT coalesce(project_id,'NULL') FROM tickets WHERE id = $ticket_sql;")
+        [ -n "$project_sql" ] || project_sql=NULL
+      fi
+      db_write "INSERT OR IGNORE INTO documents
+                  (ticket_id, repo_slug, project_id, type, path, branch, created_at)
+                VALUES ($ticket_sql, $(sql_quote_or_null "$slug"), $project_sql,
+                        $(sql_quote "$type"), $(sql_quote "$f"),
+                        $(sql_quote "$branch"), $(sql_quote "$(now_utc)"));"
+    done
+  fi
+
+  # ── capture every row for this branch, wherever its file lives ──
+  local where; where="WHERE $(branch_match_sql "$branch")"
+  [ -n "$slug" ] && where="$where AND repo_slug = $(sql_quote "$slug")"
+
+  # Split on the first tab by hand rather than with `IFS=$'\t' read a b`. Tab is
+  # IFS *whitespace*, so read collapses runs of it and strips a leading one —
+  # the same trap lib/factory-db.sh's db_fields exists to avoid.
+  local line row_id row_path
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    row_id="${line%%$'\t'*}"
+    row_path="${line#*$'\t'}"
+    if [ ! -f "$row_path" ]; then
+      printf 'absent\t%s\n' "$row_path"
+    elif capture_doc "$row_id" "$row_path"; then
+      printf 'stored\t%s\n' "$row_path"
+    else
+      printf 'skipped\t%s\t%s\n' "$row_path" "$CAPTURE_REASON"
+    fi
+  done < <(db "SELECT id || char(9) || path FROM documents $where ORDER BY id;")
+}
+
+# ─── doc-adopt ──────────────────────────────────────────────────────────────
+
+# One shot, across every project directory: take in the markdown files that
+# predate the store and have no row at all.
+#
+# The parse is the filename contract bin/smriti-latest-doc already depends on —
+# <branch-slug>-<type>-<timestamp>.md, with the app being the directory name.
+# The branch half is greedy, so a branch whose own name contains `-plan-` still
+# resolves against the LAST separator, which is the one the writer produced.
+# Anything that does not match is reported and left alone rather than guessed at.
+cmd_doc_adopt() {
+  local dry=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --dry-run) dry=1; shift ;;
+      *) die "unknown flag: $1" ;;
+    esac
+  done
+
+  local root="${SMRITI_HOME:-$HOME/.smriti}/projects"
+  [ -d "$root" ] || { echo "nothing to adopt: $root does not exist"; return 0; }
+
+  local re='^(.+)-(plan|design|debug)-([0-9]{4}-[0-9]{2}-[0-9]{2})T([0-9]{2})-([0-9]{2})-([0-9]{2})Z\.md$'
+  local adopted=0 known=0 skipped=0
+  local d slug f base branch type created ticket_sql project_sql new_id
+
+  for d in "$root"/*/; do
+    [ -d "$d" ] || continue
+    slug=$(basename "$d")
+    for f in "$d"*.md; do
+      [ -f "$f" ] || continue
+      if [ -n "$(doc_id_for_path "$f")" ]; then
+        known=$((known + 1)); continue
+      fi
+      base=$(basename "$f")
+      if ! [[ $base =~ $re ]]; then
+        echo "skipped  $f"
+        echo "         filename predates the <branch>-<type>-<timestamp>.md contract"
+        skipped=$((skipped + 1)); continue
+      fi
+      branch="${BASH_REMATCH[1]}"
+      type="${BASH_REMATCH[2]}"
+      created="${BASH_REMATCH[3]}T${BASH_REMATCH[4]}:${BASH_REMATCH[5]}:${BASH_REMATCH[6]}Z"
+
+      if [ "$dry" -eq 1 ]; then
+        echo "would adopt  $type  $slug  $branch  $f"
+        adopted=$((adopted + 1)); continue
+      fi
+
+      ticket_sql=$(ticket_for_branch "$branch" "$slug")
+      [ -n "$ticket_sql" ] || ticket_sql=NULL
+      project_sql=NULL
+      if [ "$ticket_sql" != "NULL" ]; then
+        project_sql=$(db "SELECT coalesce(project_id,'NULL') FROM tickets WHERE id = $ticket_sql;")
+        [ -n "$project_sql" ] || project_sql=NULL
+      fi
+      db_write "INSERT OR IGNORE INTO documents
+                  (ticket_id, repo_slug, project_id, type, path, branch, created_at)
+                VALUES ($ticket_sql, $(sql_quote "$slug"), $project_sql, $(sql_quote "$type"),
+                        $(sql_quote "$f"), $(sql_quote "$branch"), $(sql_quote "$created"));"
+      new_id=$(doc_id_for_path "$f")
+      if capture_doc "$new_id" "$f"; then
+        echo "adopted  $type  $slug  $f"
+      else
+        echo "adopted  $type  $slug  $f  (content NOT stored: $CAPTURE_REASON)"
+      fi
+      adopted=$((adopted + 1))
+    done
+  done
+
+  if [ "$dry" -eq 1 ]; then
+    echo "would adopt $adopted, already known $known, skipped $skipped"
+  else
+    echo "adopted $adopted, already known $known, skipped $skipped"
+  fi
 }
 
 # The whole index in one call — the board renders paper trails and one
 # subprocess per ticket would be an N+1.
+#
+# Deliberately body-free: this is the board's whole-store read on a ~1s poll,
+# and shipping every document's text every tick to serve the one somebody
+# clicked would be a bad trade. `has_body` and `captured_at` carry the state
+# instead, which is enough to tell "never captured" from "captured, file gone"
+# without fetching either.
 cmd_docs() {
   local json=0
   while [ $# -gt 0 ]; do
@@ -893,18 +1245,25 @@ cmd_docs() {
     echo "no documents yet"; return 0
   fi
   if [ "$json" -eq 1 ]; then
-    db_json "SELECT id, ticket_id, repo_slug, project_id, type, path, branch, created_at
+    db_json "SELECT id, ticket_id, repo_slug, project_id, type, path, branch, created_at,
+                    captured_at, (body IS NOT NULL) AS has_body
              FROM documents ORDER BY id;"
   else
-    db "SELECT type || char(9) || coalesce('#' || ticket_id,'—') || char(9) || path
-        FROM documents ORDER BY id;" | awk -F'\t' '{ printf "%-8s %-6s %s\n", $1, $2, $3 }'
+    db "SELECT type || char(9) || coalesce('#' || ticket_id,'—') || char(9) ||
+               CASE WHEN body IS NULL THEN '(no content)' ELSE '' END || char(9) || path
+        FROM documents ORDER BY id;" \
+      | awk -F'\t' '{ printf "%-8s %-6s %-13s %s\n", $1, $2, $3, $4 }'
   fi
 }
 
 # ─── doc-forget ─────────────────────────────────────────────────────────────
 
-# Drop index rows for a branch whose files have been purged. The index must not
-# outlive the documents it points at.
+# Drop document rows for a branch — content and all.
+#
+# `smriti clean` no longer calls this. It used to, on the reasoning that the
+# index must not outlive the files it points at; now the row IS the document, so
+# that call was the bug this ticket fixed. The command stays for deliberate
+# forgetting, which is a thing you might still want to do by hand.
 cmd_doc_forget() {
   local branch=""
   while [ $# -gt 0 ]; do
@@ -916,7 +1275,7 @@ cmd_doc_forget() {
   [ -n "$branch" ] || die "--branch is required"
 
   local slug; slug=$(current_slug)
-  local where="WHERE branch = $(sql_quote "$branch")"
+  local where; where="WHERE $(branch_match_sql "$branch")"
   [ -n "$slug" ] && where="$where AND repo_slug = $(sql_quote "$slug")"
 
   local n; n=$(db "SELECT count(*) FROM documents $where;")
@@ -1010,6 +1369,9 @@ case "$CMD" in
   done)         cmd_done "$@" ;;
   doc)          cmd_doc "$@" ;;
   docs)         cmd_docs "$@" ;;
+  doc-show)     cmd_doc_show "$@" ;;
+  doc-capture)  cmd_doc_capture "$@" ;;
+  doc-adopt)    cmd_doc_adopt "$@" ;;
   doc-forget)   cmd_doc_forget "$@" ;;
   current)      cmd_current "$@" ;;
   ""|-h|--help) usage ;;

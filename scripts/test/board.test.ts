@@ -92,10 +92,14 @@ test('reads without the cookie are refused — the doc endpoint is as sensitive 
   expect(r.status).toBe(403);
 });
 
-test('doc reads are confined to $SMRITI_HOME/projects', async () => {
-  // Register one doc inside the projects root and one escaping it. The board
-  // must serve the first and refuse the second — otherwise it is a local
-  // file-read oracle for anything the user can name.
+test('a document is served out of the store, and outlives its file', async () => {
+  // This route used to open a file whose path came from a client-supplied id,
+  // guarded by realpath-confinement to $SMRITI_HOME/projects. The factory
+  // stores document bodies now, so the read goes through the CLI and the
+  // server touches no path at all — the confinement is gone because the file
+  // access it guarded is gone. Nothing here can construct a document row
+  // either: the board has no route that writes one, so the only paths ever
+  // read are ones the local user registered themselves.
   const tk = (args: string[]) =>
     spawnSync(TICKET, args, { encoding: 'utf8', env: { ...process.env, SMRITI_HOME: HOME_DIR } });
   tk(['add', 'doc test', '--repo', 'demo']);
@@ -103,23 +107,39 @@ test('doc reads are confined to $SMRITI_HOME/projects', async () => {
   const inside = join(HOME_DIR, 'projects', 'demo', 'x-plan-1.md');
   mkdirSync(join(HOME_DIR, 'projects', 'demo'), { recursive: true });
   writeFileSync(inside, '# hello\n\nfrom **inside**');
-  const outside = join(HOME_DIR, 'escape.md');
-  writeFileSync(outside, 'secret');
-
   tk(['doc', '1', '--type', 'plan', '--path', inside]);
-  tk(['doc', '1', '--type', 'debug', '--path', outside]);
 
   const state = await fetch(`${base()}/api/state`, withCookie());
   const docs = ((await state.json()) as { documents: { id: number; path: string }[] }).documents;
-  const inDoc = docs.find((d) => d.path === inside)!;
-  const outDoc = docs.find((d) => d.path === outside)!;
+  const doc = docs.find((d) => d.path === inside)!;
 
-  const ok = await fetch(`${base()}/api/doc/${inDoc.id}`, withCookie());
+  const ok = await fetch(`${base()}/api/doc/${doc.id}`, withCookie());
   expect(ok.status).toBe(200);
   expect(((await ok.json()) as { html: string }).html).toContain('<strong>inside</strong>');
 
-  const bad = await fetch(`${base()}/api/doc/${outDoc.id}`, withCookie());
-  expect(bad.status).toBe(403);
+  // The point of the whole change: delete the working copy and it still reads.
+  rmSync(inside);
+  const stillThere = await fetch(`${base()}/api/doc/${doc.id}`, withCookie());
+  expect(stillThere.status).toBe(200);
+  expect(((await stillThere.json()) as { html: string }).html).toContain('<strong>inside</strong>');
+});
+
+test('a document registered but never written says so, rather than reading anything', async () => {
+  const tk = (args: string[]) =>
+    spawnSync(TICKET, args, { encoding: 'utf8', env: { ...process.env, SMRITI_HOME: HOME_DIR } });
+  const never = join(HOME_DIR, 'projects', 'demo', 'never-plan-1.md');
+  tk(['doc', '-', '--type', 'plan', '--path', never]);
+
+  const state = await fetch(`${base()}/api/state`, withCookie());
+  const docs = ((await state.json()) as { documents: { id: number; path: string; has_body: number }[] })
+    .documents;
+  const doc = docs.find((d) => d.path === never)!;
+  // The index carries the state, so the client can label it without fetching.
+  expect(doc.has_body).toBe(0);
+
+  const r = await fetch(`${base()}/api/doc/${doc.id}`, withCookie());
+  expect(r.status).toBe(404);
+  expect(((await r.json()) as { error: string }).error).toContain('no content stored');
 });
 
 // ── /api/render ────────────────────────────────────────────────────────────
@@ -502,9 +522,9 @@ test('/api/stats rejects a days value too large to be an integer', async () => {
 });
 
 // ─── apps, projects, and the repo-level markdown route ────────────────────
-// The second file-read exception on this server. It is deliberately narrower
-// than /api/doc/:id — the filename is never user input — so these lock down
-// that the narrowing actually holds.
+// The ONLY file-read exception left on this server — /api/doc/:id was the
+// other one, and it reads the factory now. This one survives because the
+// filename is never user input, so these lock down that the narrowing holds.
 
 const proj = (args: string[]) =>
   spawnSync(PROJECT, args, { encoding: 'utf8', env: { ...process.env, SMRITI_HOME: HOME_DIR } });

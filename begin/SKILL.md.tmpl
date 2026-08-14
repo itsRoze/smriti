@@ -151,6 +151,12 @@ TS=$(date -u +%Y-%m-%dT%H-%M-%SZ)
 DEBUG_DIR="${SMRITI_HOME:-$HOME/.smriti}/projects/$SLUG"
 mkdir -p "$DEBUG_DIR"
 DEBUG_FILE="$DEBUG_DIR/$BRANCH_SLUG-debug-$TS.md"
+```
+
+Write the file, **then** register it — registering takes a copy of the content into the
+factory, so doing it first stores an empty document:
+
+```bash
 smriti ticket doc "${TICKET:--}" --type debug --path "$DEBUG_FILE" 2>/dev/null || true
 ```
 
@@ -183,6 +189,15 @@ TS=$(date -u +%Y-%m-%dT%H-%M-%SZ)
 PLAN_DIR="${SMRITI_HOME:-$HOME/.smriti}/projects/$SLUG"
 mkdir -p "$PLAN_DIR"
 PLAN_FILE="$PLAN_DIR/$BRANCH_SLUG-plan-$TS.md"
+```
+
+Write the plan, **then** register it. Registering takes a copy of the content into the
+factory, which is what makes the plan outlive the branch — so registering an empty path
+first would store an empty document. You do not have to re-register after each Gate 2
+revision: reads sync from the file while it exists, and `smriti clean` stores the final
+text before it reclaims the file.
+
+```bash
 smriti ticket doc "${TICKET:--}" --type plan --path "$PLAN_FILE" 2>/dev/null || true
 ```
 

@@ -403,10 +403,21 @@ delete_branch() {
 
 # ─── artifact purge (ties smriti's out-of-repo scratch to branch lifecycle) ─
 #
-# When a merged branch is deleted, its plan/design/debug docs and browser-audit
+# When a merged branch is deleted, its plan/design/debug files and browser-audit
 # dirs under ~/.smriti/projects/<slug>/ are dead scratch — the work shipped.
 # Purge them so state doesn't accumulate forever. Resolves the slug via the
 # sibling smriti-slug helper (same install dir), mirroring smriti-project.
+#
+# What "dead scratch" means changed. The markdown used to BE the document, so
+# deleting it destroyed the record of how a change was made at exactly the
+# moment the change succeeded — and `doc-forget` then deleted the rows too, so
+# a shipped ticket left no trace at all. Now the factory stores the content and
+# the file is a working copy, so this reclaims the copy and keeps the document.
+#
+# The rule that makes that safe is per-FILE, not per-branch: delete only what
+# `smriti ticket doc-capture` reports as stored. Anything it could not store —
+# unreadable, over the size ceiling, a database that would not take it — stays
+# exactly where it is.
 
 # The project's out-of-repo artifact dir, or "" if the slug can't be resolved.
 project_artifacts_dir() {
@@ -421,8 +432,15 @@ project_artifacts_dir() {
   printf '%s/projects/%s' "${SMRITI_HOME:-$HOME/.smriti}" "$slug"
 }
 
-# Remove one deleted branch's docs + audit dirs under $1 (the project dir).
-# Best-effort: always returns 0 so it never fails the deletion it follows.
+# Store one deleted branch's documents, then remove the working copies and the
+# audit dirs under $1 (the project dir).
+#
+# Best-effort: always returns 0 so it never fails the deletion it follows, and
+# `--all` keeps sweeping past a branch that had a problem. That contract is why
+# the safety lives one level down — a capture failure that aborted the clean
+# would be a worse bug than the one this fixes, while a capture failure that
+# merely spares a file costs nothing and self-heals on the next run.
+#
 # Scoped strictly to "<branch-slug>-*" so a bug can't reach unrelated files.
 purge_branch_artifacts() {
   local proj_dir="$1" branch="$2"
@@ -431,24 +449,78 @@ purge_branch_artifacts() {
   local branch_slug="${branch//\//--}"
   [ -n "$branch_slug" ] || return 0
 
+  # Store first. doc-capture also ADOPTS any matching file that has no row —
+  # this purge globs filenames and never consulted the index, so without that a
+  # file written but never registered would be deleted with nothing anywhere
+  # recording that it had existed.
+  # The slug is the artifact dir's own name — projects/<slug> — which is exact
+  # and does not re-shell smriti-slug from a cwd whose worktree may already be
+  # gone. It scopes the capture to this app, so a branch name that two apps
+  # happen to share cannot make one app's clean touch the other's documents.
+  # Sibling first, then PATH — which this script already prepended its own real
+  # bin/ dir to, so the helper resolves whether we were invoked by absolute path
+  # or through the ~/.local/bin symlink. `dirname "$0"` alone points at the
+  # SYMLINK's directory, where there is no smriti-ticket.
+  local tk capture="" spared=0 slug self_dir
+  slug=$(basename "$proj_dir")
+  self_dir="$(cd "$(dirname "$0")" && pwd -P)"
+  if [ -x "$self_dir/smriti-ticket" ]; then
+    tk="$self_dir/smriti-ticket"
+  else
+    tk=$(command -v smriti-ticket 2>/dev/null || true)
+  fi
+
+  if [ -n "$tk" ]; then
+    capture=$("$tk" doc-capture --branch "$branch" --slug "$slug" --dir "$proj_dir" 2>/dev/null) \
+      || capture=""
+  else
+    # No way to reach the store means no way to know a file is safe to delete,
+    # and the rule holds: keep it. Loud, because a smriti install this broken is
+    # worth saying out loud rather than quietly declining to tidy up.
+    echo "smriti-clean: cannot find smriti-ticket — keeping this branch's documents on disk" >&2
+  fi
+
+  # Every path doc-capture reported as `stored`, one per line. Deleting is gated
+  # on membership in this set: a file we could not store is a file we must not
+  # remove, because the copy on disk is then the only copy there is.
+  local stored_paths="" line
+  if [ -n "$capture" ]; then
+    stored_paths=$(printf '%s\n' "$capture" | awk -F'\t' '$1 == "stored" { print $2 }')
+    while IFS= read -r line; do
+      case "$line" in
+        skipped*)
+          spared=$((spared + 1))
+          echo "smriti-clean: kept $(printf '%s' "$line" | cut -f2) — not stored ($(printf '%s' "$line" | cut -f3))" >&2
+          ;;
+      esac
+    done < <(printf '%s\n' "$capture")
+  fi
+
   local removed=0 f d
   for f in "$proj_dir/$branch_slug"-plan-*.md \
            "$proj_dir/$branch_slug"-design-*.md \
            "$proj_dir/$branch_slug"-debug-*.md; do
     [ -e "$f" ] || continue          # unmatched glob stays literal; skip it
+    # Exact-line match, so a path that is merely a prefix of a stored one is
+    # never mistaken for it.
+    printf '%s\n' "$stored_paths" | grep -qxF -- "$f" || continue
     rm -f "$f" && removed=$((removed + 1))
   done
+  # Screenshots are large binaries and stay out of the database, so these are
+  # purged the way they always were.
   for d in "$proj_dir/audits/$branch_slug"-*/; do
     [ -d "$d" ] || continue
     rm -rf "$d" && removed=$((removed + 1))
   done
 
+  # The document ROWS are deliberately left alone. `doc-forget` used to run here
+  # on the reasoning that an index must not outlive its files; the row is now
+  # the document, so that call was the data loss.
   if [ "$removed" -gt 0 ]; then
     echo "smriti-clean: purged $removed artifact(s) for '$branch'"
-    # Drop the index rows for the files we just deleted, so the factory never
-    # points at a document that is no longer on disk.
-    local tk; tk="$(cd "$(dirname "$0")" && pwd -P)/smriti-ticket"
-    [ -x "$tk" ] && "$tk" doc-forget --branch "$branch" >/dev/null 2>&1 || true
+  fi
+  if [ "$spared" -gt 0 ]; then
+    echo "smriti-clean: spared $spared file(s) that could not be stored" >&2
   fi
   return 0
 }

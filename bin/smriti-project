@@ -224,7 +224,7 @@ cmd_show() {
                             (SELECT count(*) FROM tickets t WHERE t.project_id = p.id
                                AND t.status = 'in_progress') AS building
                      FROM projects p WHERE p.id = $id;")
-    d=$(db_json "SELECT id, type, path, branch, created_at FROM documents WHERE project_id = $id ORDER BY id;")
+    d=$(db_json "SELECT id, type, path, branch, created_at, captured_at, (body IS NOT NULL) AS has_body FROM documents WHERE project_id = $id ORDER BY id;")
     printf '{"project":%s,"documents":%s}\n' "$p" "$d"
     return 0
   fi

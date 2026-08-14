@@ -16,8 +16,11 @@
 // command rather than pretending it moved your focus.
 //
 // It holds NO SQL. All reads and writes go through the CLI verbs
-// (smriti-ticket / smriti-trace), same as the TUI did. The one exception is
-// reading document files to render them, guarded to $SMRITI_HOME/projects/.
+// (smriti-ticket / smriti-trace), same as the TUI did. The one exception left
+// is reading a repo's own PROJECT.md / DESIGN.md, off a two-name allowlist
+// under a root the CLI supplies. Document bodies used to be a second exception
+// — a file read driven by a client-supplied id — and are now stored in the
+// factory and read through `ticket doc-show` like everything else.
 //
 // AUTH — this server cuts worktrees, spawns agents and reads files, so every
 // route is authenticated:
@@ -707,12 +710,6 @@ async function cmdServer(): Promise<never> {
   const touch = () => { last = Date.now(); };
   const sse = new Set<(s: string) => void>();
 
-  const projectsRoot = (() => {
-    const p = join(SMRITI_HOME, 'projects');
-    mkdirSync(p, { recursive: true });
-    return realpathSync(p);
-  })();
-
   const json = (data: unknown, status = 200, headers: Record<string, string> = {}) =>
     new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json', ...headers } });
 
@@ -838,19 +835,31 @@ async function cmdServer(): Promise<never> {
         return json(stats);
       }
 
+      // A document's content. This route USED to be the one step outside the
+      // CLI contract — it opened a file whose path came from a client-supplied
+      // id, guarded by realpath-confinement and a size cap. The factory stores
+      // document bodies now, so the read goes through the CLI like every other
+      // read, the guards are gone because the file access they guarded is gone,
+      // and with it the whole path-traversal risk class.
+      //
+      // `doc-show` and not a body column in /api/state: it syncs from the
+      // working copy when one still exists, which is what makes a plan you are
+      // actively revising render as what you just wrote.
       if (url.pathname.startsWith('/api/doc/') && req.method === 'GET') {
         touch();
         const id = url.pathname.split('/').pop() || '';
         if (!/^\d+$/.test(id)) return json({ error: 'bad id' }, 400);
-        const doc = readJsonCmd<{ id: number; path: string }>(['docs', '--json']).find((d) => d.id === Number(id));
-        if (!doc) return json({ error: 'no such document' }, 404);
-        // The one step outside the CLI contract: reading a file to render it.
-        // realpath + prefix check so this can never become a file-read oracle.
-        let real = '';
-        try { real = realpathSync(doc.path); } catch { return json({ error: 'file is gone' }, 404); }
-        if (!real.startsWith(projectsRoot + sep)) return json({ error: 'forbidden path' }, 403);
-        if (statSync(real).size > 2_000_000) return json({ error: 'too large' }, 413);
-        return json({ html: renderMarkdown(readFileSync(real, 'utf8')) });
+        const r = await shOut(TICKET, ['doc-show', id, '--json']);
+        if (!r.ok) return json({ error: 'no such document' }, 404);
+        let doc: { has_body?: number; body?: string | null } | null = null;
+        try { doc = JSON.parse(r.out || 'null'); } catch {}
+        if (!doc) return json({ error: 'could not read the document' }, 503);
+        // Registered but never captured — a real state, not an error: /begin
+        // registers a plan a moment before it writes it.
+        if (!doc.has_body || typeof doc.body !== 'string') {
+          return json({ error: 'no content stored for this document yet' }, 404);
+        }
+        return json({ html: renderMarkdown(doc.body) });
       }
 
       // Markdown for the three DESCRIPTION surfaces — a ticket body, an app
@@ -861,8 +870,9 @@ async function cmdServer(): Promise<never> {
       // /api/state), it just cannot reach the renderer, because the whole
       // browser client is one template string with no build step. Per-entity
       // GET routes would shell out three times to fetch what the caller
-      // already had. /api/doc/:id has to be per-entity for a different reason
-      // — the server owns file access there, and nothing here touches a file.
+      // already had. /api/doc/:id stays per-entity for a different reason —
+      // document bodies are deliberately kept out of /api/state, so the caller
+      // does NOT already hold them.
       //
       // Nor does the rendered HTML belong in /api/state: that payload is
       // rebuilt on a ~1s mtime watch, and most bodies are never opened, so
@@ -886,9 +896,9 @@ async function cmdServer(): Promise<never> {
       }
 
       // ── repo-level markdown ────────────────────────────────────────────
-      // The board's SECOND exception to "read nothing outside
-      // $SMRITI_HOME/projects/", and deliberately the narrower of the two: the
-      // filename is not user input at all.
+      // The board's ONLY remaining file read — /api/doc/:id was the other one,
+      // and it is now a CLI read. This one survives because it is far narrower:
+      // the filename is not user input at all.
       //   - the slug shape forbids separators, so it cannot traverse
       //   - the document name comes from a fixed two-item allowlist
       //   - the repo root comes from `smriti repo show --json`, never the client

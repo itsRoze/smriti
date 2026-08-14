@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# Tests for the migration chain in lib/factory-db.sh (v1 → v2 → v3 → v4).
+# Tests for the migration chain in lib/factory-db.sh (v1 → v2 → v3 → v4 → v5 → v6).
 #
 # v1 called a column project_slug that always held a REPOSITORY. v2 renames it
 # to repo_slug, makes it nullable, and adds project_id beside it. SQLite can do
@@ -15,11 +15,20 @@
 # table that lands with it needs no step at all — factory-schema.sql is
 # re-applied on every connection and every statement in it is IF NOT EXISTS.
 #
+# v5 adds tickets.position. v6 adds documents.body and documents.captured_at,
+# turning that table from an index into files on disk into the store itself.
+#
 # Run via: bun run test (which shells out to scripts/run-tests.sh)
 
 setup() {
   ROOT="$BATS_TEST_DIRNAME/../.."
   WORK=$(mktemp -d)
+
+  # Read from the source rather than repeating the number in twenty places.
+  # These tests assert "the chain converges on CURRENT", which is a different
+  # claim from "CURRENT is 6" — and the second claim gets its own test below, so
+  # a bump still has to be deliberate.
+  CURRENT_SCHEMA=$(grep -E '^FACTORY_SCHEMA_VERSION=' "$ROOT/lib/factory-db.sh" | cut -d= -f2)
 
   FAKE_BIN="$WORK/fake-bin"
   REPO="$WORK/repo"
@@ -211,14 +220,14 @@ migrate() { "$TICKET" list --all >/dev/null; }
   "$TICKET" add "first" >/dev/null
   [ "$(db "SELECT count(*) FROM pragma_table_info('tickets') WHERE name='repo_slug';")" = "1" ]
   [ "$(db "SELECT count(*) FROM pragma_table_info('tickets') WHERE name='project_slug';")" = "0" ]
-  [ "$(db "PRAGMA user_version;")" = "5" ]
+  [ "$(db "PRAGMA user_version;")" = "$CURRENT_SCHEMA" ]
 }
 
 @test "migration: the version is stamped in the database, not beside it" {
   seed_v1
   [ "$(db "PRAGMA user_version;")" = "0" ]
   migrate
-  [ "$(db "PRAGMA user_version;")" = "5" ]
+  [ "$(db "PRAGMA user_version;")" = "$CURRENT_SCHEMA" ]
   # And it is not tracked by any sibling file, which could desynchronise from
   # the data it describes.
   [ ! -f "$SMRITI_HOME/.factory-schema-v2" ]
@@ -229,13 +238,13 @@ migrate() { "$TICKET" list --all >/dev/null; }
   # The failure a marker file cannot catch: the version travels WITH the data.
   seed_v1
   migrate
-  [ "$(db "PRAGMA user_version;")" = "5" ]
+  [ "$(db "PRAGMA user_version;")" = "$CURRENT_SCHEMA" ]
 
   rm -f "$SMRITI_HOME/factory.db" "$SMRITI_HOME/factory.db-wal" "$SMRITI_HOME/factory.db-shm"
   seed_v1                                   # a pre-upgrade backup, restored
   run "$TICKET" list --all
   [ "$status" -eq 0 ]
-  [ "$(db "PRAGMA user_version;")" = "5" ]
+  [ "$(db "PRAGMA user_version;")" = "$CURRENT_SCHEMA" ]
   [ "$(db "SELECT count(*) FROM pragma_table_info('tickets') WHERE name='repo_slug';")" = "1" ]
 }
 
@@ -247,7 +256,7 @@ migrate() { "$TICKET" list --all >/dev/null; }
   db "PRAGMA user_version = 0;"
   run "$TICKET" list --all
   [ "$status" -eq 0 ]
-  [ "$(db "PRAGMA user_version;")" = "5" ]
+  [ "$(db "PRAGMA user_version;")" = "$CURRENT_SCHEMA" ]
   [ "$(db "SELECT count(*) FROM tickets;")" = "2" ]
 }
 
@@ -294,7 +303,7 @@ migrate() { "$TICKET" list --all >/dev/null; }
   [ "$s1" -eq 0 ] && [ "$s2" -eq 0 ] && [ "$s3" -eq 0 ]
   ! grep -q "migration failed" "$WORK/e1" "$WORK/e2" "$WORK/e3"
   [ "$(db "SELECT count(*) FROM tickets;")" = "2" ]
-  [ "$(db "PRAGMA user_version;")" = "5" ]
+  [ "$(db "PRAGMA user_version;")" = "$CURRENT_SCHEMA" ]
 }
 
 @test "migration: an unreadable store fails loudly rather than half-working" {
@@ -309,7 +318,7 @@ migrate() { "$TICKET" list --all >/dev/null; }
   # ...and it recovers once the file is readable again.
   migrate
   [ "$(db "SELECT count(*) FROM pragma_table_info('tickets') WHERE name='repo_slug';")" = "1" ]
-  [ "$(db "PRAGMA user_version;")" = "5" ]
+  [ "$(db "PRAGMA user_version;")" = "$CURRENT_SCHEMA" ]
 }
 
 # ─── v3: runs.html_session · v4: runs.herdr_pane · v5: tickets.position ─────
@@ -333,7 +342,7 @@ seed_v2() {
   [ "$(db "SELECT count(*) FROM pragma_table_info('runs') WHERE name='html_session';")" = "0" ]
   migrate
   [ "$(db "SELECT count(*) FROM pragma_table_info('runs') WHERE name='html_session';")" = "1" ]
-  [ "$(db "PRAGMA user_version;")" = "5" ]
+  [ "$(db "PRAGMA user_version;")" = "$CURRENT_SCHEMA" ]
 }
 
 @test "migration v3: a v2 database is NOT stamped current without gaining the column" {
@@ -364,7 +373,7 @@ seed_v2() {
 @test "migration v3: a fresh database is born with the column" {
   "$TICKET" add "first" >/dev/null
   [ "$(db "SELECT count(*) FROM pragma_table_info('runs') WHERE name='html_session';")" = "1" ]
-  [ "$(db "PRAGMA user_version;")" = "5" ]
+  [ "$(db "PRAGMA user_version;")" = "$CURRENT_SCHEMA" ]
 }
 
 @test "migration v3: migrating twice changes nothing" {
@@ -372,7 +381,7 @@ seed_v2() {
   migrate
   migrate
   [ "$(db "SELECT count(*) FROM pragma_table_info('runs') WHERE name='html_session';")" = "1" ]
-  [ "$(db "PRAGMA user_version;")" = "5" ]
+  [ "$(db "PRAGMA user_version;")" = "$CURRENT_SCHEMA" ]
 }
 
 @test "migration v5: a v4 database gains position" {
@@ -380,7 +389,7 @@ seed_v2() {
   [ "$(db "SELECT count(*) FROM pragma_table_info('tickets') WHERE name='position';")" = "0" ]
   migrate
   [ "$(db "SELECT count(*) FROM pragma_table_info('tickets') WHERE name='position';")" = "1" ]
-  [ "$(db "PRAGMA user_version;")" = "5" ]
+  [ "$(db "PRAGMA user_version;")" = "$CURRENT_SCHEMA" ]
 }
 
 @test "migration v5: a v4 database is NOT stamped current without gaining the column" {
@@ -439,7 +448,7 @@ seed_v2() {
 @test "migration v5: a fresh database is born with the column" {
   "$TICKET" add "first" >/dev/null
   [ "$(db "SELECT count(*) FROM pragma_table_info('tickets') WHERE name='position';")" = "1" ]
-  [ "$(db "PRAGMA user_version;")" = "5" ]
+  [ "$(db "PRAGMA user_version;")" = "$CURRENT_SCHEMA" ]
 }
 
 @test "migration v5: migrating twice changes nothing" {
@@ -448,7 +457,7 @@ seed_v2() {
   local first; first=$(db "SELECT group_concat(id || ':' || position) FROM (SELECT id, position FROM tickets ORDER BY id);")
   migrate
   [ "$(db "SELECT group_concat(id || ':' || position) FROM (SELECT id, position FROM tickets ORDER BY id);")" = "$first" ]
-  [ "$(db "PRAGMA user_version;")" = "5" ]
+  [ "$(db "PRAGMA user_version;")" = "$CURRENT_SCHEMA" ]
 }
 
 @test "migration v5: concurrent upgraders all succeed, none hits duplicate column" {
@@ -462,7 +471,7 @@ seed_v2() {
   [ "$s1" -eq 0 ] && [ "$s2" -eq 0 ] && [ "$s3" -eq 0 ]
   ! grep -qi "duplicate column" "$WORK/v5a" "$WORK/v5b" "$WORK/v5c"
   [ "$(db "SELECT count(*) FROM pragma_table_info('tickets') WHERE name='position';")" = "1" ]
-  [ "$(db "PRAGMA user_version;")" = "5" ]
+  [ "$(db "PRAGMA user_version;")" = "$CURRENT_SCHEMA" ]
 }
 
 @test "migration v3: concurrent upgraders all succeed, none hits duplicate column" {
@@ -479,7 +488,7 @@ seed_v2() {
   [ "$s1" -eq 0 ] && [ "$s2" -eq 0 ] && [ "$s3" -eq 0 ]
   ! grep -qi "duplicate column" "$WORK/v3a" "$WORK/v3b" "$WORK/v3c"
   [ "$(db "SELECT count(*) FROM pragma_table_info('runs') WHERE name='html_session';")" = "1" ]
-  [ "$(db "PRAGMA user_version;")" = "5" ]
+  [ "$(db "PRAGMA user_version;")" = "$CURRENT_SCHEMA" ]
 }
 
 # ── v4: runs.herdr_pane, and the run_artifacts table beside it ──────────────
@@ -510,7 +519,7 @@ seed_v4() {
   [ "$(db "SELECT count(*) FROM pragma_table_info('runs') WHERE name='herdr_pane';")" = "0" ]
   migrate
   [ "$(db "SELECT count(*) FROM pragma_table_info('runs') WHERE name='herdr_pane';")" = "1" ]
-  [ "$(db "PRAGMA user_version;")" = "5" ]
+  [ "$(db "PRAGMA user_version;")" = "$CURRENT_SCHEMA" ]
 }
 
 @test "migration v4: run_artifacts arrives with no migration step of its own" {
@@ -536,7 +545,7 @@ seed_v4() {
   "$TICKET" add "first" >/dev/null
   [ "$(db "SELECT count(*) FROM pragma_table_info('runs') WHERE name='herdr_pane';")" = "1" ]
   [ "$(db "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='run_artifacts';")" = "1" ]
-  [ "$(db "PRAGMA user_version;")" = "5" ]
+  [ "$(db "PRAGMA user_version;")" = "$CURRENT_SCHEMA" ]
 }
 
 @test "migration v4: one report per run is enforced by the index, not by hope" {
@@ -565,4 +574,94 @@ seed_v4() {
       VALUES ('dddd4444','report','run','gone with it','2026-01-01T00:00:00Z');"
   db "PRAGMA foreign_keys=ON; DELETE FROM runs WHERE run_uid='dddd4444';"
   [ "$(db "SELECT count(*) FROM run_artifacts WHERE run_uid='dddd4444';")" = "0" ]
+}
+
+# ── v6: documents.body + documents.captured_at ──────────────────────────────
+#
+# `documents` stops being an index into files on disk and becomes the store.
+# Two pure column adds, in ONE transaction — which is the property with teeth
+# here. The steps in _db_migrate are guarded on SHAPE and stamped once at the
+# end, so if the pair could be half-applied, the next invocation would find
+# `body`, skip the block whole, stamp current, and leave `captured_at` missing
+# forever. factory-schema.sql can only CREATE, so nothing would ever add it.
+
+# v5: everything before this change. Same trick as the seeds above — migrate all
+# the way forward from v1, then undo the steps that came after v5.
+seed_v5() {
+  seed_v1
+  migrate
+  db "ALTER TABLE documents DROP COLUMN body;"
+  db "ALTER TABLE documents DROP COLUMN captured_at;"
+  db "PRAGMA user_version = 5;"
+}
+
+@test "migration v6: a v5 database gains body and captured_at" {
+  seed_v5
+  [ "$(db "SELECT count(*) FROM pragma_table_info('documents') WHERE name IN ('body','captured_at');")" = "0" ]
+  migrate
+  [ "$(db "SELECT count(*) FROM pragma_table_info('documents') WHERE name='body';")" = "1" ]
+  [ "$(db "SELECT count(*) FROM pragma_table_info('documents') WHERE name='captured_at';")" = "1" ]
+  [ "$(db "PRAGMA user_version;")" = "$CURRENT_SCHEMA" ]
+}
+
+@test "migration v6: every existing document row survives, with no body yet" {
+  seed_v5
+  db "INSERT INTO documents (ticket_id, repo_slug, type, path, branch, created_at)
+      VALUES (NULL,'demo','plan','/tmp/one.md','main','2026-01-01T00:00:00Z'),
+             (NULL,'demo','debug','/tmp/two.md','main','2026-01-02T00:00:00Z');"
+  migrate
+  # Three: the two above plus the one seed_v1 already put there.
+  [ "$(db "SELECT count(*) FROM documents;")" = "3" ]
+  [ "$(db "SELECT count(*) FROM documents WHERE body IS NULL AND captured_at IS NULL;")" = "3" ]
+  [ "$(db "SELECT path FROM documents WHERE path='/tmp/one.md';")" = "/tmp/one.md" ]
+  [ "$(db "SELECT path FROM documents WHERE path='/tmp/a-plan-1.md';")" = "/tmp/a-plan-1.md" ]
+}
+
+@test "migration v6: a half-applied pair converges rather than failing" {
+  # Reachable only by a hand-edit or a torn upgrade, and the guard is on the
+  # table AND both columns precisely so this case is work-still-to-do rather
+  # than a `duplicate column` error on every command forever.
+  seed_v5
+  db "ALTER TABLE documents ADD COLUMN body TEXT;"
+  migrate
+  [ "$(db "SELECT count(*) FROM pragma_table_info('documents') WHERE name='captured_at';")" = "1" ]
+  [ "$(db "PRAGMA user_version;")" = "$CURRENT_SCHEMA" ]
+}
+
+@test "migration v6: a fresh database is born with both columns" {
+  "$TICKET" add "first" >/dev/null
+  [ "$(db "SELECT count(*) FROM pragma_table_info('documents') WHERE name='body';")" = "1" ]
+  [ "$(db "SELECT count(*) FROM pragma_table_info('documents') WHERE name='captured_at';")" = "1" ]
+  [ "$(db "PRAGMA user_version;")" = "$CURRENT_SCHEMA" ]
+}
+
+@test "migration v6: migrating twice changes nothing" {
+  seed_v5
+  migrate
+  local first; first=$(db "SELECT group_concat(name) FROM (SELECT name FROM pragma_table_info('documents') ORDER BY cid);")
+  migrate
+  [ "$(db "SELECT group_concat(name) FROM (SELECT name FROM pragma_table_info('documents') ORDER BY cid);")" = "$first" ]
+  [ "$(db "PRAGMA user_version;")" = "$CURRENT_SCHEMA" ]
+}
+
+@test "migration v6: concurrent upgraders all succeed, none hits duplicate column" {
+  seed_v5
+  "$TICKET" list --all >/dev/null 2>"$WORK/v6a" & p1=$!
+  "$TICKET" list --all >/dev/null 2>"$WORK/v6b" & p2=$!
+  "$TRACE" list --json  >/dev/null 2>"$WORK/v6c" & p3=$!
+  wait $p1; s1=$?
+  wait $p2; s2=$?
+  wait $p3; s3=$?
+  [ "$s1" -eq 0 ] && [ "$s2" -eq 0 ] && [ "$s3" -eq 0 ]
+  ! grep -qi "duplicate column" "$WORK/v6a" "$WORK/v6b" "$WORK/v6c"
+  [ "$(db "SELECT count(*) FROM pragma_table_info('documents') WHERE name='captured_at';")" = "1" ]
+  [ "$(db "PRAGMA user_version;")" = "$CURRENT_SCHEMA" ]
+}
+
+@test "the current schema version is 6" {
+  # The one place the number is written down twice on purpose. Every other
+  # assertion reads FACTORY_SCHEMA_VERSION from the source, which is the right
+  # claim for "the chain converges" but would silently follow a typo'd bump.
+  # This pins it, so raising the version is a deliberate two-file edit.
+  [ "$CURRENT_SCHEMA" = "6" ]
 }
