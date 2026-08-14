@@ -1216,14 +1216,23 @@ export function boardPage(): string {
 
   // The paper trail. The factory stores document bodies, so a row here outlives
   // the branch, the worktree and the file — which is the whole point, and also
-  // why a row can exist with nothing to show yet: /begin registers a plan a
-  // moment before it writes it. Saying so is better than a click that errors.
+  // why a row can exist with nothing stored yet: /begin registers a plan a
+  // moment before it writes it.
+  //
+  // The badge is a statement about the STORE, not a prediction about the click,
+  // and is worded as one. has_body comes from /api/state, which is a plain
+  // body-is-not-null read that deliberately does no disk sync — so a document
+  // whose working copy exists but has never been read is "not stored yet" here
+  // and opens perfectly well, because /api/doc/:id syncs from disk first. An
+  // earlier "no content yet" claimed the opposite and was contradicted by the
+  // very next click.
+  // (No backticks anywhere in this file: it is one template literal.)
   function trailHtml(docs){
     if (!docs.length) return '';
     return '<div class="lab">paper trail</div><div class="trail">' + docs.map((d) =>
       '<div class="doc" data-doc="' + d.id + '"><span class="tag">' + esc(d.type) + '</span>' +
       '<span>' + esc(d.path.split('/').pop()) + '</span>' +
-      (d.has_body ? '' : '<span class="empty">no content yet</span>') + '</div>'
+      (d.has_body ? '' : '<span class="empty">not stored yet</span>') + '</div>'
     ).join('') + '</div><div class="docview md" id="pagedoc"></div>';
   }
 
@@ -2656,8 +2665,18 @@ export function boardPage(): string {
       // lost its armed state within the confirm window — the label silently
       // reverted and delete could never be completed. renderTicket reads this
       // back, so the confirm survives the redraw that used to eat it.
+      // The confirm names the documents, because they are the part of the blast
+      // radius you cannot get back. Deleting a ticket used to drop index rows
+      // and leave the markdown on disk; the factory holds the content now, and
+      // for a ticket that has shipped and been cleaned this row IS the plan —
+      // there is no file left anywhere. A generic "really delete?" over that is
+      // the confirm not doing its job.
       if (armedDelete !== t.id){
-        armedDelete = t.id; b.textContent = 'really delete?';
+        const n = docsFor(t).length;
+        armedDelete = t.id;
+        b.textContent = n
+          ? 'delete + ' + n + ' doc' + (n === 1 ? '' : 's') + '?'
+          : 'really delete?';
         clearTimeout(armTimer);
         armTimer = setTimeout(() => {
           armedDelete = null;

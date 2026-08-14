@@ -124,6 +124,26 @@ test('a document is served out of the store, and outlives its file', async () =>
   expect(((await stillThere.json()) as { html: string }).html).toContain('<strong>inside</strong>');
 });
 
+test('a path outside the store is never served, and never read', async () => {
+  // The confinement this route used to enforce with realpath still exists — it
+  // moved into capture_doc, where the read now happens. So a row naming a file
+  // outside $SMRITI_HOME/projects has no body, and asking for it gets the
+  // no-content answer rather than the file's contents.
+  const tk = (args: string[]) =>
+    spawnSync(TICKET, args, { encoding: 'utf8', env: { ...process.env, SMRITI_HOME: HOME_DIR } });
+  const outside = join(HOME_DIR, 'escape.md');
+  writeFileSync(outside, 'a secret');
+  tk(['doc', '-', '--type', 'debug', '--path', outside]);
+
+  const state = await fetch(`${base()}/api/state`, withCookie());
+  const docs = ((await state.json()) as { documents: { id: number; path: string }[] }).documents;
+  const doc = docs.find((d) => d.path === outside)!;
+
+  const r = await fetch(`${base()}/api/doc/${doc.id}`, withCookie());
+  expect(r.status).toBe(404);
+  expect(await r.text()).not.toContain('a secret');
+});
+
 test('a document registered but never written says so, rather than reading anything', async () => {
   const tk = (args: string[]) =>
     spawnSync(TICKET, args, { encoding: 'utf8', env: { ...process.env, SMRITI_HOME: HOME_DIR } });

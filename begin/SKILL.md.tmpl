@@ -150,14 +150,16 @@ own paths:
 TS=$(date -u +%Y-%m-%dT%H-%M-%SZ)
 DEBUG_DIR="${SMRITI_HOME:-$HOME/.smriti}/projects/$SLUG"
 mkdir -p "$DEBUG_DIR"
-DEBUG_FILE="$DEBUG_DIR/$BRANCH_SLUG-debug-$TS.md"
+echo "$DEBUG_DIR/$BRANCH_SLUG-debug-$TS.md"
 ```
 
-Write the file, **then** register it — registering takes a copy of the content into the
-factory, so doing it first stores an empty document:
+Write the file at the path that printed, **then** register it. Registering takes a copy
+of the content into the factory, so doing it first stores an empty document. The path is
+re-derived rather than reused from a shell variable — shell state does not survive
+between commands, and `--path ""` fails a check whose error the `|| true` would hide:
 
 ```bash
-smriti ticket doc "${TICKET:--}" --type debug --path "$DEBUG_FILE" 2>/dev/null || true
+smriti ticket doc "${TICKET:--}" --type debug --path "$(smriti latest-doc --type debug)" 2>/dev/null || true
 ```
 
 Give it a fixed shape, so two investigations produce comparable documents rather than
@@ -188,18 +190,25 @@ Write the plan **out of the repo**, following the filename contract so
 TS=$(date -u +%Y-%m-%dT%H-%M-%SZ)
 PLAN_DIR="${SMRITI_HOME:-$HOME/.smriti}/projects/$SLUG"
 mkdir -p "$PLAN_DIR"
-PLAN_FILE="$PLAN_DIR/$BRANCH_SLUG-plan-$TS.md"
+echo "$PLAN_DIR/$BRANCH_SLUG-plan-$TS.md"
 ```
 
-Write the plan, **then** register it. Registering takes a copy of the content into the
-factory, which is what makes the plan outlive the branch — so registering an empty path
-first would store an empty document. You do not have to re-register after each Gate 2
-revision: reads sync from the file while it exists, and `smriti clean` stores the final
-text before it reclaims the file.
+Write the plan at the path that printed, **then** register it. Registering takes a copy
+of the content into the factory, which is what makes the plan outlive the branch — so
+registering before the file exists stores an empty document.
+
+The path is re-derived through `smriti latest-doc` rather than reused from a shell
+variable: **shell state does not survive between commands**, so `"$PLAN_FILE"` in a
+later invocation expands to nothing, `--path ""` fails, and `2>/dev/null || true` makes
+that indistinguishable from success — nothing stored, on the one step whose whole
+purpose is that the plan outlives the branch.
 
 ```bash
-smriti ticket doc "${TICKET:--}" --type plan --path "$PLAN_FILE" 2>/dev/null || true
+smriti ticket doc "${TICKET:--}" --type plan --path "$(smriti latest-doc --type plan)" 2>/dev/null || true
 ```
+
+You do not have to re-register after each Gate 2 revision: reads sync from the file
+while it exists, and `smriti clean` stores the final text before it reclaims the file.
 
 The plan is what the **user** approves, and the user does not read the code. Write for
 someone deciding whether this is the right thing to build:

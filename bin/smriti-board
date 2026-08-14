@@ -849,11 +849,10 @@ async function cmdServer(): Promise<never> {
         touch();
         const id = url.pathname.split('/').pop() || '';
         if (!/^\d+$/.test(id)) return json({ error: 'bad id' }, 400);
-        const r = await shOut(TICKET, ['doc-show', id, '--json']);
-        if (!r.ok) return json({ error: 'no such document' }, 404);
-        let doc: { has_body?: number; body?: string | null } | null = null;
-        try { doc = JSON.parse(r.out || 'null'); } catch {}
-        if (!doc) return json({ error: 'could not read the document' }, 503);
+        const doc = await readJsonAsync<{ has_body?: number; body?: string | null }>(
+          ['doc-show', id, '--json'],
+        );
+        if (!doc) return json({ error: 'no such document' }, 404);
         // Registered but never captured — a real state, not an error: /begin
         // registers a plan a moment before it writes it.
         if (!doc.has_body || typeof doc.body !== 'string') {

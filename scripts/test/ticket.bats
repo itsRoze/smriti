@@ -1187,3 +1187,135 @@ seed_commit() { echo seed > f && git add f && git commit -q -m init; }
   [ "$status" -eq 0 ]
   [[ "$output" != *"#-"* ]]
 }
+
+# ─── documents: what the review found ───────────────────────────────────────
+
+@test "doc: a relative --path is absolutized at registration" {
+  # Every READ syncs from the stored path, so a relative one is not merely a bad
+  # lookup — it resolves against whatever directory the READER is standing in,
+  # and the board's reader is a server process standing wherever it launched.
+  "$CLI" add "x" >/dev/null            # the app comes from the ticket, not the cwd
+  mkdir -p "$SMRITI_HOME/projects/testapp"
+  cd "$SMRITI_HOME/projects/testapp"
+  printf 'REAL PLAN\n' > notes-plan-2026-01-01T00-00-00Z.md
+  "$CLI" doc 1 --type plan --path notes-plan-2026-01-01T00-00-00Z.md >/dev/null
+  local stored; stored=$(sqlite3 "$SMRITI_HOME/factory.db" "SELECT path FROM documents WHERE id=1;")
+  [[ "$stored" == /* ]]
+
+  # The decoy: same filename, different directory. Reading from here must not
+  # overwrite the real plan with it.
+  mkdir -p "$WORK/elsewhere"
+  cd "$WORK/elsewhere"
+  printf 'UNRELATED FILE\n' > notes-plan-2026-01-01T00-00-00Z.md
+  run "$CLI" doc-show 1
+  [[ "$output" == *"REAL PLAN"* ]]
+  [[ "$output" != *"UNRELATED"* ]]
+}
+
+@test "doc: a path outside the store is never read into the factory" {
+  # The confinement bin/smriti-board used to enforce on its document route,
+  # moved to where the read now happens. Without it, any bad documents.path is
+  # a file-read-and-persist oracle rather than a refusal.
+  printf 'a secret\n' > "$WORK/secret.md"
+  run "$CLI" doc - --type plan --path "$WORK/secret.md"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"content NOT stored"* ]]
+  [[ "$output" == *"outside"* ]]
+  [ "$(sqlite3 "$SMRITI_HOME/factory.db" "SELECT body IS NULL FROM documents WHERE id=1;")" = "1" ]
+
+  # And a read does not sneak it in either.
+  "$CLI" doc-show 1 >/dev/null 2>&1 || true
+  [ "$(sqlite3 "$SMRITI_HOME/factory.db" "SELECT body IS NULL FROM documents WHERE id=1;")" = "1" ]
+}
+
+@test "doc: a symlinked working copy is refused rather than followed" {
+  mkdir -p "$SMRITI_HOME/projects/testapp"
+  printf 'a secret\n' > "$WORK/secret.md"
+  ln -s "$WORK/secret.md" "$SMRITI_HOME/projects/testapp/feat-a-plan-2026-01-01T00-00-00Z.md"
+  run "$CLI" doc - --type plan --path "$SMRITI_HOME/projects/testapp/feat-a-plan-2026-01-01T00-00-00Z.md"
+  [[ "$output" == *"symlink"* ]]
+  [ "$(sqlite3 "$SMRITI_HOME/factory.db" "SELECT body IS NULL FROM documents WHERE id=1;")" = "1" ]
+}
+
+@test "doc-capture: a debug file on a branch containing -plan- keeps its own type" {
+  # Two adoption paths had two filename parsers, and the glob-based one picked
+  # `plan` out of a `-debug-` filename because *-plan-* matched first. clean
+  # then deletes the file, so the mis-typed row is the only surviving record.
+  local dir="$SMRITI_HOME/projects/testapp"; mkdir -p "$dir"
+  printf 'root cause\n' > "$dir/fix-plan-rendering-debug-2026-01-01T00-00-00Z.md"
+  "$CLI" doc-capture --branch fix-plan-rendering --slug testapp --dir "$dir" >/dev/null
+  [ "$(sqlite3 "$SMRITI_HOME/factory.db" "SELECT type FROM documents WHERE id=1;")" = "debug" ]
+  [ "$(sqlite3 "$SMRITI_HOME/factory.db" "SELECT branch FROM documents WHERE id=1;")" = "fix-plan-rendering" ]
+}
+
+@test "doc-adopt: a slashed branch's history lands on its ticket, not detached" {
+  # A filename can only hold the slug form, so adoption always asks with `a--b`
+  # while the ticket holds `a/b`. Widening the query raw-to-slug only was no
+  # help here, and this is the one-shot migration for the whole backlog.
+  "$CLI" add "slashed" >/dev/null
+  sqlite3 "$SMRITI_HOME/factory.db" "UPDATE tickets SET branch='feat/x', repo_slug='testapp' WHERE id=1;"
+  local dir="$SMRITI_HOME/projects/testapp"; mkdir -p "$dir"
+  printf 'the plan\n' > "$dir/feat--x-plan-2026-01-01T00-00-00Z.md"
+
+  run "$CLI" doc-adopt
+  [[ "$output" == *"adopted 1"* ]]
+  [ "$(sqlite3 "$SMRITI_HOME/factory.db" "SELECT coalesce(ticket_id,'NULL') FROM documents WHERE id=1;")" = "1" ]
+}
+
+@test "doc-adopt: descends into _archive rather than treating it as an app" {
+  # _archive is a reserved slug holding archived PROJECTS one level down. As an
+  # app it filed documents under a slug the board will never draw, and the real
+  # archived documents — one level deeper — were missed entirely.
+  mkdir -p "$SMRITI_HOME/projects/_archive/old-proj"
+  printf 'archived\n' > "$SMRITI_HOME/projects/_archive/old-proj/main-plan-2026-01-01T00-00-00Z.md"
+  run "$CLI" doc-adopt
+  [[ "$output" == *"adopted 1"* ]]
+  [ "$(sqlite3 "$SMRITI_HOME/factory.db" "SELECT repo_slug FROM documents WHERE id=1;")" = "old-proj" ]
+}
+
+@test "doc: re-registering a path under a new type updates the type it stores" {
+  local dir="$SMRITI_HOME/projects/testapp"; mkdir -p "$dir"
+  local f="$dir/feat-a-plan-2026-01-01T00-00-00Z.md"
+  printf 'x\n' > "$f"
+  "$CLI" doc - --type plan  --path "$f" >/dev/null
+  run "$CLI" doc - --type debug --path "$f"
+  [[ "$output" == *"registered: debug"* ]]
+  [ "$(sqlite3 "$SMRITI_HOME/factory.db" "SELECT type FROM documents WHERE id=1;")" = "debug" ]
+}
+
+@test "doc-show: captured_at moves on an unchanged read" {
+  # The column answers "when did we last know the store matched the working
+  # copy". Writing it only when the content differed made it answer "when did
+  # the content last change" — understating freshness for exactly the documents
+  # whose files are about to be reclaimed.
+  local dir="$SMRITI_HOME/projects/testapp"; mkdir -p "$dir"
+  local f="$dir/feat-a-plan-2026-01-01T00-00-00Z.md"
+  printf 'unchanging\n' > "$f"
+  "$CLI" doc - --type plan --path "$f" >/dev/null
+  sqlite3 "$SMRITI_HOME/factory.db" "UPDATE documents SET captured_at='2020-01-01T00:00:00Z' WHERE id=1;"
+  "$CLI" doc-show 1 >/dev/null
+  [ "$(sqlite3 "$SMRITI_HOME/factory.db" "SELECT captured_at FROM documents WHERE id=1;")" != "2020-01-01T00:00:00Z" ]
+  # And the body is unchanged, not rewritten to something else.
+  run "$CLI" doc-show 1
+  [[ "$output" == *"unchanging"* ]]
+}
+
+@test "doc-adopt: backfills a row that was registered but never captured" {
+  # Registration happens before the file is written, so an upgraded store has
+  # rows in exactly that state. Skipping them as "already known" would make the
+  # one-shot quietly incomplete on the documents it most needs to rescue.
+  local dir="$SMRITI_HOME/projects/testapp"; mkdir -p "$dir"
+  local f="$dir/feat-a-plan-2026-01-01T00-00-00Z.md"
+  "$CLI" doc - --type plan --path "$f" >/dev/null      # no file yet
+  printf 'written afterwards\n' > "$f"
+  [ "$(sqlite3 "$SMRITI_HOME/factory.db" "SELECT body IS NULL FROM documents WHERE id=1;")" = "1" ]
+
+  run "$CLI" doc-adopt
+  [[ "$output" == *"adopted 0, already known 1 (1 backfilled), skipped 0"* ]]
+  run "$CLI" doc-show 1
+  [[ "$output" == *"written afterwards"* ]]
+
+  # And a second run has nothing left to do.
+  run "$CLI" doc-adopt
+  [[ "$output" == *"adopted 0, already known 1, skipped 0"* ]]
+}

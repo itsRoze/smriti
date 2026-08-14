@@ -800,3 +800,23 @@ fdb() { sqlite3 "$SMRITI_HOME/factory.db" "$1"; }
   [ ! -d "$PROJ/audits/feat-a-2026-01-01T00-00-00Z" ]
   [ "$(fdb "SELECT count(*) FROM documents;" 2>/dev/null || echo 0)" = "0" ]
 }
+
+@test "purge: a capture that fails says why, and keeps everything" {
+  # Swallowing doc-capture's stderr produced the worst possible output: no purge
+  # line, no spared count, no reason — while the markdown accumulated forever
+  # and the audit-dir purge line read as if it had been reclaimed too.
+  init_repo
+  make_merged_branch "feat-a"
+  git checkout -q main
+  PROJ=$(seed_project_dir)
+  printf 'the plan\n' > "$PROJ/feat-a-plan-2026-01-01T00-00-00Z.md"
+  mkdir -p "$PROJ/audits/feat-a-2026-01-01T00-00-00Z"
+  # A factory.db that sqlite3 cannot open at all.
+  printf 'not a database' > "$SMRITI_HOME/factory.db"
+
+  run "$CLI" --branch feat-a --force
+  [ "$status" -eq 0 ]
+  ! git show-ref --verify --quiet refs/heads/feat-a
+  echo "$output" | grep -q "could not store this branch's documents"
+  [ -f "$PROJ/feat-a-plan-2026-01-01T00-00-00Z.md" ]
+}

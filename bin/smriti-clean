@@ -46,18 +46,36 @@
 set -e
 
 # Resolve our own bin/ dir and prepend to PATH so sibling helpers
-# (smriti-default-branch) are found whether we were invoked by absolute path
-# or via the ~/.local/bin/ symlink that `setup` installs. Same dereference
-# pattern as smriti-principles-install: readlink the symlink first,
-# THEN dirname, otherwise `$(dirname "$0")` resolves to the symlink's own dir.
+# (smriti-default-branch, smriti-slug, smriti-ticket) are found whether we were
+# invoked by absolute path or via the ~/.local/bin/ symlink that `setup`
+# installs. Same dereference pattern as smriti-principles-install: readlink the
+# symlink first, THEN dirname, otherwise `$(dirname "$0")` resolves to the
+# symlink's own dir.
+#
+# SMRITI_BIN is KEPT rather than thrown away after the PATH prepend. Discarding
+# it is why two functions below had each grown their own copy of the same
+# sibling-then-PATH lookup — three spellings of one rule, three places to fix
+# when the install layout moves.
 _self="$0"
 [ -L "$_self" ] && _self=$(readlink "$_self")
 case "$_self" in
   /*) ;;
   *)  _self="$(cd "$(dirname "$0")" && pwd -P)/$(basename "$_self")" ;;
 esac
-PATH="$(dirname "$_self"):$PATH"
+SMRITI_BIN="$(dirname "$_self")"
+PATH="$SMRITI_BIN:$PATH"
 unset _self
+
+# A sibling helper, by name. Prefers our own bin/ so a second smriti on PATH
+# cannot answer for us; falls back to PATH for an unusual install. Empty when
+# there is no such helper anywhere, which callers must handle rather than assume.
+smriti_helper() {
+  if [ -x "$SMRITI_BIN/$1" ]; then
+    printf '%s' "$SMRITI_BIN/$1"
+  else
+    command -v "$1" 2>/dev/null || true
+  fi
+}
 
 # ─── argv parse ─────────────────────────────────────────────────────────
 
@@ -421,13 +439,10 @@ delete_branch() {
 
 # The project's out-of-repo artifact dir, or "" if the slug can't be resolved.
 project_artifacts_dir() {
-  local self_dir slug
-  self_dir="$(cd "$(dirname "$0")" && pwd -P)"
-  if [ -x "$self_dir/smriti-slug" ]; then
-    slug=$("$self_dir/smriti-slug" --print 2>/dev/null || true)
-  else
-    slug=$(smriti-slug --print 2>/dev/null || true)
-  fi
+  local sl slug
+  sl=$(smriti_helper smriti-slug)
+  [ -n "$sl" ] || return 0
+  slug=$("$sl" --print 2>/dev/null || true)
   [ -n "$slug" ] || return 0
   printf '%s/projects/%s' "${SMRITI_HOME:-$HOME/.smriti}" "$slug"
 }
@@ -457,28 +472,29 @@ purge_branch_artifacts() {
   # and does not re-shell smriti-slug from a cwd whose worktree may already be
   # gone. It scopes the capture to this app, so a branch name that two apps
   # happen to share cannot make one app's clean touch the other's documents.
-  # Sibling first, then PATH — which this script already prepended its own real
-  # bin/ dir to, so the helper resolves whether we were invoked by absolute path
-  # or through the ~/.local/bin symlink. `dirname "$0"` alone points at the
-  # SYMLINK's directory, where there is no smriti-ticket.
-  local tk capture="" spared=0 slug self_dir
+  local tk capture="" spared=0 slug cap_err
   slug=$(basename "$proj_dir")
-  self_dir="$(cd "$(dirname "$0")" && pwd -P)"
-  if [ -x "$self_dir/smriti-ticket" ]; then
-    tk="$self_dir/smriti-ticket"
-  else
-    tk=$(command -v smriti-ticket 2>/dev/null || true)
-  fi
+  tk=$(smriti_helper smriti-ticket)
+  cap_err="$(mktemp -t smriti-clean-capture)"
 
   if [ -n "$tk" ]; then
-    capture=$("$tk" doc-capture --branch "$branch" --slug "$slug" --dir "$proj_dir" 2>/dev/null) \
-      || capture=""
+    # A capture that FAILS must say why. Swallowing its stderr and carrying on
+    # produced the worst possible output — no purge line, no spared count, no
+    # reason — while the markdown quietly accumulated forever and the audit-dir
+    # purge line printed as if the documents had been reclaimed too. A locked
+    # database, a missing sqlite3 and a bad flag all land here.
+    if ! capture=$("$tk" doc-capture --branch "$branch" --slug "$slug" --dir "$proj_dir" 2>"$cap_err"); then
+      echo "smriti-clean: could not store this branch's documents — keeping them on disk" >&2
+      [ -s "$cap_err" ] && sed 's/^/smriti-clean:   /' "$cap_err" >&2
+      capture=""
+    fi
   else
     # No way to reach the store means no way to know a file is safe to delete,
     # and the rule holds: keep it. Loud, because a smriti install this broken is
     # worth saying out loud rather than quietly declining to tidy up.
     echo "smriti-clean: cannot find smriti-ticket — keeping this branch's documents on disk" >&2
   fi
+  rm -f "$cap_err"
 
   # Every path doc-capture reported as `stored`, one per line. Deleting is gated
   # on membership in this set: a file we could not store is a file we must not
@@ -534,8 +550,8 @@ purge_branch_artifacts() {
 mark_ticket_shipped() {
   local branch="$1" tk out id
   [ -n "$branch" ] || return 0
-  tk="$(cd "$(dirname "$0")" && pwd -P)/smriti-ticket"
-  [ -x "$tk" ] || return 0
+  tk=$(smriti_helper smriti-ticket)
+  [ -n "$tk" ] || return 0
 
   out=$("$tk" current --branch "$branch" 2>/dev/null) || return 0
   id=$(printf '%s' "$out" | grep -E '^TICKET=' | cut -d= -f2-)

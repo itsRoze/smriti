@@ -153,20 +153,115 @@ validate_doc_type() {
 # is then never deleted, so nothing is lost by refusing to store it.
 MAX_DOC_BYTES=2000000
 
-# A branch predicate that matches BOTH forms of the name.
+# Where a working copy is allowed to live. Documents are the factory's own
+# scratch and are always written under this root; see doc_store_path.
+docs_root() { printf '%s/projects' "${SMRITI_HOME:-$HOME/.smriti}"; }
+
+# Absolutize a --path against the caller's cwd, so the row records one
+# unambiguous location.
+#
+# This matters far more than it used to. A relative path was once a merely
+# unhelpful index entry; now every READ syncs from it, so `notes.md` resolves
+# against whatever directory the reader happens to be standing in — and the
+# board's reader is the server process, standing wherever it was launched. One
+# read from the wrong cwd would overwrite a stored plan with an unrelated file.
+doc_abs_path() {
+  local p="$1"
+  case "$p" in
+    /*) printf '%s' "$p" ;;
+    *)  printf '%s/%s' "$(pwd -P)" "$p" ;;
+  esac
+}
+
+# Is this path somewhere we are willing to READ from? Sets $CAPTURE_REASON.
+#
+# The confinement that used to live in bin/smriti-board's document route, moved
+# to where the read now happens. The board no longer opens files at all, but the
+# read did not disappear — it came here, and unconfined it would make any bad
+# `documents.path` a file-read-and-persist oracle rather than a refusal.
+#
+# The containing directory is resolved physically (`cd … && pwd -P`) rather than
+# with realpath(1), which is not portable enough to rely on; a symlinked FILE is
+# refused outright, because a working copy is never one and following it is the
+# whole escape.
+doc_under_store() {
+  local p="$1" root dir
+  case "$p" in
+    /*) ;;
+    *)  CAPTURE_REASON="path is not absolute"; return 1 ;;
+  esac
+  if [ -L "$p" ]; then
+    CAPTURE_REASON="path is a symlink"
+    return 1
+  fi
+  # BOTH sides resolved physically, or the comparison is meaningless on macOS,
+  # where /var is a symlink to /private/var and every mktemp path is under it:
+  # the candidate would resolve to /private/var/… and the root would not.
+  root=$(cd "$(docs_root)" 2>/dev/null && pwd -P) || {
+    CAPTURE_REASON="$(docs_root) does not exist"; return 1; }
+  dir=$(cd "$(dirname "$p")" 2>/dev/null && pwd -P) || {
+    CAPTURE_REASON="directory does not exist"; return 1; }
+  case "$dir/" in
+    "$root"/*) return 0 ;;
+  esac
+  CAPTURE_REASON="outside $root"
+  return 1
+}
+
+# A branch predicate that matches EVERY spelling of the name.
 #
 # The filename contract replaces `/` with `--`, and that is not reversible: a
 # branch genuinely named `a--b` and a branch named `a/b` produce the same
-# filename, so a row adopted from disk may hold either form. Matching both is
-# one extra OR and makes the ambiguity stop mattering, where guessing would
-# silently drop an adopted row out of every later branch-scoped operation.
+# filename, so a row adopted from disk may hold either form — and the caller may
+# ask with either form too. Comparing the SLUG of the stored branch against the
+# slug of the query makes the predicate symmetric, where widening the query in
+# one direction only (raw → slug) still missed every row adopted from a slashed
+# branch when asked for by its slug.
 branch_match_sql() {
   local raw="$1" slug="${1//\//--}"
-  if [ "$raw" = "$slug" ]; then
-    printf 'branch = %s' "$(sql_quote "$raw")"
-  else
-    printf '(branch = %s OR branch = %s)' "$(sql_quote "$raw")" "$(sql_quote "$slug")"
+  printf "(branch = %s OR replace(branch, '/', '--') = %s)" \
+    "$(sql_quote "$raw")" "$(sql_quote "$slug")"
+}
+
+# Parse the filename contract: <branch-slug>-<type>-<timestamp>.md, as written
+# by /begin and read by bin/smriti-latest-doc. Sets DOC_BRANCH / DOC_TYPE /
+# DOC_CREATED; returns 1 when the name predates the contract.
+#
+# ONE parser, called by both adoption paths. There were two, and they had
+# already diverged: a glob-based `case` picked `plan` out of
+# `fix-plan-rendering-debug-….md` because `*-plan-*` matched first, filing a
+# debug write-up as a plan permanently once clean deleted the file. The branch
+# half is greedy, so the split lands on the LAST separator — the one the writer
+# actually produced.
+DOC_BRANCH=""; DOC_TYPE=""; DOC_CREATED=""
+parse_doc_filename() {
+  local base="$1"
+  local re='^(.+)-(plan|design|debug)-([0-9]{4}-[0-9]{2}-[0-9]{2})T([0-9]{2})-([0-9]{2})-([0-9]{2})Z\.md$'
+  DOC_BRANCH=""; DOC_TYPE=""; DOC_CREATED=""
+  [[ $base =~ $re ]] || return 1
+  DOC_BRANCH="${BASH_REMATCH[1]}"
+  DOC_TYPE="${BASH_REMATCH[2]}"
+  DOC_CREATED="${BASH_REMATCH[3]}T${BASH_REMATCH[4]}:${BASH_REMATCH[5]}:${BASH_REMATCH[6]}Z"
+  return 0
+}
+
+# Create the row for a file nobody registered, filed against whichever ticket
+# works that branch. Shared by `doc-capture`'s pre-purge sweep and the one-shot
+# `doc-adopt`, so a document row is born in exactly one place.
+adopt_doc_row() {
+  local path="$1" slug="$2" branch="$3" type="$4" created="$5"
+  local ticket_sql project_sql=NULL
+  ticket_sql=$(ticket_for_branch "$branch" "$slug")
+  [ -n "$ticket_sql" ] || ticket_sql=NULL
+  if [ "$ticket_sql" != "NULL" ]; then
+    project_sql=$(db "SELECT coalesce(project_id,'NULL') FROM tickets WHERE id = $ticket_sql;")
+    [ -n "$project_sql" ] || project_sql=NULL
   fi
+  db_write "INSERT OR IGNORE INTO documents
+              (ticket_id, repo_slug, project_id, type, path, branch, created_at)
+            VALUES ($ticket_sql, $(sql_quote_or_null "$slug"), $project_sql,
+                    $(sql_quote "$type"), $(sql_quote "$path"),
+                    $(sql_quote_or_null "$branch"), $(sql_quote "$created"));"
 }
 
 # Take a copy of the working copy into the row. Sets $CAPTURE_REASON and returns
@@ -184,6 +279,9 @@ capture_doc() {
   CAPTURE_REASON=""
 
   [ -n "$path" ] || { CAPTURE_REASON="no path"; return 1; }
+  [ -n "$id" ]   || { CAPTURE_REASON="no row"; return 1; }
+  # Confinement BEFORE the stat, so a path we would refuse is never even probed.
+  doc_under_store "$path" || return 1
   [ -f "$path" ] || { CAPTURE_REASON="no file on disk"; return 1; }
   [ -r "$path" ] || { CAPTURE_REASON="not readable"; return 1; }
 
@@ -200,34 +298,35 @@ capture_doc() {
 
   # Byte-exact comparison, not a length check: an edit that happens to preserve
   # the length is exactly the edit a length check would miss.
-  local same
-  if ! same=$(db "SELECT CASE WHEN body IS NOT NULL AND CAST(body AS BLOB) = readfile($qpath)
-                              THEN 1 ELSE 0 END
-                     FROM documents WHERE id = $id;" 2>/dev/null); then
-    CAPTURE_REASON="could not read the store"
-    return 1
-  fi
-  [ "$same" = "1" ] && return 0
-
-  # `AND readfile(...) IS NOT NULL` guards the race where the file vanishes
-  # between the check above and this write: readfile returns NULL for a missing
-  # file, and without the guard that NULL would overwrite a good stored body
-  # with nothing — turning a capture into a deletion.
-  if ! db_write "UPDATE documents
-                    SET body        = CAST(readfile($qpath) AS TEXT),
-                        captured_at = $(sql_quote "$(now_utc)")
-                  WHERE id = $id AND readfile($qpath) IS NOT NULL;" >/dev/null 2>&1; then
-    CAPTURE_REASON="could not write the content"
-    return 1
-  fi
-
-  # Verify rather than assume. A short write, a NUL byte truncating the TEXT
+  # One statement, three jobs — the write, the verify, and the timestamp — so a
+  # capture costs one sqlite3 spawn rather than three. `body` is only rewritten
+  # when it differs (a no-op UPDATE on a 30 KB column is pure page churn), but
+  # `captured_at` is set EVERY time: the column answers "when did we last know
+  # the store matched the working copy", and skipping it on an unchanged read
+  # made it answer "when did the content last differ" instead — understating the
+  # freshness of exactly the documents whose files are about to be deleted.
+  #
+  # `readfile(...) IS NOT NULL` guards the race where the file vanishes between
+  # the stat above and this write: readfile returns NULL for a missing file, and
+  # without the guard that NULL would overwrite a good stored body with nothing,
+  # turning a capture into a deletion.
+  #
+  # The trailing SELECT rides the same connection so the verify sees the write.
+  # Verify rather than assume: a short write, a NUL byte truncating the TEXT
   # cast, or a readfile that quietly did nothing all look like success up to
   # here, and all of them would let `clean` delete the only real copy.
   local stored
-  if ! stored=$(db "SELECT coalesce(length(CAST(body AS BLOB)), -1)
-                      FROM documents WHERE id = $id;" 2>/dev/null); then
-    CAPTURE_REASON="could not verify the content"
+  if ! stored=$(db_write "UPDATE documents
+                             SET body = CASE
+                                   WHEN body IS NOT NULL AND CAST(body AS BLOB) = readfile($qpath)
+                                     THEN body
+                                   ELSE CAST(readfile($qpath) AS TEXT)
+                                 END,
+                                 captured_at = $(sql_quote "$(now_utc)")
+                           WHERE id = $id AND readfile($qpath) IS NOT NULL;
+                          SELECT coalesce(length(CAST(body AS BLOB)), -1)
+                            FROM documents WHERE id = $id;" 2>/dev/null); then
+    CAPTURE_REASON="could not store the content"
     return 1
   fi
   if [ "$stored" != "$bytes" ]; then
@@ -970,6 +1069,11 @@ cmd_doc() {
   [ -n "$type" ] || die "--type is required"
   [ -n "$path" ] || die "--path is required"
   validate_doc_type "$type"
+  # Resolved against the caller's cwd once, here, so the row names one place.
+  # A relative path stored verbatim would be re-resolved by every later reader
+  # against ITS cwd — and since a read now syncs from disk, that is not a wrong
+  # lookup, it is a wrong overwrite.
+  path=$(doc_abs_path "$path")
 
   local ticket_sql slug project_sql="NULL"
   if [ "$id" = "-" ]; then
@@ -998,6 +1102,12 @@ cmd_doc() {
               ticket_id  = excluded.ticket_id,
               repo_slug  = excluded.repo_slug,
               project_id = excluded.project_id,
+              -- type too, or re-registering a path under a different type
+              -- prints the new one and stores the old. Survivable when the row
+              -- was a pointer; now it is the label the paper trail and
+              -- latest-doc both filter the stored document on.
+              -- (No backticks in here: this string is double-quoted in bash.)
+              type       = excluded.type,
               branch     = excluded.branch;"
 
   # Take the content now if the file is already there. /begin registers its plan
@@ -1039,9 +1149,13 @@ cmd_doc_show() {
   done
   require_num "$id" "document id"
 
-  [ "$(db "SELECT count(*) FROM documents WHERE id = $id;")" = "1" ] \
-    || die "no document #$id" 4
-  local path; path=$(db "SELECT path FROM documents WHERE id = $id;")
+  # Existence and path in ONE connection. Every db() call re-reads and re-applies
+  # factory-schema.sql, so a spawn here is not free — and this is the board's
+  # document-click path, hit repeatedly while someone reads a plan.
+  db_fields "SELECT count(*) FROM documents WHERE id = $id;
+             SELECT coalesce(path,'') FROM documents WHERE id = $id;"
+  [ "${DB_FIELDS[0]}" = "1" ] || die "no document #$id" 4
+  local path="${DB_FIELDS[1]}"
 
   # Sync from disk. A failure here is not fatal: the stored body may still be
   # perfectly good, and refusing to show it because the working copy has gone
@@ -1058,6 +1172,8 @@ cmd_doc_show() {
 
   # "Never captured" is an answer, not an error — a document registered before
   # its file was written is in exactly that state for a few seconds every run.
+  # Two reads rather than one because a body contains newlines, and db_fields is
+  # one-value-per-line by construction.
   if [ "$(db "SELECT body IS NULL FROM documents WHERE id = $id;")" = "1" ]; then
     echo "smriti-ticket: #$id has no stored content yet (never captured)" >&2
     return 0
@@ -1108,32 +1224,17 @@ cmd_doc_capture() {
   # nobody, and therefore never stored and never reclaimed.
   local scanned=""
   if [ -n "$dir" ] && [ -d "$dir" ]; then
-    local f base type ticket_sql project_sql
+    local f
     for f in "$dir/$branch_slug"-plan-*.md \
              "$dir/$branch_slug"-design-*.md \
              "$dir/$branch_slug"-debug-*.md; do
       [ -f "$f" ] || continue                      # unmatched glob stays literal
       scanned="$scanned${scanned:+,}$(sql_quote "$f")"
       [ -n "$(doc_id_for_path "$f")" ] && continue
-      base=$(basename "$f")
-      case "$base" in
-        *-plan-*)   type=plan ;;
-        *-design-*) type=design ;;
-        *-debug-*)  type=debug ;;
-        *) continue ;;
-      esac
-      ticket_sql=$(ticket_for_branch "$branch" "$slug")
-      [ -n "$ticket_sql" ] || ticket_sql=NULL
-      project_sql=NULL
-      if [ "$ticket_sql" != "NULL" ]; then
-        project_sql=$(db "SELECT coalesce(project_id,'NULL') FROM tickets WHERE id = $ticket_sql;")
-        [ -n "$project_sql" ] || project_sql=NULL
-      fi
-      db_write "INSERT OR IGNORE INTO documents
-                  (ticket_id, repo_slug, project_id, type, path, branch, created_at)
-                VALUES ($ticket_sql, $(sql_quote_or_null "$slug"), $project_sql,
-                        $(sql_quote "$type"), $(sql_quote "$f"),
-                        $(sql_quote "$branch"), $(sql_quote "$(now_utc)"));"
+      # The RAW branch, not the parsed slug: smriti-clean passes the real branch
+      # name, which is the form that joins to a ticket.
+      parse_doc_filename "$(basename "$f")" || continue
+      adopt_doc_row "$f" "$slug" "$branch" "$DOC_TYPE" "$(now_utc)"
     done
   fi
 
@@ -1171,11 +1272,15 @@ cmd_doc_capture() {
 # One shot, across every project directory: take in the markdown files that
 # predate the store and have no row at all.
 #
-# The parse is the filename contract bin/smriti-latest-doc already depends on —
-# <branch-slug>-<type>-<timestamp>.md, with the app being the directory name.
-# The branch half is greedy, so a branch whose own name contains `-plan-` still
-# resolves against the LAST separator, which is the one the writer produced.
-# Anything that does not match is reported and left alone rather than guessed at.
+# The parse is parse_doc_filename — the same contract bin/smriti-latest-doc
+# depends on — with the app being the directory name. Anything that does not
+# match is reported and left alone rather than guessed at.
+#
+# The branch recovered from a filename is always the SLUG form, since that is
+# the only form a filename can hold. ticket_for_branch compares slug against
+# slug, so a document written on `feat/x` still finds the ticket that worked it;
+# comparing raw-to-raw left every slashed branch's history adopted with no
+# ticket at all, which for a one-shot backlog migration is the whole point lost.
 cmd_doc_adopt() {
   local dry=0
   while [ $# -gt 0 ]; do
@@ -1185,52 +1290,67 @@ cmd_doc_adopt() {
     esac
   done
 
-  local root="${SMRITI_HOME:-$HOME/.smriti}/projects"
+  local root; root=$(docs_root)
   [ -d "$root" ] || { echo "nothing to adopt: $root does not exist"; return 0; }
 
-  local re='^(.+)-(plan|design|debug)-([0-9]{4}-[0-9]{2}-[0-9]{2})T([0-9]{2})-([0-9]{2})-([0-9]{2})Z\.md$'
   local adopted=0 known=0 skipped=0
-  local d slug f base branch type created ticket_sql project_sql new_id
+  local d slug f new_id
 
+  # `_archive` is a reserved slug holding archived PROJECTS one level down, so
+  # it is not an app and its contents are not at the depth everything else is.
+  # Treating it as an app filed documents under a slug the board will never draw
+  # AND missed every archived document underneath it.
+  local dirs=()
   for d in "$root"/*/; do
     [ -d "$d" ] || continue
+    if [ "$(basename "$d")" = "_archive" ]; then
+      for f in "$d"*/; do [ -d "$f" ] && dirs+=("$f"); done
+    else
+      dirs+=("$d")
+    fi
+  done
+
+  local backfilled=0
+  for d in "${dirs[@]}"; do
     slug=$(basename "$d")
     for f in "$d"*.md; do
       [ -f "$f" ] || continue
-      if [ -n "$(doc_id_for_path "$f")" ]; then
-        known=$((known + 1)); continue
+      new_id=$(doc_id_for_path "$f")
+      if [ -n "$new_id" ]; then
+        known=$((known + 1))
+        # A row that exists but has never been captured is still a document this
+        # one-shot is responsible for. Registration happens before the file is
+        # written, so a store upgraded mid-run has rows in exactly that state,
+        # and leaving them empty would make "run this once" quietly incomplete.
+        # Not an overwrite: a row that already holds the file's bytes no-ops.
+        if [ "$dry" -eq 0 ] &&
+           [ "$(db "SELECT body IS NULL FROM documents WHERE id = $new_id;")" = "1" ] &&
+           capture_doc "$new_id" "$f"; then
+          echo "backfilled  $slug  $f"
+          backfilled=$((backfilled + 1))
+        fi
+        continue
       fi
-      base=$(basename "$f")
-      if ! [[ $base =~ $re ]]; then
+      if ! parse_doc_filename "$(basename "$f")"; then
         echo "skipped  $f"
         echo "         filename predates the <branch>-<type>-<timestamp>.md contract"
         skipped=$((skipped + 1)); continue
       fi
-      branch="${BASH_REMATCH[1]}"
-      type="${BASH_REMATCH[2]}"
-      created="${BASH_REMATCH[3]}T${BASH_REMATCH[4]}:${BASH_REMATCH[5]}:${BASH_REMATCH[6]}Z"
 
       if [ "$dry" -eq 1 ]; then
-        echo "would adopt  $type  $slug  $branch  $f"
+        echo "would adopt  $DOC_TYPE  $slug  $DOC_BRANCH  $f"
         adopted=$((adopted + 1)); continue
       fi
 
-      ticket_sql=$(ticket_for_branch "$branch" "$slug")
-      [ -n "$ticket_sql" ] || ticket_sql=NULL
-      project_sql=NULL
-      if [ "$ticket_sql" != "NULL" ]; then
-        project_sql=$(db "SELECT coalesce(project_id,'NULL') FROM tickets WHERE id = $ticket_sql;")
-        [ -n "$project_sql" ] || project_sql=NULL
-      fi
-      db_write "INSERT OR IGNORE INTO documents
-                  (ticket_id, repo_slug, project_id, type, path, branch, created_at)
-                VALUES ($ticket_sql, $(sql_quote "$slug"), $project_sql, $(sql_quote "$type"),
-                        $(sql_quote "$f"), $(sql_quote "$branch"), $(sql_quote "$created"));"
+      # DOC_* are clobbered by the capture below going nowhere near them, but
+      # adopt_doc_row calls db and ticket_for_branch — read them out first.
+      local a_type="$DOC_TYPE" a_branch="$DOC_BRANCH" a_created="$DOC_CREATED"
+      adopt_doc_row "$f" "$slug" "$a_branch" "$a_type" "$a_created"
       new_id=$(doc_id_for_path "$f")
       if capture_doc "$new_id" "$f"; then
-        echo "adopted  $type  $slug  $f"
+        echo "adopted  $a_type  $slug  $f"
       else
-        echo "adopted  $type  $slug  $f  (content NOT stored: $CAPTURE_REASON)"
+        echo "adopted  $a_type  $slug  $f  (content NOT stored: $CAPTURE_REASON)"
       fi
       adopted=$((adopted + 1))
     done
@@ -1239,7 +1359,9 @@ cmd_doc_adopt() {
   if [ "$dry" -eq 1 ]; then
     echo "would adopt $adopted, already known $known, skipped $skipped"
   else
-    echo "adopted $adopted, already known $known, skipped $skipped"
+    local extra=""
+    [ "$backfilled" -gt 0 ] && extra=" ($backfilled backfilled)"
+    echo "adopted $adopted, already known $known$extra, skipped $skipped"
   fi
 }
 
