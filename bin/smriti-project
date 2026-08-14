@@ -239,7 +239,7 @@ cmd_show() {
 
   local tickets
   tickets=$(db "SELECT '  #' || id || '  ' || status || '  ' || title
-                FROM tickets WHERE project_id = $id ORDER BY priority DESC, id;")
+                FROM tickets WHERE project_id = $id ORDER BY position ASC, id;")
   if [ -n "$tickets" ]; then
     echo
     echo "tickets:"

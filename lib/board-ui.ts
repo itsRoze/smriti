@@ -24,17 +24,23 @@ export function boardPage(): string {
     --paper:#F7F4E9; --paper-2:#FDFBF3; --grid:#D9DCC8;
     --ink:#1E4032; --ink-2:#3D5F4A; --ink-3:#7A9182; --ink-4:#AFC0B2;
     --hi:#F2E85C; --hi-rgb:242,232,92; --orange:#E2703A;
-    --pine-a:#2E5C43; --pine-b:#3F7355; --pine-c:#58906B;
+    --pine-a:#2E5C43; --pine-b:#3F7355; --pine-c:#58906B; --pine-rgb:88,144,107;
     --tree:#2E5C43; --live-bg:#FFF4EC; --attach-bg:#F2F7EE;
     --sh:30,64,50; --veil:rgba(30,64,50,.18); --dust:.06;
     --hi-wash:.55; --hi-text:var(--ink-2);
+    /* The one curve this board moves on. Was written inline in the card
+       entrance; promoted to a token when reordering needed the same spring so
+       there would be exactly one place to change how the whole thing feels.
+       Deliberately outside the theme blocks — motion does not change with the
+       light. */
+    --spring:cubic-bezier(.2,.9,.3,1.25);
   }
   @media (prefers-color-scheme: dark){
     :root{
       --paper:#1B2422; --paper-2:#232E2B; --grid:#26332F;
       --ink:#E7EDE8; --ink-2:#BCCBC4; --ink-3:#7E9189; --ink-4:#4E5D57;
       --hi:#EBCB8B; --hi-rgb:235,203,139; --orange:#D08770;
-      --pine-a:#A3BE8C; --pine-b:#8FBCBB; --pine-c:#88C0D0;
+      --pine-a:#A3BE8C; --pine-b:#8FBCBB; --pine-c:#88C0D0; --pine-rgb:136,192,208;
       --tree:#7E9C86; --live-bg:#2E2A27; --attach-bg:#22302E;
       --sh:0,0,0; --veil:rgba(0,0,0,.55); --dust:.10;
       --hi-wash:.20; --hi-text:var(--hi);
@@ -45,7 +51,7 @@ export function boardPage(): string {
     --paper:#1B2422; --paper-2:#232E2B; --grid:#26332F;
     --ink:#E7EDE8; --ink-2:#BCCBC4; --ink-3:#7E9189; --ink-4:#4E5D57;
     --hi:#EBCB8B; --hi-rgb:235,203,139; --orange:#D08770;
-    --pine-a:#A3BE8C; --pine-b:#8FBCBB; --pine-c:#88C0D0;
+    --pine-a:#A3BE8C; --pine-b:#8FBCBB; --pine-c:#88C0D0; --pine-rgb:136,192,208;
     --tree:#7E9C86; --live-bg:#2E2A27; --attach-bg:#22302E;
     --sh:0,0,0; --veil:rgba(0,0,0,.55); --dust:.10;
     --hi-wash:.20; --hi-text:var(--hi);
@@ -54,7 +60,7 @@ export function boardPage(): string {
     --paper:#F7F4E9; --paper-2:#FDFBF3; --grid:#D9DCC8;
     --ink:#1E4032; --ink-2:#3D5F4A; --ink-3:#7A9182; --ink-4:#AFC0B2;
     --hi:#F2E85C; --hi-rgb:242,232,92; --orange:#E2703A;
-    --pine-a:#2E5C43; --pine-b:#3F7355; --pine-c:#58906B;
+    --pine-a:#2E5C43; --pine-b:#3F7355; --pine-c:#58906B; --pine-rgb:88,144,107;
     --tree:#2E5C43; --live-bg:#FFF4EC; --attach-bg:#F2F7EE;
     --sh:30,64,50; --veil:rgba(30,64,50,.18); --dust:.06;
     --hi-wash:.55; --hi-text:var(--ink-2);
@@ -264,6 +270,22 @@ export function boardPage(): string {
   .planlink{color:var(--hi);text-decoration:none;border-bottom:1px solid transparent;font-weight:600}
   .planlink:hover,.planlink:focus-visible{border-bottom-color:currentColor}
   .wait .empty{font-size:19px;color:var(--ink-3);padding:6px}
+  /* Subordinate to the gates above it, and visibly so: a pine rule down the
+     side instead of the highlighter wash, smaller type, no per-row selection
+     highlight competing with a real decision. */
+  .wait .freedgrp{margin-top:18px;padding:10px 0 2px 14px;border-left:3px solid var(--pine-c)}
+  .wait .freedgrp .gh{
+    font-family:ui-monospace,Menlo,monospace;font-size:10px;letter-spacing:.16em;
+    text-transform:uppercase;color:var(--pine-b);margin-bottom:7px}
+  .wait .freedrow{
+    display:flex;align-items:baseline;gap:10px;padding:5px 6px;cursor:pointer;
+    border-radius:8px;font-size:16px;color:var(--ink-2)}
+  .wait .freedrow.sel{background:rgba(var(--pine-rgb),.14);box-shadow:inset 3px 0 0 var(--pine-c)}
+  .wait .freedrow .fid{font-family:ui-monospace,Menlo,monospace;font-size:11px;color:var(--ink-3)}
+  .wait .freedrow .fnm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .wait .freedrow .why{
+    margin-left:auto;font-family:ui-monospace,Menlo,monospace;font-size:10px;
+    letter-spacing:.12em;text-transform:uppercase;color:var(--pine-b);white-space:nowrap}
 
   .trees{display:block;width:100%;height:auto;margin:6px 0 -2px;opacity:.95}
   .trees.off{display:none}
@@ -431,14 +453,84 @@ export function boardPage(): string {
   .histline.on b{color:var(--hi-text)}
   .cards.folded{margin-top:12px}
 
-  .cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(310px,1fr));gap:14px}
+  /* position:relative so a card's offsetLeft/offsetTop are measured against
+     the grid — the drag hit-tests on those rather than on bounding rects,
+     which report mid-FLIP positions instead of the actual cells. */
+  .cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(310px,1fr));gap:14px;position:relative}
   .card{
     padding:15px 17px 14px;position:relative;display:flex;flex-direction:column;min-height:112px;
     cursor:pointer;transition:transform .12s ease,box-shadow .12s ease;
-    animation:drop .4s cubic-bezier(.2,.9,.3,1.25) backwards;
+    animation:drop .4s var(--spring) backwards;
+    /* Without this, flinging a card paints a text selection across every card
+       it passes over, and the selection outlives the drop. */
+    user-select:none;-webkit-user-select:none;
   }
   @keyframes drop{from{opacity:0;transform:translateY(10px) rotate(-.6deg)}}
   .card:hover{transform:translate(-1px,-2px) rotate(-.4deg);box-shadow:4px 6px 0 rgba(var(--sh),.4)}
+
+  /* ── reordering ──────────────────────────────────────────────────────
+     "Lift it, and leave a slot." A generic drag fades what you are dragging
+     and draws a line where it lands; on a paper board that is backwards. The
+     card in your hand stays the most SOLID thing on the page and the absence
+     it left is the ghost.
+
+     There is no grip handle and no drag dots — nothing permanent is added to a
+     card. The affordance is the cursor plus the lift hover already does, and
+     the ? sheet teaches the keys like it does for everything else. */
+  /* Only where a drag can actually start. The completed fold renders the same
+     cards, and advertising a grab there promises a gesture that is refused. */
+  .cards:not(.folded) > .card{cursor:grab}
+  /* On the root, because .card.drag is pointer-events:none and the cursor is
+     therefore hit-tested against whatever sits underneath it. */
+  :root.dragging,:root.dragging *{cursor:grabbing !important}
+  .card.drag{
+    z-index:40;pointer-events:none;
+    box-shadow:10px 14px 0 rgba(var(--sh),.30);
+    transition:box-shadow .14s ease;   /* transform is written per frame by JS */
+  }
+  /* Keyboard carry: the same card in the same hand, just sitting still while
+     the others shuffle past it. One look for both inputs, deliberately. */
+  .card.carry{
+    z-index:40;transform:rotate(-2.2deg) scale(1.035);
+    box-shadow:10px 14px 0 rgba(var(--sh),.30);
+    transition:transform .18s var(--spring),box-shadow .18s var(--spring);
+  }
+  /* An idea card is transparent and a done card has no background at all.
+     Held, they are off the board and in your hand, so they get paper under
+     them — otherwise you drag a see-through rectangle over other cards. The
+     dashed border stays: that is the card's identity, not its backing. */
+  .card.drag,.card.carry{background:var(--paper-2)}
+  /* No entrance animation on a card you are holding. Moving a node — which is
+     what picking one up does, out of the grid and onto the body — RESTARTS its
+     CSS animation, so the card faded in from opacity:0 under the cursor and you
+     could read the card beneath through it. The exact opposite of the thing
+     this design is built on: what you are holding is the most solid object on
+     the page, and the hole it left is the ghost. */
+  .card.drag,.card.carry{animation:none}
+  /* The hover rule would otherwise re-tilt a card being carried by keyboard,
+     which reads as the card twitching when the pointer happens to rest on it. */
+  .card.carry:hover{transform:rotate(-2.2deg) scale(1.035)}
+
+  /* Where it lands. NOT an insertion line: these cards sit in a responsive
+     grid where the drop point can fall mid-row, and a horizontal rule cannot
+     say "here" in a grid. A card-shaped placeholder can, because it takes a
+     real cell and lets the browser's own auto-placement do the reflow.
+     Highlighter rather than --ink-4 for two reasons: --hi already means "the
+     active place" on this board, and an idea card is ALSO dashed in --ink-4,
+     so an ink slot would vanish in a group of them. */
+  .slot{
+    border:2.5px dashed var(--hi);background:rgba(var(--hi-rgb),.10);
+    box-shadow:none;animation:slotin .18s var(--spring);
+  }
+  @keyframes slotin{from{opacity:0;transform:scale(.96)}}
+  /* FLIP: siblings are measured before the slot moves and again after, then
+     glide from the difference. Without it they jump between grid cells, which
+     on a board this springy reads as cheap. Same curve as the entrance
+     animation — the motion vocabulary here is one curve, and stays one. */
+  .card.flip{transition:transform .18s var(--spring)}
+  /* Announced, never drawn. clip-path over display:none because a hidden
+     element is not announced at all. */
+  .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
   .card.sel{outline:2.5px solid var(--hi);outline-offset:3px;box-shadow:0 0 22px -6px rgba(var(--hi-rgb),.55)}
   .card .t{font-size:19px;line-height:1.34;margin-bottom:10px;text-wrap:balance}
   .card .foot{display:flex;align-items:center;gap:9px;margin-top:auto}
@@ -468,12 +560,34 @@ export function boardPage(): string {
   .card.rev .st{border-color:var(--pine-c);color:var(--pine-b)}
   .card.rev::before{content:"⚑";position:absolute;top:6px;right:12px;color:var(--pine-c);font-size:16px}
 
+  /* Blocked is NOT urgent — it is "not yet" — so it gets the quietest
+     treatment on the board: faded, dashed, and no colour of its own. Orange
+     means live and highlighter means you are the hold-up; borrowing either
+     would make waiting work compete with work that actually needs you. */
+  .card.blocked{opacity:.66;border-style:dashed;border-color:var(--ink-4);box-shadow:1px 2px 0 rgba(var(--sh),.06)}
+  .card.blocked .t{color:var(--ink-2)}
+  .card.blocked::before{content:"⛓";position:absolute;top:6px;right:12px;color:var(--ink-4);font-size:13px}
+  .chip{
+    font-family:ui-monospace,Menlo,monospace;font-size:9.5px;letter-spacing:.08em;
+    padding:3px 8px 4px;border:2px solid var(--ink-4);color:var(--ink-3);white-space:nowrap;
+    border-radius:9px 12px 8px 11px/11px 8px 12px 9px;
+  }
+  /* Freed is the one dependency state that IS news, so it reads in pine —
+     the agent's-own-work colour — rather than highlighter. */
+  .card.freed{border-color:var(--pine-c)}
+  .chip.freed{border-color:var(--pine-c);color:var(--pine-b);background:rgba(var(--pine-rgb),.10)}
+
   .keys{
     position:fixed;left:var(--rail-w);right:0;bottom:0;z-index:8;padding:14px 26px;
     display:flex;justify-content:center;gap:12px 20px;flex-wrap:wrap;
     background:linear-gradient(180deg,transparent,var(--paper) 44%);
     font-family:ui-monospace,Menlo,monospace;font-size:10px;letter-spacing:.12em;
     text-transform:uppercase;color:var(--ink-3)}
+  /* display:flex above beats the UA's [hidden]{display:none}, which is a bare
+     attribute selector. Without this the move-mode bar is never hidden — and
+     because it is position:fixed across the bottom, it also swallows pointer
+     events over whatever it covers. */
+  .keys[hidden]{display:none}
   .k{
     display:inline-block;min-width:22px;text-align:center;padding:3px 7px 4px;margin-right:7px;
     border:2px solid var(--ink-2);color:var(--ink);background:var(--paper-2);
@@ -726,6 +840,23 @@ export function boardPage(): string {
   .stub .f .held{display:block;margin-top:3px;font-family:ui-monospace,Menlo,monospace;
     font-size:10.5px;color:var(--ink-3);text-transform:none;letter-spacing:0}
   .stub .f .held b{color:var(--ink-2);font-weight:400}
+  /* ── dependency rows ──────────────────────────────────────────────────
+     One line per edge, because several is the normal case (#4 in this repo's
+     own backlog names two). The id leads in mono so the column scans as a
+     list of tickets; the app name only appears when the far end is in a
+     DIFFERENT app, since an edge may cross them and a bare #41 is not
+     something you can place. */
+  .stub .f .dep{display:block;margin-top:4px;font-size:15px;line-height:1.25}
+  .stub .f .dep:first-child{margin-top:0}
+  .stub .f .dep .dnum{font-family:ui-monospace,Menlo,monospace;font-size:11px;
+    color:var(--ink-3);margin-right:6px}
+  .stub .f .dep .far{font-family:ui-monospace,Menlo,monospace;font-size:10px;
+    letter-spacing:.1em;text-transform:uppercase;color:var(--pine-b);margin-left:6px}
+  .stub .f .dep .empty{color:var(--ink-4);font-style:italic}
+  /* A blocker that landed is history, not an obstacle — struck through so the
+     row answers "is anything still in my way" without reading the statuses. */
+  .stub .f .dep.met{color:var(--ink-4)}
+  .stub .f .dep.met .dnum{text-decoration:line-through}
   /* The status stamp is a control too. It straightens as you go to re-stamp
      it — the one flourish, and the same lift .btn:hover already does. */
   .stub .head.edit{position:relative;cursor:pointer;outline:none}
@@ -826,6 +957,12 @@ export function boardPage(): string {
   @media (prefers-reduced-motion:reduce){
     .card,.panel,.lab{animation:none !important}
     .card.live::after{animation:none}
+    /* A reorder still has to be readable with the motion taken out: the lift
+       and the slot are STATE, so they stay — it is only the travel between
+       states that goes. JS reads the same query and skips FLIP and the
+       velocity tilt rather than animating them to zero. */
+    .card.carry,.card.flip{transition:none}
+    .slot{animation:none}
   }
 </style>
 </head>
@@ -870,6 +1007,15 @@ export function boardPage(): string {
   <span><span class="k" data-k="?">?</span>keys</span>
 </div>
 
+<!-- Swapped in while a card is being carried. The keycap bar is where this
+     board has always explained itself, so move mode explains itself there too
+     rather than inventing a new place to put a hint. -->
+<div class="keys" id="movekeys" hidden>
+  <span><span class="k" data-k="J">⇧J ⇧K</span>move it</span>
+  <span><span class="k" data-k="Enter">⏎</span>drop it</span>
+  <span><span class="k" data-k="Escape">esc</span>put it back</span>
+</div>
+
 <div class="veil" id="palv"><div class="box b4 panel pal">
   <div class="q"><span class="cue" id="palcue" style="display:none"></span><input id="palq" placeholder="type a ticket title, or search…" autocomplete="off"></div>
   <div id="palopts"></div>
@@ -885,16 +1031,23 @@ export function boardPage(): string {
     <div><b>e</b> — edit the description</div><div><b>⌘⏎</b> — save it, <b>esc</b> — abandon</div>
     <div><b>d</b> — mark done</div><div><b>⌘K / /</b> — palette, apps & projects too</div>
     <div><b>a</b> — move it to another app</div><div><b>f</b> — file it into a project</div>
-    <div><b>x</b> — set the status</div><div class="hnote">a, f and x work on a ticket page</div>
+    <div><b>x</b> — set the status</div><div><b>w</b> — what it waits on (blockers)</div>
+    <div class="hnote">a, f, x and w work on a ticket page</div>
     <div><b>p</b> — open its project / app</div><div><b>m</b> — pace (medians)</div>
     <div><b>b</b> — the margin, open / collapsed</div><div><b>h</b> — completed work, every group</div>
     <div><b>esc</b> — close, then back up a level</div>
     <div><b>⏎</b> on a ticket page — start / attach it</div>
+    <div><b>⇧J / ⇧K</b> — carry it up or down</div><div><b>⏎</b> — drop it, <b>esc</b> — put it back</div>
+    <div class="hnote">or drag a card — the order sticks</div>
     <div><b>t</b> — light / dark</div><div><b>?</b> — this</div>
   </div>
 </div></div>
 
 <div class="box toast" id="toast"></div>
+
+<!-- Reordering by keyboard is silent otherwise, and this board is keyboard
+     first. Announces where the card landed, not merely that it moved. -->
+<div id="live" class="sr" aria-live="polite" role="status"></div>
 
 <script>
 (() => {
@@ -905,7 +1058,7 @@ export function boardPage(): string {
   // sessions starts null — "not asked yet" — for the same reason the server
   // sends null when it could not ask: an empty array is a claim that nothing is
   // running, and nothing has been claimed before the first read lands.
-  let S = { tickets: [], runs: [], documents: [], repositories: [], projects: [], sessions: null };
+  let S = { tickets: [], runs: [], documents: [], deps: [], repositories: [], projects: [], sessions: null };
   let sel = -1;            // index into flat selectable list
   let flat = [];           // [{id, kind}] in DOM order
   // The current view, derived from location.hash by route(). Selection is
@@ -1062,6 +1215,43 @@ export function boardPage(): string {
     return t.status !== 'shipped' && t.status !== 'cancelled';
   }
 
+  // ── dependencies ─────────────────────────────────────────────────────
+  // Joined client-side off the one /api/state graph, exactly like documents.
+  // Nothing here is stored on the ticket: blocked / freed are worked out fresh
+  // on every render, so a status change anywhere is reflected everywhere and
+  // there is no derived field to go stale.
+  //
+  // Edges may cross apps AND projects, so the far end of one is often a ticket
+  // the current view is not drawing. ticketById returns undefined in that case
+  // and every caller has to cope — an edge to a ticket you cannot see is normal,
+  // not an error.
+  function ticketById(id){ return S.tickets.find((t) => t.id === id); }
+  const DEP_SATISFIED = { shipped: 1, cancelled: 1 };
+  function isSatisfied(t){ return !!(t && DEP_SATISFIED[t.status]); }
+  // An edge whose blocker is not on screen: trust the status the server sent
+  // with the edge rather than guessing, so a cross-app blocker still blocks.
+  function edgeSatisfied(e){
+    const t = ticketById(e.blocker_id);
+    return t ? isSatisfied(t) : !!DEP_SATISFIED[e.blocker_status];
+  }
+  function blockersOf(t){ return (S.deps || []).filter((e) => e.blocked_id === t.id); }
+  function blockingOf(t){ return (S.deps || []).filter((e) => e.blocker_id === t.id); }
+  function openBlockers(t){ return blockersOf(t).filter((e) => !edgeSatisfied(e)); }
+  // Only work that has not been picked up can BE blocked, which is the same
+  // line bin/smriti-ticket draws: it checks blockers on the path that cuts a
+  // worktree and not on the path that re-attaches one. Without this guard a
+  // shipped ticket drew as blocked behind the fold, and a started one hid its
+  // live session state ("asking you") behind an edge nothing would act on.
+  function isStartable(t){ return !isSatisfied(t) && !t.branch && !t.worktree_path; }
+  function isBlocked(t){ return isStartable(t) && openBlockers(t).length > 0; }
+  // Had blockers, has none left, and nobody has picked it up yet. The board's
+  // only reason to distinguish this from plain "unblocked" is that it is news.
+  function isFreed(t){
+    if (!isStartable(t)) return false;
+    const b = blockersOf(t);
+    return b.length > 0 && b.every(edgeSatisfied);
+  }
+
   // The gate this ticket is actually parked at. NOT runFor(): that is a bare
   // find() over a bounded union of active and recent runs, which is no promise
   // about which run is current — a ticket with several runs could hand back the
@@ -1130,6 +1320,19 @@ export function boardPage(): string {
     return slug === NO_APP ? '◌◌' : appLabel(slug).slice(0, 2).toUpperCase();
   }
 
+  // Open work sorts by the order you dragged it into, and by nothing else.
+  // This is what ticket #11 settled: status still says what a card IS, but it
+  // no longer decides where the card SITS, and neither does priority. The
+  // server hands positions back already sorted; this keeps the client honest
+  // when it re-sorts a filtered subset.
+  //
+  // A position is only comparable inside one (app, project) group — which is
+  // exactly the set each caller below has already narrowed to before sorting.
+  const byPos = (a, b) => (a.position !== b.position ? a.position - b.position : a.id - b.id);
+
+  // Completed work keeps the old status-band sort. Positions are for deciding
+  // what to do next, and there is no next about a shipped ticket — the fold is
+  // a record, so it stays grouped by how each item ended.
   const byStatus = (a, b) => {
     const s = ORDER.indexOf(a.status) - ORDER.indexOf(b.status);
     if (s) return s;
@@ -1178,18 +1381,35 @@ export function boardPage(): string {
           const rel = at ? fmtAgo(at) : '';
           return rel ? '<span class="ago" data-live="ago" data-since="' + esc(at) + '">' + rel + '</span>' : '';
         })();
+    // Blocked reads as "not yet", never as urgent: muted and dashed, and
+    // deliberately not orange (live) or highlighter (you are the hold-up).
+    // A live run wins the class — work already underway is the more important
+    // fact about a card than an edge someone drew while it was running.
+    const blocked = !run && isBlocked(t);
+    const freedT = !run && !blocked && isFreed(t);
+    const depCls = blocked ? ' blocked' : (freedT ? ' freed' : '');
+    // ADDED to the status chip, never in place of it. Replacing it meant a card
+    // stopped saying whether it was an idea or ready for as long as it had an
+    // edge — and "freed" is not a status, it is a note about one.
+    const chip = blocked
+      ? '<span class="chip" title="waiting on work that has not landed">blocked by ' +
+        openBlockers(t).map((e) => '#' + e.blocker_id).join(' · ') + '</span>'
+      : (freedT ? '<span class="chip freed" title="every blocker has landed">freed</span>' : '');
     // A card the server has not acknowledged yet gets no data-tid, so it cannot
     // be opened: its page would offer start and delete against a placeholder id
     // the server knows nothing about. It shows its title and says what it is
-    // doing, which is the whole reason it is on screen this early.
-    const waiting = Boolean(t._pending);
-    return '<div class="box card ' + stateCls + (waiting ? ' pend' : '') + '"' +
-      (waiting ? '' : ' data-tid="' + t.id + '"') +
+    // doing, which is the whole reason it is on screen this early — and none of
+    // the dependency furniture, every piece of which is keyed on an id that does
+    // not exist yet.
+    const waitingCard = Boolean(t._pending);
+    return '<div class="box card ' + stateCls + depCls + (waitingCard ? ' pend' : '') + '"' +
+      (waitingCard ? '' : ' data-tid="' + t.id + '"') +
       ' style="animation-delay:' + (cardIdx++ * 45) + 'ms">' +
       (t.status === 'shipped' ? '<span class="tick">✓</span>' : '') +
       '<div class="t">' + esc(t.title) + '</div>' +
-      '<div class="foot"><span class="id">' + (waiting ? '' : '#' + t.id) + '</span>' +
-      '<span class="st">' + (waiting ? 'saving…' : st) + '</span>' + (waiting ? '' : ago) + '</div></div>';
+      '<div class="foot"><span class="id">' + (waitingCard ? '' : '#' + t.id) + '</span>' +
+      '<span class="st">' + (waitingCard ? 'saving…' : st) + '</span>' +
+      (waitingCard ? '' : chip + ago) + '</div></div>';
   }
 
   function tallyHtml(list){
@@ -1300,11 +1520,26 @@ export function boardPage(): string {
     // A session stalled at a prompt belongs in "waiting on you" just as much as
     // a /begin gate does — it is the same fact, reported by herdr instead.
     const blocked = S.tickets.filter((t) => (sessionFor(t) || {}).status === 'blocked');
+    // Work whose last blocker just landed. This is WEAKER than the two above —
+    // they mean "something is stopped, right now, pending you"; this only means
+    // "you could pick this up". It is drawn as a subordinate group below them,
+    // in pine rather than highlighter, so a real gate can never be lost in a
+    // list of suggestions. It clears by ACTION, not by clock: starting,
+    // cancelling or re-filing a freed ticket takes it out of the band, so
+    // nothing accumulates here on a timer nobody set.
+    const freed = open.filter(isFreed);
+    // Counted off live sessions rather than off the run rows: a row still saying
+    // 'running' for a session that no longer exists is the whole reason the
+    // liveness pass exists.
     const running = S.tickets.filter((t) => isLiveRun(t, runFor(t)));
     const day = new Date().toLocaleDateString(undefined,{weekday:'long'});
     $('#eye').innerHTML = esc(day) + ' · <b>' + open.length + '</b> open' +
       (running.length ? ' · <b>' + running.length + '</b> running' : '') +
-      ((waiting.length + blocked.length) ? ' · <b>' + (waiting.length + blocked.length) + '</b> waiting' : '');
+      ((waiting.length + blocked.length) ? ' · <b>' + (waiting.length + blocked.length) + '</b> waiting' : '') +
+      // Counted separately rather than folded into "waiting": freed work is not
+      // waiting ON you, it is available TO you, and adding it to that number
+      // would let the header read 5 waiting when nothing is actually stopped.
+      (freed.length ? ' · <b>' + freed.length + '</b> freed' : '');
 
     // waiting band
     let w = '<div class="lab">waiting on you</div><div class="box wait">';
@@ -1314,7 +1549,7 @@ export function boardPage(): string {
         '<div class="sub2">' + esc(appLabel(appOf(t))) + ' · #' + t.id +
         ' · <b>session is asking for something</b></div></div>';
     }
-    if (!waiting.length && !blocked.length){
+    if (!waiting.length && !blocked.length && !freed.length){
       w += '<div class="empty">nothing needs you — the forest is quiet ✌︎</div>';
     } else if (waiting.length) {
       for (const r of waiting){
@@ -1334,12 +1569,30 @@ export function boardPage(): string {
           planLink(r) + '</div></div>';
       }
     }
+    if (freed.length){
+      w += '<div class="freedgrp"><div class="gh">freed by what just shipped</div>';
+      for (const t of freed){
+        // Name what freed it. A blocker that is not on screen still gets its
+        // id shown — an edge may cross apps, and "#41 landed" is at least
+        // something you can go and look up.
+        const why = blockersOf(t).map((e) => '#' + e.blocker_id).join(' · ');
+        w += '<div class="freedrow" data-tid="' + t.id + '">' +
+          '<span class="fid">#' + t.id + '</span>' +
+          '<span class="fnm">' + esc(t.title) + '</span>' +
+          '<span class="why">' + why + ' landed</span></div>';
+      }
+      w += '</div>';
+    }
     w += '</div>';
     $('#waitwrap').innerHTML = w;
 
     flat = [];
     for (const t of blocked) flat.push({ id: t.id, kind: 'wait' });
     for (const r of waiting) if (r.ticket_id) flat.push({ id: r.ticket_id, kind: 'wait' });
+    // After the gates, deliberately: arrow keys should reach a real decision
+    // before they reach a suggestion. 'wait' also keeps these rows out of
+    // carryStep, which refuses to reorder from the band.
+    for (const t of freed) flat.push({ id: t.id, kind: 'wait' });
 
     let html = '';
     if (!S.tickets.length && !(S.projects || []).length){
@@ -1360,10 +1613,14 @@ export function boardPage(): string {
       // appeared broken because for those cards it was. Cancelled tickets on the
       // next line were never given the same exemption, so shipped was the odd
       // one out. Predictable beats gentle here: press h to see what finished.
+      // NOT sorted here. Positions restart at 1 in every group, so sorting an
+      // app's whole backlog on position before bucketing compares numbers from
+      // different scopes: every group's head ticket ties at 1 and the id
+      // tiebreak silently decides which project is drawn first. Bucket first,
+      // sort inside each bucket — see below.
       const items = all
         .filter((t) => t.status !== 'shipped')
-        .filter((t) => t.status !== 'cancelled')
-        .sort(byStatus);
+        .filter((t) => t.status !== 'cancelled');
       const projs = projectsIn(app).filter((p) => p.status === 'active');
       const done = all.filter((t) => !isOpen(t) && !items.includes(t));
       // An app with nothing live stays OFF the board even though it has a
@@ -1381,7 +1638,11 @@ export function boardPage(): string {
         '<span class="goto">' + (app === NO_APP ? 'no app yet' : 'app page →') + '</span>' +
         '<span class="pn">' + items.length + '</span></div>';
 
-      // Grouped by project, in the order their most urgent ticket appears.
+      // Grouped by project, then ordered WITHIN each group. Group order is by
+      // project id — the order you created them — rather than by whose work is
+      // most urgent, which is a question the board stopped answering when your
+      // dragged order replaced the status bands. Deterministic beats a ranking
+      // derived from numbers that are not comparable across groups.
       const groups = new Map();
       const loose = [];
       for (const t of items){
@@ -1394,8 +1655,11 @@ export function boardPage(): string {
       // An active project with no open tickets still deserves a line — it is
       // where you would go to add one.
       for (const p of projs) if (!groups.has(p.id)) groups.set(p.id, []);
+      for (const g of groups.values()) g.sort(byPos);
+      loose.sort(byPos);
+      const ordered = [...groups.entries()].sort((a, b) => a[0] - b[0]);
 
-      for (const [pid, group] of groups){
+      for (const [pid, group] of ordered){
         const p = projectById(pid);
         html += '<div class="sub" role="button" tabindex="0" data-proj="' + pid + '">' +
           '<span class="arrow">▸</span> ' + esc(p ? p.name : 'project ' + pid) +
@@ -1470,7 +1734,7 @@ export function boardPage(): string {
       }).join('') + '</div>';
     }
 
-    const loose = items.filter((t) => t.project_id == null && isOpen(t)).sort(byStatus);
+    const loose = items.filter((t) => t.project_id == null && isOpen(t)).sort(byPos);
     cardIdx = 0; flat = [];
     if (loose.length){
       h += '<div class="lab">' + (projs.length ? 'loose tickets' : 'tickets') + '</div><div class="cards">';
@@ -1519,7 +1783,7 @@ export function boardPage(): string {
       descBox('id="pagedesc" data-edit="project" data-pid="' + p.id + '"', p.description, 'what this project is, and why…') +
       '<textarea class="descedit" id="pagedescedit" placeholder="what this project is, and why">' + esc(p.description || '') + '</textarea>';
 
-    const open = items.filter(isOpen).sort(byStatus);
+    const open = items.filter(isOpen).sort(byPos);
     cardIdx = 0; flat = [];
     h += '<div class="lab">tickets</div>';
     if (open.length){
@@ -1674,6 +1938,10 @@ export function boardPage(): string {
     $$('[data-tid]').forEach((el) => {
       el.addEventListener('click', () => { const id = Number(el.dataset.tid); if (id) go('#/t/' + id); });
     });
+    // Reordering. Bound per grid rather than per card, and re-bound here with
+    // everything else because #plots is replaced wholesale on every render.
+    // The completed fold is deliberately not a candidate — see ordGrid.
+    $$('.cards:not(.folded)').forEach((g) => g.addEventListener('pointerdown', onGridDown));
     // The ticket page's dispositions and its re-file select. Here rather than
     // beside the render, because wire() reaches the whole sheet — the by-hand
     // binding the overlay ended with existed only because a veil was outside
@@ -1715,6 +1983,16 @@ export function boardPage(): string {
     });
     $$('[data-proj]').forEach((el) => {
       const open = () => go('#/p/' + el.dataset.proj);
+      el.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); open(); });
+      el.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' '){ e.preventDefault(); e.stopPropagation(); open(); }
+      });
+    });
+    // Same contract as data-app / data-proj: the ↗ inside a dependency row
+    // navigates to the other ticket, and must stop the row it sits in from
+    // also opening the dependency picker on the way out.
+    $$('[data-tgo]').forEach((el) => {
+      const open = () => go('#/t/' + el.dataset.tgo);
       el.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); open(); });
       el.addEventListener('keydown', (e) => {
         if (e.key === 'Enter' || e.key === ' '){ e.preventDefault(); e.stopPropagation(); open(); }
@@ -1913,11 +2191,13 @@ export function boardPage(): string {
   setInterval(tick, 1000);
 
   function paintSel(){
-    document.querySelectorAll('.card.sel,.item.sel').forEach((e) => e.classList.remove('sel'));
+    document.querySelectorAll('.card.sel,.item.sel,.freedrow.sel').forEach((e) => e.classList.remove('sel'));
     if (sel < 0 || !flat[sel]) return;
     const { id, kind } = flat[sel];
+    // A freed row is a 'wait' row that is not an .item — look for either, or
+    // arrowing into the freed group would silently paint nothing.
     const el = kind === 'wait'
-      ? document.querySelector('.item[data-tid="' + id + '"]')
+      ? document.querySelector('.item[data-tid="' + id + '"], .freedrow[data-tid="' + id + '"]')
       : document.querySelector('.card[data-tid="' + id + '"]');
     if (el){ el.classList.add('sel'); el.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); }
   }
@@ -1959,10 +2239,345 @@ export function boardPage(): string {
   let savesInFlight = 0;
   function isBusy(){
     if (savesInFlight > 0) return true;
+    // A reorder in flight is the same kind of thing as a half-typed
+    // description: the board redraws #plots wholesale about once a second while
+    // an agent runs, and doing that mid-gesture pulls the card out from under
+    // the cursor. This covers BOTH triggers, because they both land here — the
+    // SSE 'changed' stream, and the 'changed' this very move broadcast back at
+    // us the moment it was written.
+    if (reorder) return true;
     const ta = document.querySelector('.descedit.on');
     if (ta && document.activeElement === ta) return true;
     const a = document.activeElement;
     return Boolean(a && a.tagName === 'SELECT');
+  }
+
+  // ── reordering ───────────────────────────────────────────────────────
+  // "Lift it, and leave a slot." The card you are holding stays solid and
+  // leaves a highlighter slot behind; the slot is a real grid item, so the
+  // browser's own auto-placement works out where a mid-row drop belongs and
+  // the siblings glide there with FLIP. See the CSS above for the why.
+  //
+  // Both inputs end in the same place: smriti ticket move --before/--after.
+  // Nothing here computes a position — the CLI owns that arithmetic, so the
+  // page cannot invent an order the store disagrees with.
+  const REDUCED = matchMedia('(prefers-reduced-motion: reduce)');
+  const CARRY_T = 'rotate(-2.2deg) scale(1.035)';
+  const DRAG_THRESHOLD = 5;   // px of travel before a click becomes a drag
+
+  // Non-null exactly while a reorder is happening. isBusy() reads it.
+  let reorder = null;
+  let pend = null;            // a pointer that is down but has not moved far enough
+
+  function isCard(el){ return el && el.classList && el.classList.contains('card'); }
+  function prevCard(el){ let p = el.previousElementSibling; while (p && !isCard(p)) p = p.previousElementSibling; return p; }
+  function nextCard(el){ let n = el.nextElementSibling;     while (n && !isCard(n)) n = n.nextElementSibling;     return n; }
+  // A grid you may reorder in. The history fold is excluded on purpose: a
+  // hand-placed sequence over shipped work is a number nobody reads.
+  function ordGrid(el){
+    const g = el && el.parentElement;
+    return g && g.classList.contains('cards') && !g.classList.contains('folded') ? g : null;
+  }
+
+  function announce(msg){ const l = $('#live'); if (l) l.textContent = msg; }
+  function movePos(card){
+    const g = card.parentElement; if (!g) return '';
+    const cards = [...g.children].filter(isCard);
+    return 'position ' + (cards.indexOf(card) + 1) + ' of ' + cards.length;
+  }
+
+  // FLIP: measure, re-parent, then play the difference. Without it the grid
+  // snaps between cells, which on a board this springy reads as cheap.
+  function flipStart(grid, skip){
+    if (REDUCED.matches) return null;
+    const m = new Map();
+    for (const el of grid.children){
+      if (el === skip) continue;
+      if (isCard(el) || el.classList.contains('slot')) m.set(el, el.getBoundingClientRect());
+    }
+    return m;
+  }
+  function flipEnd(before){
+    if (!before) return;
+    const moved = [];
+    for (const [el, r0] of before){
+      if (!el.isConnected) continue;
+      const r1 = el.getBoundingClientRect();
+      const dx = r0.left - r1.left, dy = r0.top - r1.top;
+      if (!dx && !dy) continue;
+      el.classList.remove('flip');
+      // A carried card keeps its lift while it travels — clearing the inline
+      // transform later hands it back to the .carry class untouched.
+      el.style.transform = 'translate(' + dx + 'px,' + dy + 'px)' +
+        (el.classList.contains('carry') ? ' ' + CARRY_T : '');
+      moved.push(el);
+    }
+    if (!moved.length) return;
+    requestAnimationFrame(() => {
+      for (const el of moved){
+        if (!el.isConnected) continue;
+        el.classList.add('flip');
+        el.style.transform = '';
+      }
+      // .flip has to come back OFF. It overrides the whole transition
+      // shorthand, so a card left wearing it loses the box-shadow half of the
+      // hover transition and does its hover lift on the overshooting spring —
+      // leaving the board with two different hover feels side by side until
+      // the next full re-render.
+      setTimeout(() => { for (const el of moved) el.classList.remove('flip'); }, 220);
+    });
+  }
+
+  // Where the slot sits now, expressed the way the CLI wants to hear it.
+  function anchorFor(node){
+    const p = prevCard(node), n = nextCard(node);
+    if (p) return { after: Number(p.dataset.tid) };
+    if (n) return { before: Number(n.dataset.tid) };
+    return null;
+  }
+
+  async function commitMove(id, anchor, unchanged){
+    reorder = null;
+    setMoveKeys(false);
+    if (!anchor || unchanged){ refresh(); return; }
+    try {
+      const r = await api('/api/tickets/' + id + '/move', { method: 'POST', body: JSON.stringify(anchor) });
+      // The card stays exactly where it was dropped. You may be sequencing
+      // deliberately — about to force past the blocker, or about to cancel it —
+      // so this reports the contradiction and lets it stand. Announced as well
+      // as toasted, because the keyboard carry is the other way to cause it.
+      if (r && r.note){ toast('heads up — ' + esc(r.note), 6000); announce(r.note); }
+    } catch (e){
+      // 409 is the CLI refusing a target in another app or project — an
+      // illegal drop, not a broken server, and worth saying plainly.
+      toast(e.message || 'could not move it', 4000);
+    }
+    refresh();
+  }
+
+  function setMoveKeys(on){
+    const k = $('#keys'), mk = $('#movekeys');
+    if (k) k.hidden = Boolean(on);
+    if (mk) mk.hidden = !on;
+  }
+
+  // ── pointer ──────────────────────────────────────────────────────────
+  function onGridDown(e){
+    if (e.button !== 0 || reorder) return;
+    const card = e.target.closest('.card');
+    if (!card || !ordGrid(card)) return;
+    // Nothing is claimed yet — a click must stay a click until the pointer has
+    // actually travelled. A press-and-hold delay would put latency on every
+    // open; distance costs nothing and starts the drag the moment you mean it.
+    pend = { card, id: Number(card.dataset.tid), x: e.clientX, y: e.clientY, pid: e.pointerId };
+  }
+
+  function onGridMove(e){
+    if (pend && !reorder){
+      if (Math.abs(e.clientX - pend.x) < DRAG_THRESHOLD && Math.abs(e.clientY - pend.y) < DRAG_THRESHOLD) return;
+      beginDrag(e);
+      if (!reorder) return;
+    }
+    if (!reorder || reorder.mode !== 'drag' || e.pointerId !== reorder.pid) return;
+    e.preventDefault();
+    const dx = e.clientX - reorder.x, dy = e.clientY - reorder.y;
+    // The one flourish: the card leans into the throw. Everything else on this
+    // board is hand-drawn and hand-placed, and a card that hangs perfectly
+    // rigid while you fling it across the page contradicts that. Clamped
+    // tight — past about 4 degrees it stops reading as weight.
+    let tilt = -2.2;
+    if (!REDUCED.matches){
+      reorder.vs = reorder.vs * 0.82 + (e.clientX - reorder.lx) * 0.18;
+      tilt = Math.max(-3.8, Math.min(-0.6, -2.2 + reorder.vs * 0.05));
+    }
+    reorder.lx = e.clientX;
+    reorder.card.style.transform =
+      'translate3d(' + dx + 'px,' + dy + 'px,0) rotate(' + tilt.toFixed(2) + 'deg) scale(1.035)';
+    slotTo(e.clientX, e.clientY);
+  }
+
+  function beginDrag(e){
+    const { card, id } = pend;
+    const grid = ordGrid(card);
+    pend = null;
+    if (!grid) return;
+    // isBusy() guards a drag in flight, but NOT the window between pressing a
+    // card and moving far enough to mean it. A redraw landing in there replaces
+    // #plots and detaches this card, whose parent is still a .cards div — just
+    // one in a dead tree. Dragging it would insert the slot into that tree,
+    // yank a stale card into the live page, and file it back somewhere nobody
+    // can see, having read its new neighbours from a DOM that no longer exists.
+    if (!card.isConnected) return;
+    const r = card.getBoundingClientRect();
+
+    const slot = document.createElement('div');
+    slot.className = 'box slot';
+    slot.style.minHeight = r.height + 'px';
+    grid.insertBefore(slot, card);
+
+    // Out of the grid entirely, and fixed where it already was, so the slot can
+    // own its cell and sibling scans never trip over the card in your hand.
+    card.classList.add('drag');
+    card.style.position = 'fixed';
+    card.style.left = r.left + 'px'; card.style.top = r.top + 'px';
+    card.style.width = r.width + 'px'; card.style.height = r.height + 'px';
+    card.style.margin = '0';
+    document.body.appendChild(card);
+    // The grabbing cursor has to live on the root: .card.drag is
+    // pointer-events:none, so the cursor is hit-tested against whatever is
+    // underneath it and a rule on the card itself never renders.
+    document.documentElement.classList.add('dragging');
+
+    reorder = {
+      mode: 'drag', id, card, slot, grid, pid: e.pointerId,
+      x: e.clientX, y: e.clientY, lx: e.clientX, vs: 0,
+      from: anchorKey(slot),
+    };
+    try { card.setPointerCapture(e.pointerId); } catch {}
+  }
+
+  // A stable description of where something sits, so a drop that changed
+  // nothing can skip the write entirely.
+  function anchorKey(node){
+    const p = prevCard(node);
+    return p ? 'after:' + p.dataset.tid : 'top';
+  }
+
+  function slotTo(x, y){
+    const { grid, slot } = reorder;
+    const sibs = [...grid.children].filter(isCard);
+    if (!sibs.length) return;
+    // Hit-tested against LAYOUT geometry (offsetLeft/Top), not
+    // getBoundingClientRect. The siblings are mid-FLIP for 180ms after every
+    // slot move, and a bounding rect reports the transformed, half-travelled
+    // box rather than the cell the card actually occupies. Sweeping the pointer
+    // across the grid would then place the slot relative to where a card WAS,
+    // and the indicator thrashes — the exact cheapness FLIP was added to avoid.
+    // .cards is position:relative so these offsets are grid-relative.
+    const g = grid.getBoundingClientRect();
+    const px = x - g.left, py = y - g.top;
+    let target = null, after = false;
+    for (const el of sibs){
+      const l = el.offsetLeft, t = el.offsetTop, w = el.offsetWidth, h = el.offsetHeight;
+      if (px >= l && px <= l + w && py >= t && py <= t + h){
+        target = el; after = (px - l) > w / 2; break;
+      }
+    }
+    if (!target){
+      // Not over a card — in the gutter, or past the end of the last row.
+      // Nearest centre keeps the slot following the pointer sensibly.
+      let best = Infinity;
+      for (const el of sibs){
+        const cx = el.offsetLeft + el.offsetWidth / 2, cy = el.offsetTop + el.offsetHeight / 2;
+        const d = (px - cx) * (px - cx) + (py - cy) * (py - cy);
+        if (d < best){ best = d; target = el; after = px > cx; }
+      }
+    }
+    if (!target) return;
+    const ref = after ? target.nextSibling : target;
+    if (slot.nextSibling === ref) return;      // already exactly there
+    const before = flipStart(grid, slot);
+    grid.insertBefore(slot, ref);
+    flipEnd(before);
+  }
+
+  // Put the carried card back in the flow where its slot is standing, and undo
+  // everything beginDrag did to it. One function because the drop path and the
+  // cancel path must never drift apart — and the cancel path is the one nobody
+  // exercises by hand.
+  function restoreCard(){
+    const { card, slot, grid } = reorder;
+    card.classList.remove('drag');
+    card.style.position = card.style.left = card.style.top = '';
+    card.style.width = card.style.height = card.style.margin = card.style.transform = '';
+    try { card.releasePointerCapture(reorder.pid); } catch {}
+    grid.insertBefore(card, slot);
+    slot.remove();
+    document.documentElement.classList.remove('dragging');
+  }
+
+  function onGridUp(e){
+    if (pend && !reorder){ pend = null; return; }
+    if (!reorder || reorder.mode !== 'drag' || e.pointerId !== reorder.pid) return;
+    const { slot, id } = reorder;
+    const anchor = anchorFor(slot);
+    const unchanged = anchorKey(slot) === reorder.from;
+    restoreCard();
+    // pointerup is followed by a click, and that click would open the ticket
+    // you just finished dragging. Eat exactly one, then stop listening.
+    const eat = (ev) => { ev.stopPropagation(); ev.preventDefault(); };
+    document.addEventListener('click', eat, true);
+    setTimeout(() => document.removeEventListener('click', eat, true), 0);
+
+    commitMove(id, anchor, unchanged);
+  }
+
+  function cancelDrag(){
+    // Before anything else: a pointercancel can arrive while only pend is
+    // set — the browser taking over for a touch scroll or a palm rejection,
+    // before the 5px threshold. Leaving pend alive there means the NEXT
+    // pointermove starts a drag with no button held, pinning a card under a
+    // cursor that is not pressing anything.
+    pend = null;
+    if (!reorder || reorder.mode !== 'drag') return;
+    restoreCard();
+    reorder = null;
+    setMoveKeys(false);
+    refresh();
+  }
+
+  // ── keyboard ─────────────────────────────────────────────────────────
+  // The same gesture, not a second one: the card lifts in place exactly as it
+  // would under the cursor, and the others shuffle past it.
+  function carryStep(dir){
+    // The selection must be a CARD. flat also holds "waiting on you" rows,
+    // which are .item elements drawn from a ticket — and selectedTicket()
+    // happily returns that ticket, so without this check ⇧J finds the same
+    // ticket's card further down the board and silently lifts, steps and
+    // commits a reorder the user never saw, while .sel stayed on the row above.
+    if (sel < 0 || !flat[sel] || flat[sel].kind !== 'card') return;
+    const t = selectedTicket(); if (!t) return;
+    const card = document.querySelector('.card[data-tid="' + t.id + '"]');
+    if (!card) return;
+    const grid = ordGrid(card); if (!grid) return;
+
+    if (!reorder){
+      reorder = { mode: 'key', id: t.id, card, grid, origNext: card.nextSibling, from: anchorKey(card) };
+      card.classList.add('carry');
+      setMoveKeys(true);
+      // Clicking away is a decision too — commit rather than leaving a card
+      // stuck in the air with no visible way down.
+      reorder.away = () => { if (reorder && reorder.mode === 'key') carryCommit(); };
+      document.addEventListener('pointerdown', reorder.away, true);
+    }
+    const sib = dir < 0 ? prevCard(card) : nextCard(card);
+    if (!sib){ announce('already at the ' + (dir < 0 ? 'top' : 'bottom')); return; }
+    const before = flipStart(grid, null);
+    grid.insertBefore(card, dir < 0 ? sib : sib.nextSibling);
+    flipEnd(before);
+    announce(t.title + ', ' + movePos(card));
+  }
+
+  function carryEnd(){
+    if (!reorder || reorder.mode !== 'key') return null;
+    const r = reorder;
+    r.card.classList.remove('carry');
+    r.card.style.transform = '';
+    document.removeEventListener('pointerdown', r.away, true);
+    return r;
+  }
+  function carryCommit(){
+    const r = carryEnd(); if (!r) return;
+    commitMove(r.id, anchorFor(r.card), anchorKey(r.card) === r.from);
+    announce('dropped at ' + movePos(r.card));
+  }
+  function carryRevert(){
+    const r = carryEnd(); if (!r) return;
+    r.grid.insertBefore(r.card, r.origNext);
+    reorder = null;
+    setMoveKeys(false);
+    announce('put back');
+    paintSel();
   }
 
   // ── descriptions ─────────────────────────────────────────────────────
@@ -2428,6 +3043,10 @@ export function boardPage(): string {
   // Stop gets its own arm rather than sharing delete's. They sit on the same
   // page, and one variable would let a press on either finish the other.
   let armedStop = null, stopTimer = 0;
+  // Same shape as armedDelete, and a module variable for the same reason: the
+  // card or button that fired the first press is replaced by the next SSE
+  // redraw, so arming anything on the node itself would be forgotten mid-window.
+  let armedStart = null, startArmTimer = 0;
   // The paper-trail document you have open, and what it said. A page is
   // rebuilt by the SSE path and the overlay never was, so a document opened on
   // a ticket used to vanish a second later; app and project pages had the same
@@ -2451,11 +3070,34 @@ export function boardPage(): string {
     }
     tapKey('s');
     const live = Boolean(sessionFor(t));
+    // Say what is in the way before cutting a worktree for work that cannot
+    // land, and make the second press mean "anyway". Armed in a module
+    // variable and confirmed by a toast rather than by confirm(): a modal
+    // would block the SSE-driven page it interrupts, and the two-press arm is
+    // the shape this board already uses for delete.
+    //
+    // Re-attaching a live session is never guarded — the work is already
+    // underway, which is exactly the line bin/smriti-ticket draws by checking
+    // blockers only on the path that CUTS a worktree.
+    const blocked = !live && isBlocked(t);
+    if (blocked && armedStart !== t.id){
+      armedStart = t.id;
+      clearTimeout(startArmTimer);
+      startArmTimer = setTimeout(() => { armedStart = null; }, 6000);
+      toast('#' + t.id + ' waits on ' +
+        openBlockers(t).map((e) => '#' + e.blocker_id).join(' · ') +
+        ' — press again to start it anyway', 6000);
+      return;
+    }
+    clearTimeout(startArmTimer); armedStart = null;
     toast(live ? 'finding the session for <b>#' + t.id + '</b>…'
                : 'cutting a worktree for <b>#' + t.id + '</b>…', 8000);
     try {
       runCache.delete(t.id);          // a start is exactly when the trace moves
-      const res = await api('/api/tickets/' + t.id + '/start', { method: 'POST', body: '{}' });
+      // force only on the second press; an unblocked start sends an empty body
+      // exactly as it always has.
+      const res = await api('/api/tickets/' + t.id + '/start',
+        { method: 'POST', body: blocked ? '{"force":true}' : '{}' });
       // Land on the ticket wherever start was pressed from — the board, the
       // palette, or the page itself. The command has to be somewhere you can
       // read it long enough to copy, which a toast is not.
@@ -2627,6 +3269,41 @@ export function boardPage(): string {
     const goGlyph = (attr, val, what) =>
       '<a class="go" href="#" ' + attr + '="' + esc(String(val)) + '" title="open ' + esc(what) +
       '" aria-label="open ' + esc(what) + '">↗</a>';
+    // One edge, as a line in the filing column. The far end names its app when
+    // that app is not this ticket's — an edge may cross apps and projects, so
+    // a bare "#41" is often something you cannot place. A blocker that has
+    // landed is struck through: the row then reads as history rather than as
+    // something still in the way.
+    const edgeLine = (self, otherId, satisfied) => {
+      const o = ticketById(otherId);
+      // Compared against the ticket the ROW belongs to, passed in. It used to
+      // close over the page's ticket while its caller took one as a parameter,
+      // so the two only agreed because there was a single call site.
+      const elsewhere = o && (o.repo_slug || '') !== (self.repo_slug || '');
+      return '<span class="dep' + (satisfied ? ' met' : '') + '">' +
+        '<span class="dnum">#' + otherId + '</span>' +
+        // A ticket the current state does not carry is not an error — say what
+        // is known rather than rendering a blank.
+        (o ? esc(o.title) : '<span class="empty">not in view</span>') +
+        (o && elsewhere ? '<span class="far">' + esc(appLabel(o.repo_slug || NO_APP)) + '</span>' : '') +
+        (o ? goGlyph('data-tgo', otherId, o.title) : '') + '</span>';
+    };
+    const depRowsHtml = (tk) => {
+      const by = blockersOf(tk), bl = blockingOf(tk);
+      let s = '<div class="f edit dep-f" data-k="w" data-field="deps" role="button" tabindex="0">' +
+        '<span class="k2">blocked by</span><span class="v' + (by.length ? '' : ' empty') + '">' +
+        (by.length ? by.map((e) => edgeLine(tk, e.blocker_id, edgeSatisfied(e))).join('')
+                   : 'nothing — free to start') + '</span></div>';
+      if (bl.length){
+        // Struck through once a dependent has landed, symmetrically with the
+        // row above — otherwise this row cannot answer "what is still waiting
+        // on me", which is the only question it is here to answer.
+        s += '<div class="f"><span class="k2">blocks</span><span class="v">' +
+          bl.map((e) => edgeLine(tk, e.blocked_id, isSatisfied(ticketById(e.blocked_id)))).join('') +
+          '</span></div>';
+      }
+      return s;
+    };
     // Its worktree lives in the app's tree, so a started ticket cannot change
     // apps — bin/smriti-ticket refuses it. The row states that rather than
     // offering a picker that would fail on submit.
@@ -2644,6 +3321,7 @@ export function boardPage(): string {
         '<span class="k2">project</span><span class="v' + (proj ? '' : ' empty') + '">' +
         (proj ? esc(proj.name) + goGlyph('data-proj', proj.id, proj.name)
               : 'loose in the app') + '</span></div>' +
+      depRowsHtml(t) +
       '</div>';
     // The re-file <select> that used to sit here has moved up into the project
     // row, which can also do it for a ticket with no app yet — the case a
@@ -2918,6 +3596,7 @@ export function boardPage(): string {
     }
     else if (which === 'project') pickProject(t);
     else if (which === 'status') pickStatus(t);
+    else if (which === 'deps') pickDep(t);
   }
   // All three end the same way: write through the CLI, then redraw. refresh()
   // re-runs route(), which re-renders the ticket page in place — so unlike the
@@ -3020,6 +3699,64 @@ export function boardPage(): string {
         if (!rows.length && !pool.length)
           rows.push({ label: (t.repo_slug ? appLabel(t.repo_slug) : 'no app') + ' has no projects yet',
             r: 'smriti project add', act: () => {} });
+        return rows;
+      },
+    });
+  }
+
+  // Draw or cut a dependency. One picker for both, because "what is this
+  // waiting on" is one question — the existing edges sit at the top, ready to
+  // be removed, and everything else is a candidate blocker.
+  //
+  // Only --blocked-by is offered. The reverse direction is the same edge said
+  // backwards, and a picker that could write either way would need the user to
+  // choose a direction before choosing a ticket — two decisions where the page
+  // already answers one of them by being the page it is. "dep --blocks" is
+  // still there on the CLI for when you are looking at it from the other end.
+  function pickDep(t){
+    tapKey('w');
+    pickOpen({
+      cue: 'blocked by', placeholder: 'which ticket has to land first?',
+      build: (q) => {
+        const ql = q.trim().toLowerCase();
+        const rows = [];
+        for (const e of blockersOf(t)){
+          const o = ticketById(e.blocker_id);
+          const label = o ? o.title : 'ticket #' + e.blocker_id;
+          if (ql && !label.toLowerCase().includes(ql) && !String(e.blocker_id).includes(ql)) continue;
+          rows.push({
+            label: label, group: 'remove',
+            r: edgeSatisfied(e) ? 'landed' : 'waiting',
+            act: () => writeField('#' + e.blocker_id + ' no longer blocks #' + t.id,
+              () => api('/api/tickets/' + t.id + '/deps',
+                { method: 'POST', body: JSON.stringify({ rm: e.blocker_id }) })),
+          });
+        }
+        // Candidates: everything except itself and what it is already waiting
+        // on. Tickets in other apps are offered too — a cross-app edge is the
+        // common case, not an exotic one — and are grouped by app so the list
+        // stays readable when it spans several.
+        const already = new Set(blockersOf(t).map((e) => e.blocker_id));
+        const pool = S.tickets
+          .filter((x) => x.id !== t.id && !already.has(x.id) && !isSatisfied(x))
+          .filter((x) => !ql || x.title.toLowerCase().includes(ql) || String(x.id).includes(ql));
+        // Unfiltered, this is every open ticket in the factory, which is a wall
+        // rather than a choice. Same app first, then a bounded remainder — type
+        // to reach anything past it.
+        const mine = pool.filter((x) => (x.repo_slug || '') === (t.repo_slug || ''));
+        const others = pool.filter((x) => (x.repo_slug || '') !== (t.repo_slug || ''));
+        for (const x of mine.concat(others).slice(0, ql ? 40 : 12)){
+          rows.push({
+            label: x.title,
+            group: (x.repo_slug || '') === (t.repo_slug || '') ? 'add' : appLabel(x.repo_slug || NO_APP),
+            r: '#' + x.id + ' · ' + (STATUS[x.status] || x.status),
+            act: () => writeField('#' + t.id + ' now waits on #' + x.id,
+              () => api('/api/tickets/' + t.id + '/deps',
+                { method: 'POST', body: JSON.stringify({ blockedBy: x.id }) })),
+          });
+        }
+        if (!rows.length)
+          rows.push({ label: 'nothing to link to', r: 'no other open tickets', act: () => {} });
         return rows;
       },
     });
@@ -3445,6 +4182,25 @@ export function boardPage(): string {
     const onCtl = e.target && typeof e.target.closest === 'function' &&
       e.target.closest('a[href],button,[role="button"]');
 
+    // A carried card is a modal state, and it comes first: it owns esc, ⏎ and
+    // ⇧J/⇧K, and swallows everything else until you put it down. Letting s or d
+    // fire under a card that is mid-air is how you lose track of what moved —
+    // and esc especially, which otherwise navigates up a level and strands the
+    // card lifted on a page you just left.
+    // Caps Lock makes e.key report 'J' for an unshifted press and 'j' for a
+    // shifted one, so matching on the capital letter alone swaps carry and
+    // navigation for as long as the light is on. The modifier is the thing
+    // being asked about; ask about it.
+    const kl = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+
+    if (reorder && reorder.mode === 'key' && !typing){
+      if (e.key === 'Escape'){ e.preventDefault(); carryRevert(); }
+      else if (e.key === 'Enter'){ e.preventDefault(); carryCommit(); }
+      else if (e.shiftKey && kl === 'j'){ e.preventDefault(); carryStep(1); }
+      else if (e.shiftKey && kl === 'k'){ e.preventDefault(); carryStep(-1); }
+      return;
+    }
+
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k'){ e.preventDefault(); inPal ? closeAll() : palOpen(); return; }
     if (e.key === 'Escape'){
       // On a page with nothing open, esc is "go back up" rather than a no-op,
@@ -3473,10 +4229,25 @@ export function boardPage(): string {
     // handled above, before this point.)
     if (e.metaKey || e.ctrlKey) return;
 
+    // j/k move the cursor; SHIFTED they carry the selected card, which reads as
+    // "the same movement, but holding something". The first shifted press picks
+    // the card up as well as moving it — a separate key to enter move mode
+    // would be one more thing to remember for no gain.
+    //
+    // Handled here rather than as switch cases so both halves match on the
+    // normalised letter and the shift modifier together. Keying off 'J' vs 'j'
+    // instead would let Caps Lock swap the two.
+    if (kl === 'j' || kl === 'k'){
+      e.preventDefault();
+      const d = kl === 'j' ? 1 : -1;
+      if (e.shiftKey) carryStep(d); else move(d);
+      return;
+    }
+
     const t = selectedTicket();
     switch (e.key){
-      case 'ArrowDown': case 'j': e.preventDefault(); move(1); break;
-      case 'ArrowUp': case 'k': e.preventDefault(); move(-1); break;
+      case 'ArrowDown': e.preventDefault(); move(1); break;
+      case 'ArrowUp': e.preventDefault(); move(-1); break;
       // On a ticket page ⏎ starts or attaches it — what it meant with the
       // overlay open, now carried by the page rather than by a module flag.
       // Everywhere else it opens what is selected.
@@ -3516,6 +4287,10 @@ export function boardPage(): string {
       case 'a': if (view.kind === 'ticket' && t && !isStarted(t)){ e.preventDefault(); pickApp(t); } break;
       case 'f': if (view.kind === 'ticket' && t){ e.preventDefault(); pickProject(t); } break;
       case 'x': if (view.kind === 'ticket' && t){ e.preventDefault(); pickStatus(t); } break;
+      // w for "waits on". NOT b, however well it would have read: b is the
+      // margin toggle, and a second case 'b' in this switch is unreachable
+      // code that looks like a working binding.
+      case 'w': if (view.kind === 'ticket' && t){ e.preventDefault(); pickDep(t); } break;
       case 'p': {
         tapKey('p');
         if (view.kind === 'ticket' && t){
@@ -3561,6 +4336,13 @@ export function boardPage(): string {
     // and nothing ever re-drives refresh().
     es.onerror = () => toast('lost the server — rerun <b>smriti</b> in a terminal', 6000);
   } catch {}
+  // Bound once, on the document rather than on a grid: the pointer leaves the
+  // card the instant it lifts, and a drag that ends over the margin or off the
+  // window still has to end. wire() only binds the pointerdown that starts it.
+  document.addEventListener('pointermove', onGridMove);
+  document.addEventListener('pointerup', onGridUp);
+  document.addEventListener('pointercancel', cancelDrag);
+
   // Back/forward and hand-edited URLs both drive the same router.
   window.addEventListener('hashchange', () => route());
   // Coming back to the tab is the moment stale data is most obvious, and the

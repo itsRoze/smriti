@@ -374,17 +374,23 @@ describe('board UI', () => {
       expect(await stamp.innerText()).toBe('READY');
       expect(await stamp.getAttribute('class')).toContain('s-ready');
 
-      // Filed under: app and project, both rows emitted whether or not they are
-      // filled. This fixture ticket has an app and no project.
+      // Filed under: app, project and what it waits on — all emitted whether or
+      // not they are filled, because each row is also the control that fills it
+      // and a ticket with no blockers is exactly when you go to add one.
+      // "blocks" is the exception: it is not editable from this end, so it
+      // appears only when something is actually waiting.
       const labels = await page.locator('.stub .f .k2').allInnerTexts();
-      expect(labels).toEqual(['APP', 'PROJECT']);
-      expect(await page.locator('.stub .f .v.empty').count()).toBe(1);
+      expect(labels).toEqual(['APP', 'PROJECT', 'BLOCKED BY']);
+      // Two blanks: no project, and nothing blocking it.
+      expect(await page.locator('.stub .f .v.empty').count()).toBe(2);
       // The value carries a ↗ that opens the app page — the click that used to
       // be the whole row, moved aside so the row itself can edit.
       expect(await page.locator('.stub .f .v').first().innerText()).toContain('test-demo');
-      // Both rows are writable, and each names the key that opens its picker.
+      // All three rows are writable, and each names the key that opens its picker.
       expect(await page.locator('.stub .f[data-field="app"]').getAttribute('data-k')).toBe('a');
       expect(await page.locator('.stub .f[data-field="project"]').getAttribute('data-k')).toBe('f');
+      // w for "waits on", not b — b is already the margin toggle.
+      expect(await page.locator('.stub .f[data-field="deps"]').getAttribute('data-k')).toBe('w');
       expect(await page.locator('.stub .head[data-field="status"]').getAttribute('data-k')).toBe('x');
       expect(errors).toEqual([]);
     } finally { await context.close(); }
@@ -1557,11 +1563,13 @@ describe('the margin', () => {
       // Not an exact count — the bar legitimately grows when a key has nowhere
       // else to live. What must stay true is that a key with a control on
       // screen is not ALSO listed here.
-      const bar = (await page.locator('.keys').innerText()).toLowerCase();
+      // #keys, not .keys: the move-mode legend is a second .keys bar, hidden
+      // until a card is being carried.
+      const bar = (await page.locator('#keys').innerText()).toLowerCase();
       expect(bar).not.toContain('margin');
       expect(bar).not.toContain('completed');
-      expect(await page.locator('.keys .k[data-k="b"]').count()).toBe(0);
-      expect(await page.locator('.keys .k[data-k="h"]').count()).toBe(0);
+      expect(await page.locator('#keys .k[data-k="b"]').count()).toBe(0);
+      expect(await page.locator('#keys .k[data-k="h"]').count()).toBe(0);
 
       // Legible at rest, not hover-only: the board replaces its html about once
       // a second, and a swap under a still cursor never regains :hover.
@@ -1890,6 +1898,382 @@ describe('the fold, on the board itself', () => {
       await page.waitForSelector('.card.done');
       const revealed = (await page.locator('.card.done .t').allInnerTexts()).join(' | ');
       expect(revealed).toContain('the old importer');
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+});
+
+// Ticket #11: drag to order tickets, and make that order stick.
+//
+// The app page is the surface used here because it draws ONE .cards grid — the
+// loose tickets — so "what order are they in" is a straight read rather than a
+// question about which group you meant. The CLI and HTTP layers are covered in
+// ticket.bats and board.test.ts; what only exists in a browser is the gesture
+// itself, the keyboard carry, and whether a live redraw eats either of them.
+describe('reordering', () => {
+  const ORD = ['reorder alpha', 'reorder beta'];
+
+  beforeAll(() => {
+    if (!HAS_CHROMIUM) return;
+    // Appended, and this block is last in the file: earlier tests count cards
+    // and would fail if the fixture grew underneath them.
+    for (const t of ORD) must(run(TICKET, ['add', t, '--ready'], appDir), 'add ' + t);
+  });
+
+  // A viewport tall enough to hold the whole loose group. page.mouse works in
+  // viewport coordinates, so a card below the fold has coordinates that are not
+  // on screen and every click lands on <html> instead — and scrollIntoView is
+  // not the fix, because the SSE redraw detaches the element mid-scroll.
+  const openTall = async (hash: string) => {
+    const o = await open(hash);
+    await o.page.setViewportSize({ width: 1400, height: 1600 });
+    await o.page.waitForSelector('#plots .cards .card');
+    // The app page fetches PROJECT.md and injects it AFTER first paint, which
+    // pushes the card grid down the page. Measuring a card before that lands
+    // gives coordinates the mouse then arrives at pointing somewhere else — the
+    // drag reads as working and drops in the wrong place. Wait for the pane to
+    // fill, then for two clean frames, before anything measures geometry.
+    await o.page.waitForFunction(() => {
+      const d = document.querySelector('#docpane');
+      return !d || (d as HTMLElement).innerHTML.length > 0;
+    });
+    await o.page.evaluate(() => new Promise((r) =>
+      requestAnimationFrame(() => requestAnimationFrame(() => r(null)))));
+    return o;
+  };
+
+  // Titles in drawn order, from the one grid the app page renders. Excludes the
+  // completed fold, which is deliberately not reorderable.
+  const order = (page: any) =>
+    page.$$eval('#plots .cards:not(.folded) .card .t', (els: any[]) => els.map((e) => e.innerText));
+
+  const boxOf = async (page: any, title: string) => {
+    const b = await page.locator('#plots .card', { hasText: title }).first().boundingBox();
+    if (!b) throw new Error('no card for ' + title);
+    return b;
+  };
+
+  it('a card dragged onto another lands there, and the order survives a reload', async () => {
+    if (!HAS_CHROMIUM) return;
+    const { context, page, errors } = await openTall('#/r/test-demo');
+    try {
+      const before = await order(page);
+      expect(before[0]).toBe('a one-off bug');
+      expect(before).toContain('reorder beta');
+
+      const from = await boxOf(page, 'reorder beta');
+      const to = await boxOf(page, 'a one-off bug');
+      await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
+      await page.mouse.down();
+      // Past the 5px threshold first, so the gesture is a drag and not a click,
+      // then onto the LEFT half of the target, which means "before this one".
+      await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2 - 40, { steps: 5 });
+      await page.mouse.move(to.x + to.width * 0.25, to.y + to.height / 2, { steps: 10 });
+
+      // Mid-flight: the card is in your hand and a slot marks where it lands.
+      expect(await page.locator('.card.drag').count()).toBe(1);
+      expect(await page.locator('.slot').count()).toBe(1);
+
+      const wrote = page.waitForResponse((r: any) => r.url().includes('/move'));
+      await page.mouse.up();
+      expect((await wrote).status()).toBe(200);
+      await page.waitForFunction(() => document.querySelectorAll('.slot').length === 0);
+
+      expect((await order(page))[0]).toBe('reorder beta');
+      // A drag must not also open the ticket it was holding.
+      expect(page.url()).toContain('#/r/test-demo');
+
+      // The real claim: it stuck. Re-read from the store, not from the DOM.
+      await page.reload({ waitUntil: 'domcontentloaded' });
+      await page.waitForFunction(() => (document.querySelector('#plots')?.children.length ?? 0) > 0);
+      expect((await order(page))[0]).toBe('reorder beta');
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+
+  it('shift-J carries the selected card, and esc puts it back', async () => {
+    if (!HAS_CHROMIUM) return;
+    const { context, page, errors } = await openTall('#/r/test-demo');
+    try {
+      const before = await order(page);
+      await page.keyboard.press('ArrowDown');          // select the first card
+      await page.waitForSelector('.card.sel');
+
+      await page.keyboard.press('Shift+J');
+      await page.waitForSelector('.card.carry');
+      // Lifted, and the keycap bar swapped to the move legend.
+      expect(await page.locator('#movekeys').isVisible()).toBe(true);
+      const moved = await order(page);
+      expect(moved[0]).toBe(before[1]);
+      expect(moved[1]).toBe(before[0]);
+
+      await page.keyboard.press('Escape');
+      await page.waitForFunction(() => document.querySelectorAll('.card.carry').length === 0);
+      expect(await order(page)).toEqual(before);
+      expect(await page.locator('#movekeys').isVisible()).toBe(false);
+      // esc put the card down; it did NOT also navigate up a level.
+      expect(page.url()).toContain('#/r/test-demo');
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+
+  it('shift-J then enter commits, and the store agrees', async () => {
+    if (!HAS_CHROMIUM) return;
+    const { context, page, errors } = await openTall('#/r/test-demo');
+    try {
+      const before = await order(page);
+      await page.keyboard.press('ArrowDown');
+      await page.waitForSelector('.card.sel');
+      await page.keyboard.press('Shift+J');
+      await page.waitForSelector('.card.carry');
+
+      const wrote = page.waitForResponse((r: any) => r.url().includes('/move'));
+      await page.keyboard.press('Enter');
+      expect((await wrote).status()).toBe(200);
+      await page.waitForFunction(() => document.querySelectorAll('.card.carry').length === 0);
+
+      // Enter dropped the card. It must not ALSO have opened the ticket.
+      expect(page.url()).toContain('#/r/test-demo');
+
+      const listed = JSON.parse(run(TICKET, ['list', '--all', '--json'], appDir).stdout)
+        .filter((t: any) => t.repo_slug === 'test-demo' && t.project_id == null &&
+                            !['shipped', 'cancelled'].includes(t.status))
+        .map((t: any) => t.title);
+      expect(listed[0]).toBe(before[1]);
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+
+  it('a live redraw does not eat a drag in flight', async () => {
+    if (!HAS_CHROMIUM) return;
+    // The sharpest edge in this whole feature. #plots is replaced wholesale
+    // whenever the store changes — about once a second while an agent runs —
+    // and doing that mid-gesture pulls the card out from under the cursor.
+    const { context, page, errors } = await openTall('#/r/test-demo');
+    try {
+      const from = await boxOf(page, 'reorder alpha');
+      await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
+      await page.mouse.down();
+      await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2 - 60, { steps: 5 });
+      expect(await page.locator('.card.drag').count()).toBe(1);
+
+      // A write from outside the board entirely — the mtime watcher notices and
+      // broadcasts, which is the same path an agent's run takes.
+      must(run(TICKET, ['add', 'noise from another process', '--repo', '-'], appDir), 'add noise');
+      await page.waitForTimeout(1800);
+
+      // Still airborne, still with somewhere to land.
+      expect(await page.locator('.card.drag').count()).toBe(1);
+      expect(await page.locator('.slot').count()).toBe(1);
+
+      await page.mouse.up();
+      await page.waitForFunction(() => document.querySelectorAll('.slot').length === 0);
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+
+  it('completed work in the fold is not draggable', async () => {
+    if (!HAS_CHROMIUM) return;
+    const { context, page, errors } = await openTall('#/r/test-demo');
+    try {
+      await page.keyboard.press('h');
+      await page.waitForSelector('.card.done');
+      const done = await page.locator('.card.done').first().boundingBox();
+      await page.mouse.move(done!.x + done!.width / 2, done!.y + done!.height / 2);
+      await page.mouse.down();
+      await page.mouse.move(done!.x + done!.width / 2, done!.y - 80, { steps: 8 });
+      // No lift, no slot: a hand-placed sequence over shipped work is a number
+      // nobody reads, so the fold never offers the gesture.
+      expect(await page.locator('.card.drag').count()).toBe(0);
+      expect(await page.locator('.slot').count()).toBe(0);
+      await page.mouse.up();
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+});
+
+// ─── dependencies (#12) ─────────────────────────────────────────────────────
+//
+// Fixtures live in their OWN app rather than in the shared one. Dependency
+// states change how a card draws, and the reordering tests measure a drag
+// against the loose group of test-demo — five more cards in it moves the
+// geometry those tests aim at. A separate app keeps the two from interfering.
+
+const DEP_APP = 'dep-demo';
+
+describe('dependencies', () => {
+  it('a blocked card reads as not-yet, and names what it waits on', async () => {
+    if (!HAS_CHROMIUM) return;
+    must(run(TICKET, ['add', 'the API piece', '--repo', DEP_APP, '--ready'], appDir), 'add blocker');
+    must(run(TICKET, ['add', 'the UI piece', '--repo', DEP_APP, '--ready'], appDir), 'add blocked');
+    const blocker = idOf('the API piece');
+    const blocked = idOf('the UI piece');
+    must(run(TICKET, ['dep', blocked, '--blocked-by', blocker], appDir), 'dep');
+
+    const { context, page, errors } = await open('#/r/' + DEP_APP);
+    try {
+      const card = page.locator('.card[data-tid="' + blocked + '"]');
+      await card.waitFor();
+      expect(await card.getAttribute('class')).toContain('blocked');
+      // The chip sits BESIDE the status, never in place of it: "blocked" is a
+      // note about a status, not one of its own, and replacing it made a card
+      // stop saying whether it was an idea or ready for as long as it had an edge.
+      expect(await card.locator('.chip').innerText()).toBe('blocked by #' + blocker);
+      expect(await card.locator('.st').count()).toBe(1);
+
+      // The blocker itself is untouched.
+      const other = page.locator('.card[data-tid="' + blocker + '"]');
+      expect(await other.getAttribute('class')).not.toContain('blocked');
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+
+  it('the ticket page names both directions and links through', async () => {
+    if (!HAS_CHROMIUM) return;
+    const blocker = idOf('the API piece');
+    const blocked = idOf('the UI piece');
+    const { context, page, errors } = await open('#/t/' + blocked);
+    try {
+      await page.waitForSelector('.stub');
+      const by = page.locator('.stub .f', { hasText: 'blocked by' }).first();
+      expect(await by.innerText()).toContain('the API piece');
+      // The ↗ inside the row navigates to the other ticket without also
+      // opening the row's own picker.
+      await by.locator('[data-tgo]').first().click();
+      await page.waitForFunction((id) => location.hash === '#/t/' + id, blocker);
+
+      // And from the blocker's side, the same edge reads as "blocks".
+      const bl = page.locator('.stub .f', { hasText: 'blocks' }).first();
+      expect(await bl.innerText()).toContain('the UI piece');
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+
+  it('a cross-app blocker names its app, since it may be off-screen', async () => {
+    if (!HAS_CHROMIUM) return;
+    must(run(TICKET, ['add', 'a far-off blocker', '--repo', 'other-app', '--ready'], appDir), 'add far');
+    const far = idOf('a far-off blocker');
+    const blocked = idOf('the UI piece');
+    must(run(TICKET, ['dep', blocked, '--blocked-by', far], appDir), 'dep far');
+
+    const { context, page, errors } = await open('#/t/' + blocked);
+    try {
+      await page.waitForSelector('.stub');
+      const by = page.locator('.stub .f', { hasText: 'blocked by' }).first();
+      const txt = await by.innerText();
+      expect(txt).toContain('a far-off blocker');
+      // Small caps by text-transform, and innerText is post-CSS.
+      expect(txt).toContain('OTHER-APP');
+      // The same-app blocker on the row above carries no app label.
+      expect(await by.locator('.dep .far').count()).toBe(1);
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+
+  it('starting blocked work says what is in the way instead of cutting a worktree', async () => {
+    if (!HAS_CHROMIUM) return;
+    const blocked = idOf('the UI piece');
+    const { context, page, errors } = await open('#/t/' + blocked);
+    try {
+      await page.waitForSelector('[data-act="start"]');
+      await page.locator('[data-act="start"]').click();
+      // A toast, not a modal: confirm() would block the SSE-driven page it
+      // interrupts, and this board already arms delete the same way.
+      await page.waitForFunction(() =>
+        (document.querySelector('#toast') || {}).textContent?.includes('press again'));
+      // Still not started: no branch was cut, which is the thing the refusal
+      // exists to prevent. Read from the store rather than the page, since the
+      // page is what is under test.
+      const t = JSON.parse(run(TICKET, ['show', blocked, '--json'], appDir).stdout);
+      expect(t.ticket.branch).toBeNull();
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+
+  it('a landed blocker stops blocking, and the card says freed', async () => {
+    if (!HAS_CHROMIUM) return;
+    must(run(TICKET, ['done', idOf('the API piece')], appDir), 'ship the blocker');
+    must(run(TICKET, ['done', idOf('a far-off blocker')], appDir), 'ship the far blocker');
+    const blocked = idOf('the UI piece');
+
+    const { context, page, errors } = await open('#/r/' + DEP_APP);
+    try {
+      const card = page.locator('.card[data-tid="' + blocked + '"]');
+      await card.waitFor();
+      expect(await card.getAttribute('class')).not.toContain('blocked');
+      expect(await card.locator('.chip.freed').innerText()).toBe('freed');
+      // Still says what it IS, as well as that it was freed.
+      expect(await card.locator('.st').innerText()).toBe('READY');
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+
+  it('freed work is announced on the board, below the real gates', async () => {
+    if (!HAS_CHROMIUM) return;
+    const blocked = idOf('the UI piece');
+    const { context, page, errors } = await open('');
+    try {
+      await page.waitForSelector('.wait');
+      const row = page.locator('.wait .freedgrp .freedrow[data-tid="' + blocked + '"]');
+      expect(await row.count()).toBe(1);
+      expect(await row.innerText()).toContain('the UI piece');
+      // Subordinate, not equal: the group is drawn AFTER the gates, so a real
+      // decision is never buried under a list of suggestions.
+      const order = await page.evaluate(() => {
+        const w = document.querySelector('.wait');
+        return Array.from(w.children).map((c) => c.className);
+      });
+      const grp = order.findIndex((c) => c.includes('freedgrp'));
+      expect(grp).toBe(order.length - 1);
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+});
+
+describe('dependency states are about work you could pick up', () => {
+  it('a shipped ticket is never drawn as blocked', async () => {
+    if (!HAS_CHROMIUM) return;
+    // #1 blocks #2, #2 gets shipped anyway (--force is a real path). Finished
+    // work must not be painted as work that cannot start, and must keep its
+    // own status.
+    must(run(TICKET, ['add', 'guard blocker', '--repo', DEP_APP, '--ready'], appDir), 'add');
+    must(run(TICKET, ['add', 'guard shipped', '--repo', DEP_APP, '--ready'], appDir), 'add');
+    const blocker = idOf('guard blocker');
+    const shipped = idOf('guard shipped');
+    must(run(TICKET, ['dep', shipped, '--blocked-by', blocker], appDir), 'dep');
+    must(run(TICKET, ['done', shipped], appDir), 'done');
+
+    const { context, page, errors } = await open('#/r/' + DEP_APP);
+    try {
+      await page.keyboard.press('h');            // unfold completed work
+      const card = page.locator('.card[data-tid="' + shipped + '"]');
+      await card.waitFor();
+      expect(await card.getAttribute('class')).not.toContain('blocked');
+      expect(await card.locator('.chip').count()).toBe(0);
+      // innerText is post-CSS and .st is small caps by text-transform.
+      expect(await card.locator('.st').innerText()).toBe('SHIPPED');
+      expect(errors).toEqual([]);
+    } finally { await context.close(); }
+  }, T);
+
+  it('an in-progress ticket is not drawn as blocked', async () => {
+    if (!HAS_CHROMIUM) return;
+    // Its worktree is already cut, and the CLI checks blockers only on the
+    // path that CUTS one. Drawing it blocked would hide a live session's own
+    // state behind an edge nothing would act on.
+    must(run(TICKET, ['add', 'guard started', '--repo', DEP_APP, '--ready'], appDir), 'add');
+    const started = idOf('guard started');
+    must(run(TICKET, ['dep', started, '--blocked-by', idOf('guard blocker')], appDir), 'dep');
+    // Give it a branch the way `start` would, without cutting a real worktree.
+    spawnSync('sqlite3', [join(HOME_DIR, 'factory.db'),
+      "UPDATE tickets SET status='in_progress', branch='t-guard' WHERE id=" + started]);
+
+    const { context, page, errors } = await open('#/r/' + DEP_APP);
+    try {
+      const card = page.locator('.card[data-tid="' + started + '"]');
+      await card.waitFor();
+      expect(await card.getAttribute('class')).not.toContain('blocked');
+      expect(await card.locator('.chip').count()).toBe(0);
       expect(errors).toEqual([]);
     } finally { await context.close(); }
   }, T);

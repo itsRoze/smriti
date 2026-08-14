@@ -62,6 +62,7 @@ type Ticket = {
   title: string;
   status: string;
   priority: number;
+  position: number;
   branch: string | null;
   worktree_path: string | null;
   pr_url: string | null;
@@ -118,9 +119,6 @@ function loadRuns(): Run[] {
 
 // ─── model ──────────────────────────────────────────────────────────────────
 
-// Work order, not alphabetical: what needs a decision sits above what is
-// merely open, which sits above what is only an idea.
-const STATUS_ORDER = ['in_review', 'in_progress', 'ready', 'idea', 'shipped', 'cancelled'];
 
 type Row =
   | { kind: 'app'; label: string }
@@ -169,12 +167,12 @@ function buildRows(tickets: Ticket[], runs: Run[], filter: string): Row[] {
     a === NO_APP ? 1 : b === NO_APP ? -1 : a.localeCompare(b),
   );
 
-  const byStatus = (a: Ticket, b: Ticket) => {
-    const s = STATUS_ORDER.indexOf(a.status) - STATUS_ORDER.indexOf(b.status);
-    if (s !== 0) return s;
-    if (a.priority !== b.priority) return b.priority - a.priority;
-    return a.id - b.id;
-  };
+  // The order you dragged on the board, not one this surface invents. Ticket
+  // #11 made `position` the single answer to "what comes next", and a third
+  // opinion here is exactly what it set out to remove — this used to sort by
+  // status band, then priority, then id, agreeing with neither of the others.
+  const byPosition = (a: Ticket, b: Ticket) =>
+    a.position !== b.position ? a.position - b.position : a.id - b.id;
 
   const rows: Row[] = [];
   for (const app of apps) {
@@ -188,18 +186,24 @@ function buildRows(tickets: Ticket[], runs: Run[], filter: string): Row[] {
       }
     }
 
-    // Grouped by project, in first-appearance order of the sorted tickets, so
-    // the project holding the most urgent work comes first.
+    // Grouped by project, then ordered WITHIN each group — never sorted across
+    // them first. Positions restart at 1 in every group, so sorting the app's
+    // whole backlog by position before bucketing compares numbers from
+    // different scopes: every group's head ticket ties at 1 and the id tiebreak
+    // decides which project leads. Group order is project id, matching the
+    // board and `ticket list`.
     const groups = new Map<number, Ticket[]>();
     const looseTickets: Ticket[] = [];
-    for (const t of items.slice().sort(byStatus)) {
+    for (const t of items) {
       if (t.project_id == null) looseTickets.push(t);
       else {
         if (!groups.has(t.project_id)) groups.set(t.project_id, []);
         groups.get(t.project_id)!.push(t);
       }
     }
-    for (const [, group] of groups) {
+    for (const g of groups.values()) g.sort(byPosition);
+    looseTickets.sort(byPosition);
+    for (const [, group] of [...groups.entries()].sort((a, b) => a[0] - b[0])) {
       rows.push({ kind: 'project', label: group[0].project_name ?? `project ${group[0].project_id}` });
       for (const t of group) rows.push({ kind: 'ticket', ticket: t, run: runFor.get(t.id) });
     }

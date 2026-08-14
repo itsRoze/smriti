@@ -71,7 +71,7 @@ _factory_conn_args() {
 # Reading it costs one sqlite3 invocation (~4ms against ~16ms for a whole
 # `ticket list`). That is the price of a version that cannot lie, and it is also
 # what let v3 be added without guesswork about what any given store already has.
-FACTORY_SCHEMA_VERSION=4
+FACTORY_SCHEMA_VERSION=5
 
 # The store's schema version. Three answers, and they must stay distinct:
 # a number, or failure — because "could not read it" is not "it is current".
@@ -184,6 +184,68 @@ _db_migrate() {
   if [ "$has_runs" = "1" ] && [ "$has_pane" != "1" ]; then
     sqlite3 "$FACTORY_DB" ".timeout 10000" \
       "ALTER TABLE runs ADD COLUMN herdr_pane TEXT;" >/dev/null 2>&1 || {
+        rmdir "$lock" 2>/dev/null || true; return 1; }
+  fi
+
+  # ── step v5: tickets.position ───────────────────────────────────────────
+  #
+  # Another pure column add, guarded on table and column exactly like v3 above,
+  # and for the same reasons.
+  #
+  # What makes this one different is the seed that follows the ALTER. A bare
+  # `DEFAULT 0` would give every ticket the same position, and the board — which
+  # sorts on it from here on — would fall back to id order and reshuffle itself
+  # under someone who never asked for that. So the seed reproduces the order the
+  # board was ALREADY drawing: status band first, then priority descending, then
+  # id. Migrate, and nothing moves until you drag something.
+  #
+  # It is deliberately scoped by (repo_slug, project_id) with coalesce on both:
+  # that pair is the group the board draws, positions are only ever compared
+  # inside one, and NULL = NULL is not true in SQL so the app-less ideas bucket
+  # would otherwise partition into one group per row.
+  #
+  # `smriti ticket list` sorted priority-then-id with no band, so its order DOES
+  # change here — it adopts the board's. That is the point rather than a side
+  # effect: ticket #11 asked for one authoritative order, and this is the board
+  # winning.
+  local has_tickets has_position
+  has_tickets=$(sqlite3 "$FACTORY_DB" ".timeout 10000" \
+    "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='tickets';" 2>/dev/null) || {
+      rmdir "$lock" 2>/dev/null || true; return 1; }
+  has_position=$(sqlite3 "$FACTORY_DB" ".timeout 10000" \
+    "SELECT count(*) FROM pragma_table_info('tickets') WHERE name='position';" 2>/dev/null) || {
+      rmdir "$lock" 2>/dev/null || true; return 1; }
+  if [ "$has_tickets" = "1" ] && [ "$has_position" != "1" ]; then
+    # ONE TRANSACTION, and it is load-bearing rather than tidiness. The add and
+    # the seed are two statements; if the process dies between them — or the
+    # UPDATE loses the write lock, or the disk fills — the column exists at
+    # DEFAULT 0 for every row while the version still says 3. The next
+    # invocation probes, sees the column, skips this block entirely and stamps
+    # current, leaving every ticket at position 0 permanently: the whole board falls
+    # back to id order, which is precisely the reshuffle the seed exists to
+    # prevent. Wrapped, a failure rolls back to no column at all and the next
+    # run simply tries again. Same shape as the v2 rebuild below.
+    sqlite3 "$FACTORY_DB" ".timeout 10000" \
+      "BEGIN IMMEDIATE;
+       ALTER TABLE tickets ADD COLUMN position REAL NOT NULL DEFAULT 0;
+       WITH seeded AS (
+         SELECT id, ROW_NUMBER() OVER (
+           PARTITION BY coalesce(repo_slug, ''), coalesce(project_id, -1)
+           ORDER BY CASE status
+                      WHEN 'in_review'   THEN 0
+                      WHEN 'in_progress' THEN 1
+                      WHEN 'ready'       THEN 2
+                      WHEN 'idea'        THEN 3
+                      WHEN 'shipped'     THEN 4
+                      ELSE 5
+                    END,
+                    priority DESC, id ASC
+         ) AS rn
+         FROM tickets
+       )
+       UPDATE tickets SET position = (SELECT rn FROM seeded WHERE seeded.id = tickets.id);
+       COMMIT;" \
+      >/dev/null 2>&1 || {
         rmdir "$lock" 2>/dev/null || true; return 1; }
   fi
 

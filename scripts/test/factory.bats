@@ -20,6 +20,7 @@ setup() {
   CLI="$FAKE_BIN/smriti-factory"
   TICKET="$FAKE_BIN/smriti-ticket"
   TRACE="$FAKE_BIN/smriti-trace"
+  PROJECT="$FAKE_BIN/smriti-project"
 
   export SMRITI_HOME="$WORK/state"
   mkdir -p "$SMRITI_HOME"
@@ -94,16 +95,59 @@ teardown() {
   [[ "$output" == *"running begin"* ]]
 }
 
-@test "ordering puts work needing a decision above ideas" {
+@test "ordering groups by project before it sorts, never across scopes" {
+  # Positions restart at 1 in every group. Sorting an app's whole backlog on
+  # position before bucketing compares numbers from different scopes: every
+  # group's head ticket ties at 1 and the id tiebreak silently decides which
+  # project is drawn first. Bucket, then sort inside the bucket.
+  "$PROJECT" add "Alpha" >/dev/null
+  "$PROJECT" add "Beta" >/dev/null
+  "$TICKET" add "a-one" --project alpha >/dev/null   # 1
+  "$TICKET" add "a-two" --project alpha >/dev/null   # 2
+  "$TICKET" add "b-one" --project beta  >/dev/null   # 3
+  "$TICKET" add "b-two" --project beta  >/dev/null   # 4
+  "$TICKET" add "loose-one" >/dev/null               # 5
+  # b-two to the top of ITS group. It must move within Beta and not jump the
+  # whole app — which is what sorting across scopes on position would do, since
+  # position 1 in Beta ties with position 1 in Alpha.
+  "$TICKET" move 4 --top >/dev/null
+
+  run bun "$CLI" --list
+  local a1 a2 b1 b2 l1
+  a1=$(echo "$output" | grep -n "a-one"     | head -1 | cut -d: -f1)
+  a2=$(echo "$output" | grep -n "a-two"     | head -1 | cut -d: -f1)
+  b1=$(echo "$output" | grep -n "b-one"     | head -1 | cut -d: -f1)
+  b2=$(echo "$output" | grep -n "b-two"     | head -1 | cut -d: -f1)
+  l1=$(echo "$output" | grep -n "loose-one" | head -1 | cut -d: -f1)
+  # Alpha's two in order, then Beta's — reordered inside Beta — then the loose
+  # work last. b-two is first in Beta but still below both of Alpha's.
+  [ "$a1" -lt "$a2" ]
+  [ "$a2" -lt "$b2" ]
+  [ "$b2" -lt "$b1" ]
+  [ "$b1" -lt "$l1" ]
+}
+
+@test "ordering follows the order you arranged, not the status" {
+  # This listing used to sort by status band — work needing a decision above
+  # ideas — while `ticket list` sorted by priority, so the two disagreed about
+  # the same tickets. Ticket #11 settled it: status says what a card IS,
+  # position says where it SITS, and every surface reads position.
   "$TICKET" add "an idea" >/dev/null
   "$TICKET" add "in review" >/dev/null
   "$TICKET" status 2 in_review >/dev/null
 
   run bun "$CLI" --list
-  # "in review" must appear before "an idea" in the output.
   local review_line idea_line
-  review_line=$(echo "$output" | grep -n "in review" | head -1 | cut -d: -f1)
   idea_line=$(echo "$output" | grep -n "an idea" | head -1 | cut -d: -f1)
+  review_line=$(echo "$output" | grep -n "in review" | head -1 | cut -d: -f1)
+  # Capture order, undisturbed by the status change.
+  [ "$idea_line" -lt "$review_line" ]
+
+  # Move it, and the listing follows.
+  "$TICKET" move 2 --before 1 >/dev/null
+  run bun "$CLI" --list
+  idea_line=$(echo "$output" | grep -n "an idea" | head -1 | cut -d: -f1)
+  review_line=$(echo "$output" | grep -n "in review" | head -1 | cut -d: -f1)
   [ "$review_line" -lt "$idea_line" ]
 }
 

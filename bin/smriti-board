@@ -106,9 +106,14 @@ function readState(): { port: number; pid: number; secret: string } | null {
     return { port, pid, secret };
   } catch { return null; }
 }
-function sh(bin: string, args: string[], timeoutMs = 15000): { ok: boolean; out: string; errOut: string } {
+// `code` carries the CLI's own exit code through, because a few of them mean
+// something specific enough that the page should react differently: a reorder
+// refused for naming another group (6) is the user's mistake and deserves a
+// 4xx, not the blanket 500 every other failure collapses to. null when the
+// child was killed or never ran.
+function sh(bin: string, args: string[], timeoutMs = 15000): { ok: boolean; out: string; errOut: string; code: number | null } {
   const r = spawnSync(bin, args, { encoding: 'utf8', timeout: timeoutMs });
-  return { ok: r.status === 0, out: (r.stdout || '').trim(), errOut: (r.stderr || '').trim() };
+  return { ok: r.status === 0, out: (r.stdout || '').trim(), errOut: (r.stderr || '').trim(), code: r.status };
 }
 // null means "the read failed", which is NOT the same as "there is nothing".
 // Collapsing the two rendered a broken store as an inviting blank page.
@@ -922,6 +927,11 @@ async function cmdServer(): Promise<never> {
           readJsonAsync<Run[]>(['list', '--active', '--json'], TRACE),
         ]);
         const documents = readJsonCmd(['docs', '--json']);
+        // The whole dependency graph in one read, joined per ticket on the
+        // client exactly the way documents already are. The alternative was
+        // widening `ticket list --json`, which smriti-factory also consumes —
+        // and two mechanisms for the same job is how the two drift.
+        const deps = readJsonCmd(['deps', '--json']);
         const repositories = readJsonCmd(['list', '--json'], REPO);
         const projects = readJsonCmd(['list', '--all', '--json'], PROJECT);
         if (tickets === null) {
@@ -935,6 +945,7 @@ async function cmdServer(): Promise<never> {
           tickets,
           runs,
           documents: documents ?? [],
+          deps: deps ?? [],
           repositories: repositories ?? [],
           projects: projects ?? [],
           // null, not [], when herdr could not be asked. The page treats an
@@ -1151,8 +1162,21 @@ async function cmdServer(): Promise<never> {
         // yet started its replacement. Starting into that gap duplicates the
         // session the restart is about to create.
         if (sessionBusy.has(id)) return json({ error: 'that session is already being changed' }, 409);
-        const r = sh(TICKET, ['start', String(id)], 30000);
-        if (!r.ok) return json({ error: r.errOut || 'could not start' }, 500);
+        // The page sends {force:true} only after the user has been told what is
+        // in the way and said start it anyway. An empty body is the normal case.
+        const sb = (await req.json().catch(() => ({}))) as { force?: boolean };
+        const args = ['start', String(id)];
+        if (sb.force === true) args.push('--force');
+        const r = sh(TICKET, args, 30000);
+        // Same reasoning as the move route below: the CLI's exit codes carry
+        // more than "it failed", and collapsing them all to 500 told the user
+        // the factory had fallen over when in fact the ticket was merely
+        // blocked. 7 is that refusal — a conflict with the dependency graph,
+        // not a fault — and the page offers to force past it.
+        if (!r.ok) {
+          const code = r.code === 7 ? 409 : r.code === 4 ? 404 : r.code === 2 ? 400 : 500;
+          return json({ error: r.errOut || 'could not start', blocked: r.code === 7 }, code);
+        }
         const dir = r.out.split('\n')[0].trim();
         const launch = launchSession(dir, id);
         broadcast();
@@ -1318,6 +1342,79 @@ async function cmdServer(): Promise<never> {
         if (!r.ok) return json({ error: r.errOut || 'could not set the status' }, 500);
         broadcast();
         return json({ ok: true });
+      }
+
+      // Draw or cut a dependency edge. Its own route for the same reason
+      // /status has one: `dep` is a separate CLI verb, and the direction is
+      // part of the request rather than a field being written.
+      const dep = url.pathname.match(/^\/api\/tickets\/(\d+)\/deps$/);
+      if (dep && req.method === 'POST') {
+        touch();
+        const b = (await req.json().catch(() => ({}))) as
+          { blocks?: number; blockedBy?: number; rm?: number };
+        // Integer-checked here rather than trusted: these reach a command line,
+        // and NaN/1.5/Infinity would arrive as strings that mean nothing to the
+        // CLI. Same guard the move route already applies to before/after.
+        const isId = (v: unknown): v is number => Number.isInteger(v) && (v as number) > 0;
+        let args: string[];
+        if (isId(b.blocks))         args = ['dep', dep[1], '--blocks', String(b.blocks)];
+        else if (isId(b.blockedBy)) args = ['dep', dep[1], '--blocked-by', String(b.blockedBy)];
+        else if (isId(b.rm))        args = ['dep', dep[1], '--rm', String(b.rm)];
+        else return json({ error: 'say which edge: blocks, blockedBy or rm' }, 400);
+        const r = sh(TICKET, args);
+        // 7 is a refusal the user can act on — a self-link or a cycle — and
+        // reads as a conflict, not as the factory falling over.
+        if (!r.ok) {
+          const code = r.code === 7 ? 409 : r.code === 4 ? 404 : r.code === 2 ? 400 : 500;
+          return json({ error: r.errOut || 'could not change the dependency' }, code);
+        }
+        broadcast();
+        return json({ ok: true });
+      }
+
+      // Reorder. Relative to another card, never a raw position — the CLI owns
+      // the arithmetic, so the drag and the keyboard both land on one place
+      // that can decide about midpoints and renumbering.
+      const move = url.pathname.match(/^\/api\/tickets\/(\d+)\/move$/);
+      if (move && req.method === 'POST') {
+        touch();
+        const b = (await req.json().catch(() => ({}))) as
+          { before?: number; after?: number; top?: boolean; bottom?: boolean };
+        // typeof 'number' alone admits NaN, 1.5 and Infinity, which reach the
+        // command line as "NaN"/"1.5"/"Infinity", get rejected there as a usage
+        // error, and surface as "the factory fell over". A ticket id is a
+        // positive integer; ask for one.
+        const isId = (v: unknown) => Number.isInteger(v) && (v as number) > 0;
+        let args: string[];
+        if (b.before !== undefined || b.after !== undefined) {
+          const rel = b.before !== undefined ? b.before : b.after;
+          if (!isId(rel)) return json({ error: 'before/after must be a ticket id' }, 400);
+          args = ['move', move[1], b.before !== undefined ? '--before' : '--after', String(rel)];
+        }
+        else if (b.top)    args = ['move', move[1], '--top'];
+        else if (b.bottom) args = ['move', move[1], '--bottom'];
+        else return json({ error: 'say where it goes: before, after, top or bottom' }, 400);
+        const r = sh(TICKET, args);
+        // The CLI's exit codes carry more than "it failed", and the page acts
+        // on the difference: 6 is a drop into another app or project, 4 is a
+        // ticket that is not there, 2 is a malformed request. None of the three
+        // is the factory falling over, which is what a 500 tells the user.
+        if (!r.ok) {
+          const code = r.code === 6 ? 409 : r.code === 4 ? 404 : r.code === 2 ? 400 : 500;
+          return json({ error: r.errOut || 'could not move it' }, code);
+        }
+        broadcast();
+        // A move can SUCCEED and still have something to say: dropping a ticket
+        // above one it is blocked by is a contradiction the CLI reports on
+        // stderr and deliberately does not correct. Dropping stderr on the ok
+        // path meant the board — the only surface where dragging exists — never
+        // said anything at all.
+        const note = (r.errOut || '')
+          .split('\n')
+          .filter((l) => l.includes('heads up'))
+          .map((l) => l.replace(/^[a-z-]+:\s*heads up —\s*/, ''))
+          .join('; ');
+        return json({ ok: true, ...(note ? { note } : {}) });
       }
 
       const done = url.pathname.match(/^\/api\/tickets\/(\d+)\/done$/);

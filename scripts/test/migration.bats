@@ -211,14 +211,14 @@ migrate() { "$TICKET" list --all >/dev/null; }
   "$TICKET" add "first" >/dev/null
   [ "$(db "SELECT count(*) FROM pragma_table_info('tickets') WHERE name='repo_slug';")" = "1" ]
   [ "$(db "SELECT count(*) FROM pragma_table_info('tickets') WHERE name='project_slug';")" = "0" ]
-  [ "$(db "PRAGMA user_version;")" = "4" ]
+  [ "$(db "PRAGMA user_version;")" = "5" ]
 }
 
 @test "migration: the version is stamped in the database, not beside it" {
   seed_v1
   [ "$(db "PRAGMA user_version;")" = "0" ]
   migrate
-  [ "$(db "PRAGMA user_version;")" = "4" ]
+  [ "$(db "PRAGMA user_version;")" = "5" ]
   # And it is not tracked by any sibling file, which could desynchronise from
   # the data it describes.
   [ ! -f "$SMRITI_HOME/.factory-schema-v2" ]
@@ -229,13 +229,13 @@ migrate() { "$TICKET" list --all >/dev/null; }
   # The failure a marker file cannot catch: the version travels WITH the data.
   seed_v1
   migrate
-  [ "$(db "PRAGMA user_version;")" = "4" ]
+  [ "$(db "PRAGMA user_version;")" = "5" ]
 
   rm -f "$SMRITI_HOME/factory.db" "$SMRITI_HOME/factory.db-wal" "$SMRITI_HOME/factory.db-shm"
   seed_v1                                   # a pre-upgrade backup, restored
   run "$TICKET" list --all
   [ "$status" -eq 0 ]
-  [ "$(db "PRAGMA user_version;")" = "4" ]
+  [ "$(db "PRAGMA user_version;")" = "5" ]
   [ "$(db "SELECT count(*) FROM pragma_table_info('tickets') WHERE name='repo_slug';")" = "1" ]
 }
 
@@ -247,7 +247,7 @@ migrate() { "$TICKET" list --all >/dev/null; }
   db "PRAGMA user_version = 0;"
   run "$TICKET" list --all
   [ "$status" -eq 0 ]
-  [ "$(db "PRAGMA user_version;")" = "4" ]
+  [ "$(db "PRAGMA user_version;")" = "5" ]
   [ "$(db "SELECT count(*) FROM tickets;")" = "2" ]
 }
 
@@ -294,7 +294,7 @@ migrate() { "$TICKET" list --all >/dev/null; }
   [ "$s1" -eq 0 ] && [ "$s2" -eq 0 ] && [ "$s3" -eq 0 ]
   ! grep -q "migration failed" "$WORK/e1" "$WORK/e2" "$WORK/e3"
   [ "$(db "SELECT count(*) FROM tickets;")" = "2" ]
-  [ "$(db "PRAGMA user_version;")" = "4" ]
+  [ "$(db "PRAGMA user_version;")" = "5" ]
 }
 
 @test "migration: an unreadable store fails loudly rather than half-working" {
@@ -309,27 +309,32 @@ migrate() { "$TICKET" list --all >/dev/null; }
   # ...and it recovers once the file is readable again.
   migrate
   [ "$(db "SELECT count(*) FROM pragma_table_info('tickets') WHERE name='repo_slug';")" = "1" ]
-  [ "$(db "PRAGMA user_version;")" = "4" ]
+  [ "$(db "PRAGMA user_version;")" = "5" ]
 }
 
-# ─── v3: runs.html_session ──────────────────────────────────────────────────
+# ─── v3: runs.html_session · v4: runs.herdr_pane · v5: tickets.position ─────
 
-# A v2-shaped store: what a machine that ran the previous release actually has.
-# Built by migrating a v1 seed, then removing the v3 column and winding the
-# stamp back — the only honest way to get the real v2 shape from this checkout.
+# A v2-shaped store: what a machine that ran that release actually has. Built by
+# migrating a v1 seed, then undoing every step that came after v2 and winding the
+# stamp back — the only honest way to get a real old shape from this checkout.
 seed_v2() {
   seed_v1
   migrate
   db "ALTER TABLE runs DROP COLUMN html_session;"
+  db "ALTER TABLE runs DROP COLUMN herdr_pane;"
+  db "DROP TABLE IF EXISTS run_artifacts;"
+  db "DROP TABLE IF EXISTS ticket_deps;"
+  db "ALTER TABLE tickets DROP COLUMN position;"
   db "PRAGMA user_version = 2;"
 }
+
 
 @test "migration v3: a v2 database gains html_session" {
   seed_v2
   [ "$(db "SELECT count(*) FROM pragma_table_info('runs') WHERE name='html_session';")" = "0" ]
   migrate
   [ "$(db "SELECT count(*) FROM pragma_table_info('runs') WHERE name='html_session';")" = "1" ]
-  [ "$(db "PRAGMA user_version;")" = "4" ]
+  [ "$(db "PRAGMA user_version;")" = "5" ]
 }
 
 @test "migration v3: a v2 database is NOT stamped current without gaining the column" {
@@ -360,7 +365,7 @@ seed_v2() {
 @test "migration v3: a fresh database is born with the column" {
   "$TICKET" add "first" >/dev/null
   [ "$(db "SELECT count(*) FROM pragma_table_info('runs') WHERE name='html_session';")" = "1" ]
-  [ "$(db "PRAGMA user_version;")" = "4" ]
+  [ "$(db "PRAGMA user_version;")" = "5" ]
 }
 
 @test "migration v3: migrating twice changes nothing" {
@@ -368,7 +373,97 @@ seed_v2() {
   migrate
   migrate
   [ "$(db "SELECT count(*) FROM pragma_table_info('runs') WHERE name='html_session';")" = "1" ]
-  [ "$(db "PRAGMA user_version;")" = "4" ]
+  [ "$(db "PRAGMA user_version;")" = "5" ]
+}
+
+@test "migration v5: a v4 database gains position" {
+  seed_v4
+  [ "$(db "SELECT count(*) FROM pragma_table_info('tickets') WHERE name='position';")" = "0" ]
+  migrate
+  [ "$(db "SELECT count(*) FROM pragma_table_info('tickets') WHERE name='position';")" = "1" ]
+  [ "$(db "PRAGMA user_version;")" = "5" ]
+}
+
+@test "migration v5: a v4 database is NOT stamped current without gaining the column" {
+  seed_v4
+  migrate
+  run "$TICKET" list --all
+  [ "$status" -eq 0 ]
+  [ "$(db "SELECT count(*) FROM pragma_table_info('tickets') WHERE name='position';")" = "1" ]
+}
+
+@test "migration v5: the seed reproduces the order the board was already drawing" {
+  # The whole point of seeding rather than defaulting to 0. A bare DEFAULT
+  # would leave every ticket equal, the board would fall back to id order, and
+  # someone who never asked for it would find their board reshuffled by an
+  # upgrade. Band first (in_review, in_progress, ready, idea), then priority
+  # descending, then id — exactly what byStatus used to compute client-side.
+  seed_v4
+  db "DELETE FROM tickets;
+      INSERT INTO tickets (id, repo_slug, title, status, priority, created_at, updated_at) VALUES
+        (10,'demo','an idea',      'idea',       0,'2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'),
+        (11,'demo','ready, dull',  'ready',      0,'2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'),
+        (12,'demo','ready, urgent','ready',      9,'2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'),
+        (13,'demo','building',     'in_progress',0,'2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'),
+        (14,'demo','needs a look', 'in_review',  0,'2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');"
+  migrate
+
+  # in_review, in_progress, then the two ready by priority, then the idea.
+  [ "$(db "SELECT group_concat(id) FROM (SELECT id FROM tickets ORDER BY position, id);")" = "14,13,12,11,10" ]
+  # Distinct positions, or the order is not a total one and the next drag has
+  # no gap to aim at.
+  [ "$(db "SELECT count(DISTINCT position) FROM tickets;")" = "5" ]
+}
+
+@test "migration v5: positions are seeded per group, not globally" {
+  # A position means nothing across scopes, so each (app, project) starts again
+  # at 1. Without the coalesce pair in the PARTITION BY, NULL != NULL would put
+  # every app-less idea in a group of its own, all born at position 1.
+  seed_v4
+  db "DELETE FROM tickets;
+      INSERT INTO tickets (id, repo_slug, title, status, priority, created_at, updated_at) VALUES
+        (20,'alpha','a1','ready',0,'2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'),
+        (21,'alpha','a2','ready',0,'2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'),
+        (22,'beta', 'b1','ready',0,'2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'),
+        (23,NULL,   'i1','idea', 0,'2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'),
+        (24,NULL,   'i2','idea', 0,'2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');"
+  migrate
+
+  [ "$(db "SELECT position FROM tickets WHERE id=20;")" = "1.0" ]
+  [ "$(db "SELECT position FROM tickets WHERE id=21;")" = "2.0" ]
+  [ "$(db "SELECT position FROM tickets WHERE id=22;")" = "1.0" ]
+  # The app-less bucket is one group, so these are 1 and 2 — not 1 and 1.
+  [ "$(db "SELECT position FROM tickets WHERE id=23;")" = "1.0" ]
+  [ "$(db "SELECT position FROM tickets WHERE id=24;")" = "2.0" ]
+}
+
+@test "migration v5: a fresh database is born with the column" {
+  "$TICKET" add "first" >/dev/null
+  [ "$(db "SELECT count(*) FROM pragma_table_info('tickets') WHERE name='position';")" = "1" ]
+  [ "$(db "PRAGMA user_version;")" = "5" ]
+}
+
+@test "migration v5: migrating twice changes nothing" {
+  seed_v4
+  migrate
+  local first; first=$(db "SELECT group_concat(id || ':' || position) FROM (SELECT id, position FROM tickets ORDER BY id);")
+  migrate
+  [ "$(db "SELECT group_concat(id || ':' || position) FROM (SELECT id, position FROM tickets ORDER BY id);")" = "$first" ]
+  [ "$(db "PRAGMA user_version;")" = "5" ]
+}
+
+@test "migration v5: concurrent upgraders all succeed, none hits duplicate column" {
+  seed_v4
+  "$TICKET" list --all >/dev/null 2>"$WORK/v5a" & p1=$!
+  "$TICKET" list --all >/dev/null 2>"$WORK/v5b" & p2=$!
+  "$TRACE" list --json  >/dev/null 2>"$WORK/v5c" & p3=$!
+  wait $p1; s1=$?
+  wait $p2; s2=$?
+  wait $p3; s3=$?
+  [ "$s1" -eq 0 ] && [ "$s2" -eq 0 ] && [ "$s3" -eq 0 ]
+  ! grep -qi "duplicate column" "$WORK/v5a" "$WORK/v5b" "$WORK/v5c"
+  [ "$(db "SELECT count(*) FROM pragma_table_info('tickets') WHERE name='position';")" = "1" ]
+  [ "$(db "PRAGMA user_version;")" = "5" ]
 }
 
 @test "migration v3: concurrent upgraders all succeed, none hits duplicate column" {
@@ -385,17 +480,34 @@ seed_v2() {
   [ "$s1" -eq 0 ] && [ "$s2" -eq 0 ] && [ "$s3" -eq 0 ]
   ! grep -qi "duplicate column" "$WORK/v3a" "$WORK/v3b" "$WORK/v3c"
   [ "$(db "SELECT count(*) FROM pragma_table_info('runs') WHERE name='html_session';")" = "1" ]
-  [ "$(db "PRAGMA user_version;")" = "4" ]
+  [ "$(db "PRAGMA user_version;")" = "5" ]
 }
 
 # ── v4: runs.herdr_pane, and the run_artifacts table beside it ──────────────
+#    (v5: tickets.position — its tests sit above, with the rest of ordering)
 
+# The two shapes that shipped before this one. Same trick as seed_v2: the only
+# honest way to produce a previous release's real shape from this checkout is to
+# migrate all the way forward and then undo the steps that came after it.
 seed_v3() {
   seed_v1
   migrate
   db "ALTER TABLE runs DROP COLUMN herdr_pane;"
   db "DROP TABLE IF EXISTS run_artifacts;"
+  db "DROP TABLE IF EXISTS ticket_deps;"
+  db "ALTER TABLE tickets DROP COLUMN position;"
   db "PRAGMA user_version = 3;"
+}
+
+# v4: herdr_pane and run_artifacts present, tickets.position not yet.
+seed_v4() {
+  seed_v1
+  migrate
+  db "ALTER TABLE tickets DROP COLUMN position;"
+  # ticket_deps came later still and is not part of any version, so a store
+  # built by migrating forward has to have it taken back off to be v4-shaped.
+  db "DROP TABLE IF EXISTS ticket_deps;"
+  db "PRAGMA user_version = 4;"
 }
 
 @test "migration v4: a v3 database gains herdr_pane" {
@@ -403,7 +515,7 @@ seed_v3() {
   [ "$(db "SELECT count(*) FROM pragma_table_info('runs') WHERE name='herdr_pane';")" = "0" ]
   migrate
   [ "$(db "SELECT count(*) FROM pragma_table_info('runs') WHERE name='herdr_pane';")" = "1" ]
-  [ "$(db "PRAGMA user_version;")" = "4" ]
+  [ "$(db "PRAGMA user_version;")" = "5" ]
 }
 
 @test "migration v4: run_artifacts arrives with no migration step of its own" {
@@ -429,7 +541,7 @@ seed_v3() {
   "$TICKET" add "first" >/dev/null
   [ "$(db "SELECT count(*) FROM pragma_table_info('runs') WHERE name='herdr_pane';")" = "1" ]
   [ "$(db "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='run_artifacts';")" = "1" ]
-  [ "$(db "PRAGMA user_version;")" = "4" ]
+  [ "$(db "PRAGMA user_version;")" = "5" ]
 }
 
 @test "migration v4: one report per run is enforced by the index, not by hope" {
@@ -458,4 +570,55 @@ seed_v3() {
       VALUES ('dddd4444','report','run','gone with it','2026-01-01T00:00:00Z');"
   db "PRAGMA foreign_keys=ON; DELETE FROM runs WHERE run_uid='dddd4444';"
   [ "$(db "SELECT count(*) FROM run_artifacts WHERE run_uid='dddd4444';")" = "0" ]
+}
+
+# ─── ticket_deps (#12) ──────────────────────────────────────────────────────
+
+@test "ticket_deps: a new table arrives with no migration step and no version bump" {
+  # Same guarantee run_artifacts relies on, asserted for its own table rather
+  # than assumed from a sibling: factory-schema.sql is re-applied on every
+  # connection and is CREATE ... IF NOT EXISTS throughout, so a store that has
+  # never seen this feature gains the table on first contact — and the schema
+  # version, which ~20 assertions in this file pin, does not move.
+  seed_v4
+  [ "$(db "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='ticket_deps';")" = "0" ]
+  migrate
+  [ "$(db "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='ticket_deps';")" = "1" ]
+  [ "$(db "PRAGMA user_version;")" = "5" ]
+}
+
+@test "ticket_deps: an older store gains it too, still without moving the version" {
+  seed_v2
+  migrate
+  [ "$(db "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='ticket_deps';")" = "1" ]
+  [ "$(db "PRAGMA user_version;")" = "5" ]
+}
+
+@test "ticket_deps: a fresh database is born with the table and its reverse index" {
+  "$TICKET" add "first" >/dev/null
+  [ "$(db "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='ticket_deps';")" = "1" ]
+  # "what blocks this?" is asked on every start and once per card the board
+  # draws; without its own index that is a table scan.
+  [ "$(db "SELECT count(*) FROM sqlite_master WHERE type='index' AND name='ticket_deps_by_blocked';")" = "1" ]
+}
+
+@test "ticket_deps: deleting a ticket cascades its edges away" {
+  # ON DELETE CASCADE, where the rest of the schema uses SET NULL — an edge
+  # with one end missing is not a weaker edge, it is not an edge. The pragma is
+  # per-connection, so this local db() has to set it as factory-db.sh does.
+  "$TICKET" add "blocker" >/dev/null
+  "$TICKET" add "blocked" >/dev/null
+  "$TICKET" dep 1 --blocks 2 >/dev/null
+  [ "$(db "SELECT count(*) FROM ticket_deps;")" = "1" ]
+  db "PRAGMA foreign_keys=ON; DELETE FROM tickets WHERE id = 1;"
+  [ "$(db "SELECT count(*) FROM ticket_deps;")" = "0" ]
+}
+
+@test "ticket_deps: the same edge cannot be stored twice" {
+  "$TICKET" add "blocker" >/dev/null
+  "$TICKET" add "blocked" >/dev/null
+  "$TICKET" dep 1 --blocks 2 >/dev/null
+  run db "INSERT INTO ticket_deps (blocker_id, blocked_id, created_at) VALUES (1, 2, 'now');"
+  [ "$status" -ne 0 ]
+  [ "$(db "SELECT count(*) FROM ticket_deps;")" = "1" ]
 }

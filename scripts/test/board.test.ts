@@ -595,6 +595,64 @@ test('any status can be set through the board, cancelled included', async () => 
   expect(empty.status).toBe(400);
 });
 
+// Ticket #11. The route says WHERE relative to another card and never a raw
+// position — the CLI owns that arithmetic, so the drag and the keyboard both
+// reach one place that can decide about midpoints and repacking.
+test('tickets reorder through the board, and an illegal drop is a 409', async () => {
+  const tk = (args: string[]) =>
+    spawnSync(TICKET, args, { encoding: 'utf8', env: { ...process.env, SMRITI_HOME: HOME_DIR } });
+  for (const t of ['ord one', 'ord two', 'ord three']) tk(['add', t, '--repo', 'ordering']);
+  tk(['add', 'somewhere else', '--repo', 'elsewhere']);
+
+  const list = () =>
+    (JSON.parse(tk(['list', '--all', '--json']).stdout) as { id: number; title: string; repo_slug: string | null }[]);
+  const byTitle = (t: string) => list().find((x) => x.title === t)!.id;
+  const orderIn = (repo: string) => list().filter((x) => x.repo_slug === repo).map((x) => x.title);
+
+  const one = byTitle('ord one'), two = byTitle('ord two'), three = byTitle('ord three');
+  const move = (id: number, body: unknown) =>
+    fetch(`${base()}/api/tickets/${id}/move`, {
+      method: 'POST',
+      headers: { cookie: jar, 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+  // list --json is itself ordered by position, so reading it back IS the check.
+  expect(orderIn('ordering')).toEqual(['ord one', 'ord two', 'ord three']);
+
+  expect((await move(three, { before: one })).status).toBe(200);
+  expect(orderIn('ordering')).toEqual(['ord three', 'ord one', 'ord two']);
+
+  expect((await move(three, { after: two })).status).toBe(200);
+  expect(orderIn('ordering')).toEqual(['ord one', 'ord two', 'ord three']);
+
+  expect((await move(two, { top: true })).status).toBe(200);
+  expect(orderIn('ordering')).toEqual(['ord two', 'ord one', 'ord three']);
+
+  expect((await move(two, { bottom: true })).status).toBe(200);
+  expect(orderIn('ordering')).toEqual(['ord one', 'ord three', 'ord two']);
+
+  // Naming a card in another app is the user dropping somewhere they cannot,
+  // not the factory falling over — 409 so the page can tell the two apart.
+  const illegal = await move(one, { after: byTitle('somewhere else') });
+  expect(illegal.status).toBe(409);
+  expect(((await illegal.json()) as { error: string }).error).toContain('different app or project');
+  expect(orderIn('ordering')).toEqual(['ord one', 'ord three', 'ord two']);
+
+  // No direction at all is the caller's mistake, and never a write.
+  expect((await move(one, {})).status).toBe(400);
+
+  // A 500 says "the factory fell over", so everything that is actually the
+  // caller's mistake has to be something else. typeof 'number' alone would let
+  // all three of these reach the command line and come back as a 500.
+  for (const bad of [NaN, 1.5, Infinity, 0, -3, '7']) {
+    expect((await move(one, { after: bad })).status).toBe(400);
+  }
+  // A well-formed id for a ticket that is not there is a 404, not a 500.
+  expect((await move(one, { after: 999999 })).status).toBe(404);
+  expect(orderIn('ordering')).toEqual(['ord one', 'ord three', 'ord two']);
+});
+
 test('a ticket can be re-filed into a project and back out again', async () => {
   const tk = (args: string[]) =>
     spawnSync(TICKET, args, { encoding: 'utf8', env: { ...process.env, SMRITI_HOME: HOME_DIR } });
@@ -806,4 +864,151 @@ test('/api/state reports sessions as null when herdr cannot be asked', async () 
   // "unknown".
   if (state.sessions === null) expect(state.sessions).toBeNull();
   else expect(Array.isArray(state.sessions)).toBe(true);
+});
+
+// ─── dependencies (#12) ─────────────────────────────────────────────────────
+
+test('the dependency graph reaches the page, and a blocked start is a 409', async () => {
+  const tk = (args: string[]) =>
+    spawnSync(TICKET, args, { encoding: 'utf8', env: { ...process.env, SMRITI_HOME: HOME_DIR } });
+  // Fresh ids: this file's store is shared across tests, so read them back
+  // rather than assuming what the counter is up to.
+  tk(['add', 'the blocker', '--repo', 'deps-demo']);
+  tk(['add', 'the blocked', '--repo', 'deps-demo']);
+  const all = JSON.parse(tk(['list', '--all', '--json']).stdout) as
+    { id: number; title: string }[];
+  const blocker = all.find((t) => t.title === 'the blocker')!;
+  const blocked = all.find((t) => t.title === 'the blocked')!;
+
+  const drew = await fetch(`${base()}/api/tickets/${blocked.id}/deps`, {
+    method: 'POST', headers: { cookie: jar, 'content-type': 'application/json' },
+    body: JSON.stringify({ blockedBy: blocker.id }),
+  });
+  expect(drew.status).toBe(200);
+
+  // One payload for the whole graph, joined per ticket on the client the way
+  // documents already are.
+  const state = (await (await fetch(`${base()}/api/state`, withCookie())).json()) as
+    { deps: { blocker_id: number; blocked_id: number; blocker_status: string }[] };
+  const edge = state.deps.find((d) => d.blocked_id === blocked.id)!;
+  expect(edge.blocker_id).toBe(blocker.id);
+  expect(edge.blocker_status).toBe('idea');
+
+  // 409, not 500: the ticket is blocked, which is a conflict the user can act
+  // on — not the factory falling over. This route used to collapse every CLI
+  // failure to a 500.
+  const start = await fetch(`${base()}/api/tickets/${blocked.id}/start`, {
+    method: 'POST', headers: { cookie: jar, 'content-type': 'application/json' }, body: '{}',
+  });
+  expect(start.status).toBe(409);
+  const said = (await start.json()) as { error: string; blocked: boolean };
+  expect(said.blocked).toBe(true);
+  expect(said.error).toContain('blocked by unshipped work');
+});
+
+test('a cycle is refused as a 409, and a malformed edge as a 400', async () => {
+  const tk = (args: string[]) =>
+    spawnSync(TICKET, args, { encoding: 'utf8', env: { ...process.env, SMRITI_HOME: HOME_DIR } });
+  tk(['add', 'cycle a', '--repo', 'cyc-demo']);
+  tk(['add', 'cycle b', '--repo', 'cyc-demo']);
+  const all = JSON.parse(tk(['list', '--all', '--json']).stdout) as
+    { id: number; title: string }[];
+  const a = all.find((t) => t.title === 'cycle a')!;
+  const b = all.find((t) => t.title === 'cycle b')!;
+
+  const post = (id: number, body: unknown) =>
+    fetch(`${base()}/api/tickets/${id}/deps`, {
+      method: 'POST', headers: { cookie: jar, 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+  expect((await post(b.id, { blockedBy: a.id })).status).toBe(200);
+  const loop = await post(a.id, { blockedBy: b.id });
+  expect(loop.status).toBe(409);
+  expect(((await loop.json()) as { error: string }).error).toContain('cycle');
+
+  // Not an id: these reach a command line, so NaN/1.5 must never get there.
+  expect((await post(a.id, { blockedBy: 1.5 })).status).toBe(400);
+  expect((await post(a.id, {})).status).toBe(400);
+
+  // And it comes back off again.
+  const cut = await post(b.id, { rm: a.id });
+  expect(cut.status).toBe(200);
+});
+
+test('a move that contradicts the graph succeeds and says so', async () => {
+  // The CLI reports the contradiction on stderr and deliberately leaves the
+  // card where it was dropped. The route used to read stderr only on the
+  // failure path, so the board — the only surface where dragging exists —
+  // never said anything at all.
+  const tk = (args: string[]) =>
+    spawnSync(TICKET, args, { encoding: 'utf8', env: { ...process.env, SMRITI_HOME: HOME_DIR } });
+  tk(['add', 'order blocker', '--repo', 'ord-demo']);
+  tk(['add', 'order blocked', '--repo', 'ord-demo']);
+  const all = JSON.parse(tk(['list', '--all', '--json']).stdout) as
+    { id: number; title: string }[];
+  const blocker = all.find((t) => t.title === 'order blocker')!;
+  const blocked = all.find((t) => t.title === 'order blocked')!;
+  tk(['dep', String(blocked.id), '--blocked-by', String(blocker.id)]);
+
+  const res = await fetch(`${base()}/api/tickets/${blocked.id}/move`, {
+    method: 'POST', headers: { cookie: jar, 'content-type': 'application/json' },
+    body: JSON.stringify({ before: blocker.id }),
+  });
+  expect(res.status).toBe(200);
+  const said = (await res.json()) as { ok: boolean; note?: string };
+  expect(said.ok).toBe(true);
+  expect(said.note).toContain('#' + blocked.id);
+  expect(said.note).toContain('#' + blocker.id);
+
+  // And it really did move: the contradiction is surfaced, never corrected.
+  const after = JSON.parse(tk(['list', '--all', '--json']).stdout) as
+    { id: number; position: number }[];
+  const p = (id: number) => after.find((t) => t.id === id)!.position;
+  expect(p(blocked.id)).toBeLessThan(p(blocker.id));
+});
+
+test('a move with nothing to say carries no note', async () => {
+  const tk = (args: string[]) =>
+    spawnSync(TICKET, args, { encoding: 'utf8', env: { ...process.env, SMRITI_HOME: HOME_DIR } });
+  tk(['add', 'plain a', '--repo', 'plain-demo']);
+  tk(['add', 'plain b', '--repo', 'plain-demo']);
+  const all = JSON.parse(tk(['list', '--all', '--json']).stdout) as
+    { id: number; title: string }[];
+  const a = all.find((t) => t.title === 'plain a')!;
+  const b = all.find((t) => t.title === 'plain b')!;
+  const res = await fetch(`${base()}/api/tickets/${a.id}/move`, {
+    method: 'POST', headers: { cookie: jar, 'content-type': 'application/json' },
+    body: JSON.stringify({ after: b.id }),
+  });
+  expect(res.status).toBe(200);
+  expect((await res.json()) as { note?: string }).not.toHaveProperty('note');
+});
+
+test('start --force goes through when the page says so', async () => {
+  const tk = (args: string[]) =>
+    spawnSync(TICKET, args, { encoding: 'utf8', env: { ...process.env, SMRITI_HOME: HOME_DIR } });
+  tk(['add', 'force blocker', '--repo', 'force-demo']);
+  tk(['add', 'force blocked', '--repo', 'force-demo']);
+  const all = JSON.parse(tk(['list', '--all', '--json']).stdout) as
+    { id: number; title: string }[];
+  const blocker = all.find((t) => t.title === 'force blocker')!;
+  const blocked = all.find((t) => t.title === 'force blocked')!;
+  tk(['dep', String(blocked.id), '--blocked-by', String(blocker.id)]);
+
+  // Without force: refused as a conflict.
+  const no = await fetch(`${base()}/api/tickets/${blocked.id}/start`, {
+    method: 'POST', headers: { cookie: jar, 'content-type': 'application/json' }, body: '{}',
+  });
+  expect(no.status).toBe(409);
+
+  // With force it gets past the dependency check. There is no repo behind
+  // 'force-demo', so it now fails on the WORKTREE instead (exit 5 → 500) —
+  // which is the point: a different failure means the refusal was lifted.
+  const yes = await fetch(`${base()}/api/tickets/${blocked.id}/start`, {
+    method: 'POST', headers: { cookie: jar, 'content-type': 'application/json' },
+    body: JSON.stringify({ force: true }),
+  });
+  expect(yes.status).not.toBe(409);
+  expect(((await yes.json()) as { error: string }).error).not.toContain('blocked by unshipped');
 });
