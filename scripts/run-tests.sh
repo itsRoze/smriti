@@ -52,4 +52,21 @@ echo "── bun test ───────────────────�
 cd "$ROOT"
 # Only test files matching *.test.ts; otherwise Bun would also try to "run"
 # .bats files (Bash) as TS modules.
-bun test scripts/test/*.test.ts
+#
+# ONE FILE PER INVOCATION, not one `bun test` over the whole glob. Bun runs test
+# FILES concurrently, and most of these stand up a real board server — sampling a
+# five-file run found three alive at once, each with its own sqlite store, and
+# two of the files drive a real Chromium on top. The browser tests then starve
+# and blow their 30s budget, and WHICH ones blow it changes every run: one pass
+# failed 20 tests, the next 6, the next 2. That reads as a regression in
+# whichever describe lost the race, which is the worst possible way for a suite
+# to lie — every one of those files is green on its own, every time.
+#
+# Wall-clock is not the cost it looks like, because the parallel version was
+# thrashing: the concurrent run took 288s and the serial one is comparable, with
+# the difference being time these processes spent waiting on each other.
+status=0
+for f in scripts/test/*.test.ts; do
+  bun test "$f" || status=1
+done
+exit "$status"
